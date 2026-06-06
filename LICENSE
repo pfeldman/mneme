@@ -1,0 +1,7 @@
+SPDX-License-Identifier: Apache-2.0
+
+Recommended license: Apache-2.0 (permissive, patent grant, good for an
+open-core library that seeds adoption while a hosted trust layer is monetized).
+
+Replace this file with the full Apache-2.0 text before publishing:
+https://www.apache.org/licenses/LICENSE-2.0.txt

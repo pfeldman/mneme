@@ -1,0 +1,52 @@
+[project]
+name = "mneme"
+version = "0.0.1"
+description = "A shared semantic-memory layer for QA agents. Agents store and maintain knowledge about a system under test (goals, recognition signals, success/failure oracles, alternative paths, risks) decoupled from the procedure used to reach it."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Your Name" }]
+keywords = ["qa", "testing", "agents", "memory", "model-based-testing", "browser-automation"]
+
+dependencies = [
+    "pydantic>=2",     # typed knowledge model + validation against the schema
+    "pyyaml>=6",       # human-editable knowledge files
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10", "jsonschema>=4"]
+# Adapters are extras so the core stays runtime-agnostic (see ADR-0003).
+browser-use = ["browser-use"]
+# stagehand / playwright adapters declared as they are implemented.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mneme"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint.per-file-ignores]
+# The experiment harness must bootstrap sys.path (src layout + hyphenated package
+# dir name) before it can import `mneme`, so its imports are intentionally not at
+# the very top of the file.
+"experiments/ui-mutation/harness.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["mneme"]
+mypy_path = "src"
+warn_unused_ignores = true
+
+# yaml/jsonschema ship no type stubs (dev-only / optional); browser-use is an
+# optional extra. Ignore missing stubs rather than pulling stub packages into deps.
+[[tool.mypy.overrides]]
+module = ["yaml", "jsonschema", "browser_use"]
+ignore_missing_imports = true

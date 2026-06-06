@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Mneme local stores (never commit live memory or secrets)
+*.mneme-store/
+.mneme/
+local-memory/
+
+# Generated experiment outputs (reproducible via harness.py)
+experiments/ui-mutation/results.json
+experiments/ui-mutation/results.md
