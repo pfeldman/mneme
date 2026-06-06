@@ -23,7 +23,7 @@ def test_experiment_runs_and_reports_all_three_gates() -> None:
 def test_existential_gate_memory_cheaper_at_equal_reliability() -> None:
     result = harness.run_experiment()
     g = result["existential_gate"]
-    assert g["memory_avg_tokens"] < g["cold_avg_tokens"]
+    assert g["memory_avg_cost"] < g["cold_avg_cost"]
     assert g["memory_success"] >= g["cold_success"]
     assert g["PASSED"]
 

@@ -16,6 +16,8 @@ build/
 .mneme/
 local-memory/
 
-# Generated experiment outputs (reproducible via harness.py)
+# Generated experiment outputs (reproducible via harness.py / LOCAL_RUN.md)
 experiments/ui-mutation/results.json
 experiments/ui-mutation/results.md
+experiments/ui-mutation/seed_*.knowledge.yaml
+experiments/ui-mutation/recorded_*.py

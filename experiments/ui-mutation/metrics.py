@@ -17,6 +17,8 @@ class RunResult:
     succeeded: bool          # did the run actually reach the goal (ground truth)?
     tokens: int = 0
     wall_seconds: float = 0.0
+    actions: int = 0         # browser actions taken — the cost proxy when an LLM
+                             # subscription hides per-task token counts (local run)
     oracle_said_success: bool | None = None    # what the oracle reported
     ground_truth_success: bool | None = None   # human/spec ground truth
 
@@ -25,15 +27,26 @@ def _ok(rs: list[RunResult]) -> float:
     return (sum(r.succeeded for r in rs) / len(rs)) if rs else 0.0
 
 
+def _cost(rs: list[RunResult]) -> tuple[float, str]:
+    """Average cost + the unit used. Prefers tokens; falls back to browser actions
+    when tokens are unavailable (a flat-rate subscription hides per-task tokens)."""
+    if not rs:
+        return 0.0, "tokens"
+    if any(r.tokens for r in rs):
+        return mean([r.tokens for r in rs]), "tokens"
+    return mean([r.actions for r in rs]), "actions"
+
+
 # --- Measurement 1: existential gate (memory vs cold agent) ---
 def existential_gate(memory: list[RunResult], cold: list[RunResult]) -> dict:
     """memory must be cheaper AND at least as reliable as a cold agent."""
-    m_cost = mean([r.tokens for r in memory]) if memory else 0.0
-    c_cost = mean([r.tokens for r in cold]) if cold else 0.0
+    m_cost, unit = _cost(memory)
+    c_cost, _ = _cost(cold)
     passed = (m_cost < c_cost) and (_ok(memory) >= _ok(cold))
     return {
+        "cost_unit": unit,
         "memory_success": _ok(memory), "cold_success": _ok(cold),
-        "memory_avg_tokens": m_cost, "cold_avg_tokens": c_cost,
+        "memory_avg_cost": m_cost, "cold_avg_cost": c_cost,
         "cost_ratio_memory_over_cold": (m_cost / c_cost) if c_cost else None,
         "PASSED": passed,
     }
