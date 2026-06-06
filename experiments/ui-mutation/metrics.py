@@ -6,7 +6,7 @@ comparison is the existential gate and is checked FIRST (docs/06).
 from __future__ import annotations
 from dataclasses import dataclass, asdict
 import json
-from statistics import mean
+from statistics import mean, pstdev
 
 
 @dataclass
@@ -37,17 +37,52 @@ def _cost(rs: list[RunResult]) -> tuple[float, str]:
     return mean([r.actions for r in rs]), "actions"
 
 
+def _unit(rs: list[RunResult]) -> str:
+    return "tokens" if any(r.tokens for r in rs) else "actions"
+
+
+def _run_cost(r: RunResult, unit: str) -> float:
+    return float(r.tokens if unit == "tokens" else r.actions)
+
+
+def summarize_arm(results: list[RunResult]) -> dict:
+    """Per-arm summary with VARIANCE — LLM runs are non-deterministic, so a single
+    number hides the spread that actually decides whether the edge is real. Reports
+    success rate, cost (mean ± population stdev, min/max), and wall time."""
+    if not results:
+        return {"n": 0}
+    unit = _unit(results)
+    costs = [_run_cost(r, unit) for r in results]
+    walls = [r.wall_seconds for r in results]
+    return {
+        "n": len(results),
+        "success_rate": _ok(results),
+        "cost_unit": unit,
+        "cost_mean": round(mean(costs), 3),
+        "cost_stdev": round(pstdev(costs), 3) if len(costs) > 1 else 0.0,
+        "cost_min": min(costs),
+        "cost_max": max(costs),
+        "wall_mean_s": round(mean(walls), 3),
+        "wall_stdev_s": round(pstdev(walls), 3) if len(walls) > 1 else 0.0,
+    }
+
+
 # --- Measurement 1: existential gate (memory vs cold agent) ---
 def existential_gate(memory: list[RunResult], cold: list[RunResult]) -> dict:
     """memory must be cheaper AND at least as reliable as a cold agent."""
     m_cost, unit = _cost(memory)
     c_cost, _ = _cost(cold)
     passed = (m_cost < c_cost) and (_ok(memory) >= _ok(cold))
+    m_wall = mean([r.wall_seconds for r in memory]) if memory else 0.0
+    c_wall = mean([r.wall_seconds for r in cold]) if cold else 0.0
     return {
         "cost_unit": unit,
+        "n_memory": len(memory), "n_cold": len(cold),
         "memory_success": _ok(memory), "cold_success": _ok(cold),
         "memory_avg_cost": m_cost, "cold_avg_cost": c_cost,
         "cost_ratio_memory_over_cold": (m_cost / c_cost) if c_cost else None,
+        "memory_avg_wall_s": round(m_wall, 3), "cold_avg_wall_s": round(c_wall, 3),
+        "memory": summarize_arm(memory), "cold": summarize_arm(cold),
         "PASSED": passed,
     }
 
@@ -105,15 +140,31 @@ def write_report(results: list[RunResult], path: str = "experiments/ui-mutation/
 def write_markdown(result: dict, results: list[RunResult],
                    path: str = "experiments/ui-mutation/results.md") -> None:
     """Human-readable summary of one experiment run."""
+    gate1 = result.get("existential_gate", {})
+    empirical = gate1.get("cost_unit") == "actions"
     lines = ["# UI-mutation experiment — results", ""]
-    lines.append("> Numbers below come from the deterministic `simapp` stand-in "
-                 "(token costs are stated assumptions, not measurements). They "
-                 "validate the harness/metrics/oracle wiring and the kill/continue "
-                 "logic, not the thesis. Run the live Browser Use arm for empirical "
-                 "numbers.")
+    if empirical:
+        lines.append("> EMPIRICAL run (real browser + real LLM + local app). Cost is "
+                     "measured in browser actions because a flat-rate subscription "
+                     "hides per-task tokens. Mind the sample size (see per-arm n).")
+    else:
+        lines.append("> Numbers below come from the deterministic `simapp` stand-in "
+                     "(token costs are stated assumptions, not measurements). They "
+                     "validate the harness/metrics/oracle wiring and the kill/continue "
+                     "logic, not the thesis. Run the live arm for empirical numbers.")
     lines.append("")
     lines.append("## Measurement 1 — existential gate (memory vs cold agent)")
-    for k, v in result.get("existential_gate", {}).items():
+    for arm in ("memory", "cold"):
+        s = gate1.get(arm)
+        if isinstance(s, dict) and s.get("n"):
+            lines.append(
+                f"- **{arm}** (n={s['n']}): success {s['success_rate']:.0%}, "
+                f"cost {s['cost_mean']}±{s['cost_stdev']} {s['cost_unit']} "
+                f"(min {s['cost_min']}, max {s['cost_max']}), "
+                f"wall {s['wall_mean_s']}±{s['wall_stdev_s']}s")
+    for k, v in gate1.items():
+        if k in ("memory", "cold"):
+            continue
         lines.append(f"- **{k}**: {v}")
     if "robustness_gate" in result:
         lines.append("")

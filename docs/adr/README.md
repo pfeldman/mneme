@@ -11,3 +11,4 @@ per decision; never edit a superseded one (mark it `Superseded by ADR-XXXX`).
 | 0004 | Provenance + confidence are mandatory on every assertion |
 | 0005 | Oracle trust by evidence diversity; cold-start via seeded oracles |
 | 0006 | Phase-0 status semantics — "uncorroborated" maps to `contested` |
+| 0007 | Phase-0 existential gate cleared (provisionally) — proceed to Phase 1 |

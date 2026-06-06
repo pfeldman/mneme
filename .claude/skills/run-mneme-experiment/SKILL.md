@@ -22,10 +22,15 @@ summarized below. Measurement ORDER is the whole point — never reorder it.
    for all three flows (use `experiments/ui-mutation/runtimes.py:make_adapter`).
    `GET /_reset` first.
 
-## Cost metric
+## Cost metric & repetitions
 The subscription hides per-task tokens, so record `RunResult.actions` (count every
-`browser_*` action you take) plus wall time. `metrics.existential_gate` falls back
-to actions automatically (`cost_unit` says which).
+`browser_*` action you take) plus `wall_seconds` (time each run). `metrics`
+falls back to actions automatically (`cost_unit` says which).
+
+LLM runs are NON-DETERMINISTIC, so a single run hides the spread that decides
+whether the edge is real. Run **each arm ≥5 times per flow** for M1, time every run,
+and report `metrics.summarize_arm(...)` (mean ± stdev, min/max, success rate) — not
+just the average. A cost edge inside one stdev of noise is not an edge.
 
 ## Protocol (do in this order)
 1. **Population** (memory arm, unmutated): for each flow achieve the goal, then
@@ -33,12 +38,14 @@ to actions automatically (`cost_unit` says which).
    a behavioral one (Sign out / results list / order-confirmation element) AND a
    network one (the 2xx on /session, /search, /order). Two evidence types give the
    oracle its diversity on top of the seed.
-2. **Measurement 1 — EXISTENTIAL GATE (FIRST, unmutated).**
+2. **Measurement 1 — EXISTENTIAL GATE (FIRST, unmutated). ≥5 reps/arm/flow.**
    - `memory`: read believed knowledge (`adapter.knowledge_to_prompt(kf)`), achieve
-     each goal, count actions; `oracle = runtimes.oracle_said_success(kf, observed)`.
+     each goal, count actions, time it; `oracle = runtimes.oracle_said_success(...)`.
    - `cold_agent`: same flows, ignore all prior knowledge, figure it out cold.
-   - `gate1 = metrics.existential_gate(memory, cold)`.
-   - **If `gate1["PASSED"]` is False → STOP, report the numbers, do not continue.**
+   - `gate1 = metrics.existential_gate(memory, cold)` (now carries per-arm
+     mean±stdev and wall time).
+   - **If `gate1["PASSED"]` is False, OR memory's cost edge is within one stdev of
+     cold → STOP, report the numbers, do not continue.**
 3. **Measurement 2 — ROBUSTNESS** (only if M1 passed): for each mutation, `_mutate`
    it, and for each flow it perturbs run the `memory` arm (regenerate from knowledge)
    and the `recorded_script` baseline (`experiments/ui-mutation/LOCAL_RUN.md` §6 —
