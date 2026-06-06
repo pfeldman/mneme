@@ -16,6 +16,15 @@ pytest
 ruff check .
 ```
 
+Or verify everything (deps + pytest + ruff + mypy + the offline experiment) in one
+command:
+```bash
+bash verify.sh
+```
+
+To run the experiment LIVE with a Claude Code subscription (no API key), see
+`experiments/ui-mutation/LOCAL_RUN.md` or invoke the `/run-mneme-experiment` skill.
+
 ## Definition of done for any change to the model/schema
 - `schema/examples/*` still validate.
 - New assertion fields propagate provenance + confidence.
