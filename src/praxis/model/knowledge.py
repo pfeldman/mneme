@@ -1,17 +1,23 @@
-"""Pydantic models + YAML I/O for the Phase-0 knowledge schema.
+"""Pydantic models + YAML I/O for the Phase-1 knowledge schema.
 
 The pydantic model is the typed mirror of `schema/knowledge.schema.json`. The JSON
 Schema remains the single source of truth for *shape* (ADR-0002); a test asserts
 the two agree (`tests/test_model_schema_agree.py`). Ordering of `SignalType` is
-semantic — most→least durable — and the oracle relies on it (different types are
-independent evidence; same-type repeats are not).
+semantic - most-to-least durable - and the oracle relies on it (different types
+are independent evidence; same-type repeats are not).
+
+Phase 1 activates risks (with a structured `trigger`) and uncertainties as
+first-class top-level arrays on `KnowledgeFile` (ADR-0009). `states` and `paths`
+stay deferred (Phase 2). `risks.trigger` is a discriminated union (HTTP or
+sequence form): free-text triggers are rejected at validation time to keep
+schema rot bounded.
 """
 from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -92,8 +98,85 @@ class Meta(_Base):
     contributing_agents: list[str] | None = None
 
 
+class HttpTrigger(_Base):
+    """A risk trigger expressed as a concrete HTTP probe.
+
+    Structured by design (ADR-0009 sec 4): a stranger reading this trigger can
+    execute the probe deterministically, and the projection / E-mode prompt can
+    render it without an LLM interpreting free text. The schema-rot vector
+    closed by replacing free-text triggers like "under high load".
+    """
+
+    kind: Literal["http"] = "http"
+    method: Literal["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"]
+    path: str = Field(min_length=1)
+    body_or_params: dict[str, Any] | None = None
+    expect: str = Field(min_length=1)
+
+
+class SequenceTrigger(_Base):
+    """A risk trigger expressed as N repetitions of an action with a postcondition.
+
+    Used for idempotency / race / replay regressions: "2x submit checkout
+    returns 200 with same order_id". `action` is an intent ("submit
+    checkout"), never a UI selector (AGENTS.md non-negotiable 1).
+    """
+
+    kind: Literal["sequence"] = "sequence"
+    n: int = Field(ge=1)
+    action: str = Field(min_length=1)
+    expect: str = Field(min_length=1)
+
+
+Trigger = Annotated[HttpTrigger | SequenceTrigger, Field(discriminator="kind")]
+
+
+class Risk(_Base):
+    """A hypothesized failure mode with an observable trigger (ADR-0009).
+
+    Provenance + confidence + status are mandatory (ADR-0004): a seeded risk
+    (source_type human/spec) is `believed` from cold-start; an agent-written
+    risk enters as `contested` and needs source-independent corroboration to
+    promote (ADR-0005, ADR-0008). E-mode reads believed + contested risks and
+    probes their `trigger`; a matching observation produces a failure signal,
+    not a status flip on the risk itself.
+    """
+
+    id: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    trigger: Trigger
+    mitigation: str | None = None
+    provenance: Provenance
+    confidence: float = Field(ge=0.0, le=1.0)
+    status: Status
+
+
+class Uncertainty(_Base):
+    """An open question an agent could not resolve (docs/03).
+
+    First-class so that exploration is driven by gaps, not by re-running goals
+    the agent already passed (the coverage-collapse risk in docs/05). An
+    uncertainty becomes `resolved` when a corresponding observation answers
+    it; resolution is recorded by setting `resolved=True` and pointing at the
+    resolving signal value (cross-ref).
+    """
+
+    id: str = Field(min_length=1)
+    question: str = Field(min_length=1)
+    raised_by: str = Field(min_length=1)
+    raised_at: datetime
+    resolved: bool = False
+    resolving_signal_value: str | None = None
+
+
 class KnowledgeFile(_Base):
-    """A goal-scoped knowledge entry (one `*.knowledge.yaml`). Phase-0 minimal."""
+    """A goal-scoped knowledge entry (one `*.knowledge.yaml`). Phase 1.
+
+    Phase 1 activates `risks` and `uncertainties` as first-class arrays
+    (ADR-0009). `states` and `paths` from the reference schema stay deferred
+    to Phase 2: no experiment consumes them, naming them would invite schema
+    rot (docs/06).
+    """
 
     schema_version: Literal["0"]
     goal_id: str
@@ -101,6 +184,8 @@ class KnowledgeFile(_Base):
     target: Target
     success_signals: list[Signal] = Field(min_length=1)
     failure_signals: list[Signal] | None = None
+    risks: list[Risk] | None = None
+    uncertainties: list[Uncertainty] | None = None
     meta: Meta
 
 

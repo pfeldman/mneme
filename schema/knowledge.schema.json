@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://praxis.dev/schema/knowledge/v0",
-  "title": "Mneme SUT Knowledge (Phase 0, minimal)",
-  "description": "Minimal Phase-0 schema: just enough to run the validation experiment. Goal + success/failure signals + mandatory provenance/confidence. States, paths, risks and uncertainties are deferred to Phase 1 (see knowledge.phase1.schema.json). Trimmed deliberately to avoid schema rot before the thesis is validated.",
+  "title": "Praxis SUT Knowledge (Phase 1, active)",
+  "description": "Active Phase-1 schema. Goal + success/failure signals + risks (with structured triggers) + uncertainties + mandatory provenance/confidence on every assertion (ADR-0004). States and paths from the Phase-1 reference draft stay deferred (ADR-0009): no experiment consumes them in Phase 1 and naming them invites schema rot (docs/06). schema_version stays \"0\" because the additions are additive: Phase-0 knowledge files validate unchanged.",
   "type": "object",
   "required": ["schema_version", "goal", "goal_id", "target", "success_signals", "meta"],
   "additionalProperties": false,
@@ -22,6 +22,8 @@
     },
     "success_signals": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/signal" } },
     "failure_signals": { "type": "array", "items": { "$ref": "#/$defs/signal" } },
+    "risks": { "type": "array", "items": { "$ref": "#/$defs/risk" } },
+    "uncertainties": { "type": "array", "items": { "$ref": "#/$defs/uncertainty" } },
     "meta": {
       "type": "object",
       "required": ["created_at", "updated_at"],
@@ -50,12 +52,69 @@
         "status": { "$ref": "#/$defs/status" }
       }
     },
+    "risk": {
+      "type": "object",
+      "required": ["id", "description", "trigger", "provenance", "confidence", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1, "description": "Human-readable hypothesis: what could break and why." },
+        "trigger": { "$ref": "#/$defs/trigger" },
+        "mitigation": { "type": "string", "description": "Optional: how to prevent / detect the failure when found." },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "status": { "$ref": "#/$defs/status" }
+      }
+    },
+    "uncertainty": {
+      "type": "object",
+      "required": ["id", "question", "raised_by", "raised_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "question": { "type": "string", "minLength": 1, "description": "Open question the agent could not resolve (docs/03). Drives future exploration." },
+        "raised_by": { "type": "string", "minLength": 1, "description": "source_id of the author (agent / human / spec ref)." },
+        "raised_at": { "type": "string", "format": "date-time" },
+        "resolved": { "type": "boolean", "default": false },
+        "resolving_signal_value": { "type": "string", "description": "Cross-ref to the signal value that resolved this question." }
+      }
+    },
+    "trigger": {
+      "description": "A risk's trigger: a structured probe a stranger can execute deterministically. Free-text triggers ('under high load', 'race condition') are rejected at write time (ADR-0009 sec 4).",
+      "oneOf": [
+        { "$ref": "#/$defs/http_trigger" },
+        { "$ref": "#/$defs/sequence_trigger" }
+      ]
+    },
+    "http_trigger": {
+      "type": "object",
+      "required": ["kind", "method", "path", "expect"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "http" },
+        "method": { "type": "string", "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"] },
+        "path": { "type": "string", "minLength": 1, "pattern": "^/.*" },
+        "body_or_params": { "type": "object", "additionalProperties": true },
+        "expect": { "type": "string", "minLength": 1, "description": "Observable response predicate. e.g. 'returns 200 and applied=true'." }
+      }
+    },
+    "sequence_trigger": {
+      "type": "object",
+      "required": ["kind", "n", "action", "expect"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "sequence" },
+        "n": { "type": "integer", "minimum": 1 },
+        "action": { "type": "string", "minLength": 1, "description": "Intent-level action, never a UI selector. e.g. 'submit checkout'." },
+        "expect": { "type": "string", "minLength": 1, "description": "Observable post-condition. e.g. 'same order_id returned both times'." }
+      }
+    },
     "provenance": {
       "type": "object",
       "required": ["source_type", "source_id", "last_verified", "observation_count"],
       "additionalProperties": false,
       "properties": {
-        "source_type": { "type": "string", "enum": ["human", "spec", "agent"], "description": "human/spec = seeded oracle, trusted from cold-start. agent = self-observed, needs evidence diversity to be believed (ADR-0005)." },
+        "source_type": { "type": "string", "enum": ["human", "spec", "agent"], "description": "human/spec = seeded oracle, trusted from cold-start. agent = self-observed, needs evidence diversity AND source-independence to be believed (ADR-0005, ADR-0008)." },
         "source_id": { "type": "string", "description": "Agent id, person, or spec reference (e.g. an acceptance-criteria id)." },
         "observed_app_version": { "type": "string" },
         "last_verified": { "type": "string", "format": "date-time" },

@@ -36,6 +36,28 @@ failure_signals:
     status: contested
     provenance: { source_type: agent, source_id: explorer-1, observed_app_version: "2026.5.1", last_verified: "2026-05-20T09:00:00Z", observation_count: 3 }
 
+# Phase-1 risks (ADR-0009): structured triggers only, no free text.
+risks:
+  - id: lockout-after-3-failed
+    description: After 3 failed logins within 60s the account locks; a regression silently
+      removes the lockout and allows brute force.
+    trigger:
+      kind: sequence
+      n: 4
+      action: submit login with wrong password for the same user
+      expect: the 4th attempt is rejected with a lockout indication, not authenticated
+    mitigation: lockout response distinct from invalid-credentials response
+    confidence: 0.9
+    status: believed
+    provenance: { source_type: spec, source_id: AC-LOGIN-005, last_verified: "2026-05-19T00:00:00Z", observation_count: 1 }
+
+uncertainties:
+  - id: u-session-tab-scope
+    question: Is the session cookie scoped per tab or per browser? (matters for two-tab logout regressions)
+    raised_by: explorer-1
+    raised_at: "2026-06-01T10:05:00Z"
+    resolved: false
+
 meta:
   created_at: "2026-05-20T09:00:00Z"
   updated_at: "2026-06-01T10:05:00Z"
