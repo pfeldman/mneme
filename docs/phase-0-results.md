@@ -99,6 +99,14 @@ noise, two agreeing cost proxies). The cost/robustness axes of the thesis hold.
   to new claims. Still a single writer / one model / controlled app — Phase 1 widens
   flows/apps, Phase 2 adds concurrent writers, and the human-intervention rate must
   be re-measured on a real app over real releases.
+  - **Live confirmation (2026-06-07):** treating each cosmetic UI mutation as a new
+    app "version", a live run (browser + LLM) got **0/5 human interventions**, **0
+    drift**, model still believed **5/5** — the agent regenerated steps from the
+    existing knowledge and the semantic oracle survived every cosmetic change with no
+    re-seed, no patch, no new prompt. This confirms LIVE the part that most directly
+    refutes MBT (the common case — cosmetic/structural change — is maintenance-free).
+    It did NOT exercise a deep SEMANTIC change live (the v4/MFA case that needed a
+    human offline); that, plus multi-writer and a real app, remain for Phase 1.
 
 The cost and robustness bets are empirically supported with margin. The remaining
 risk is concentrated where docs/06 always said it would be — the oracle. ADR-0007
