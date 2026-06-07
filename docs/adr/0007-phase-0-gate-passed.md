@@ -36,3 +36,19 @@ Phase-1 entry work):
   inflate a single small run into a settled fact.
 - If the rigorous re-run (items 1–3) erases the margin or raises false_pass, this
   ADR is superseded and the project returns to the kill/continue decision.
+
+## Update — 2026-06-07 (rigorous re-run)
+A multi-rep live run (M1 n=15/arm, M2 n=18/arm, 68 runs total; docs/phase-0-results.md)
+settles item 1: M1 cost edge is memory 4.667 ± 0.471 vs cold 8.333 ± 0.943 actions —
+a 3.67-action margin against a 0.94 max stdev (~3.9σ), corroborated by wall time
+(31.2 s vs 51.3 s). M2 recovery 18/18 vs 3/18. Guardrail false_pass 0 at n=68.
+
+- ✅ Item 1 (reps + variance): DONE. Cost/robustness axes are statistically settled.
+- ⏳ Item 2 (tokens/$ on an API-key run): still open — actions and wall time are
+  proxies.
+- ⏳ Item 3 (adversarial oracle stress): still open and now the dominant residual
+  risk. Clean-run false_pass of 0 is necessary but not sufficient; it stays on the
+  Phase-1 critical path.
+
+Decision unchanged: proceed to Phase 1, with item 3 as a gating concern before
+shared memory is trusted across writers.

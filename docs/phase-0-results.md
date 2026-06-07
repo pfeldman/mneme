@@ -38,19 +38,50 @@ false_pass = **0.0**, false_fail = **0.0** → **PASS**
 ### Verdict
 **CONTINUE** — clears all three gates (cost, robustness, oracle false-pass).
 
-### Caveats (do not over-read this)
-- **Single run, small n** (3 flows for M1, 6 flow×mutation pairs for M2, 20 for the
-  guardrail). LLM runs are non-deterministic; the rigorous version runs each arm
-  ≥5× and reports mean ± stdev. A cost edge inside one stdev of noise is not an edge.
-- **Cost = actions, a proxy.** The existential risk in docs/06 is framed in tokens/$
-  and time. Actions correlate but are not identical; wall time should be reported too.
-- **Recorded-script brittleness depends on selector strategy.** A label-based
-  recording would also break on `swap`; a name-based one survives it. The 0.17 is an
-  honest artifact of one recording style, not a fixed property.
-- **The guardrail was easy** (20 clean runs). Silent poisoning — the failure mode
-  that makes shared memory worse than nothing — needs adversarial stress (deliberately
-  broken app, contradictory/poisoned observations, stale versions), not clean runs.
+## Rigorous live run — 2026-06-07 (n=15/arm)
+Same runtime, now with statistics: **M1 n=15/arm** (5 reps × 3 flows), **M2 n=18/arm**
+(3 reps × 6 flow×mutation pairs), 2 guardrail negatives, **68 runs total**. Cost in
+browser actions; wall time recorded as an independent second proxy.
 
-This is a strong, encouraging signal that the thesis is **not refuted and has a
-measurable margin** — enough to proceed to Phase 1 hardening, not enough to declare
-victory. ADR-0007 records the decision.
+**Measurement 1 — existential gate**
+| arm | success | cost (actions) | wall (s) |
+|-----|---------|----------------|----------|
+| memory | 15/15 = 100% | **4.667 ± 0.471** (min 4, max 5) | **31.24 ± 4.76** |
+| cold   | 15/15 = 100% | **8.333 ± 0.943** (min 7, max 9) | **51.30 ± 6.73** |
+
+cost ratio 0.56. **Margin = 3.67 actions vs max stdev 0.94 → ~3.9σ separation: the
+edge is real, not noise.** Wall time corroborates independently (~39% faster). → **PASS**
+
+**Measurement 2 — robustness**
+| arm | recovery | cost / wall |
+|-----|----------|-------------|
+| memory | **18/18 = 1.00** | 5.0 ± 0.58 actions, 38.3 ± 10.6 s |
+| recorded script | **3/18 = 0.17** | 2.93 ± 0.85 s (no LLM) |
+
+Recorded survives only the 3 `swap_email_for_username × login` reps (its
+`[name="identifier"]` selector outlives the Email→Username label change). → **PASS**
+
+**Guardrail — oracle correctness (n=68):** false_pass **0.0**, false_fail **0.0** → **PASS**
+
+### Verdict (rigorous)
+**CONTINUE.** M1 and M2 are now statistically settled (multi-rep, edge well outside
+noise, two agreeing cost proxies). The cost/robustness axes of the thesis hold.
+
+### Caveats (what is settled vs still open)
+- ✅ **Reps + variance (was the main caveat): done.** M1 edge is ~3.9σ; wall time
+  agrees. Not a fluke.
+- ⏳ **Cost in tokens/$ : still a proxy.** Actions and wall time both favor memory,
+  but the docs/06 existential risk is framed in tokens/$. One API-key run should
+  confirm the margin survives in money, not just actions/time.
+- ⏳ **Oracle adversarial stress: still open.** 68 clean runs (mostly happy-path +
+  2 negatives) keep false_pass at 0, but silent poisoning — the failure mode that
+  makes shared memory worse than nothing — needs deliberate stress: broken-app
+  variants, contradictory/poisoned observations, stale versions. This is the one
+  that can still kill the product.
+- ⏳ **Breadth:** one model (Claude Code), one local controlled app, one writer.
+  Phase 1 widens flows/apps; Phase 2 adds concurrent writers.
+
+The cost and robustness bets are empirically supported with margin. The remaining
+risk is concentrated where docs/06 always said it would be — the oracle. ADR-0007
+records the decision to proceed to Phase 1 while that stress test stays on the
+critical path.
