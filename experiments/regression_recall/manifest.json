@@ -1,0 +1,88 @@
+{
+  "$schema_note": "Pre-registered ground-truth manifest for the Phase-1 regression-recall experiment. Sealed BEFORE any arm runs (docs/phase-1-experiment.md). The harness compares each arm's observations against `expected_observation` (Jaccard >= 0.6 with substring tolerance) to compute recall. Editing this file post-run invalidates the run.",
+  "schema_version": "1",
+  "release": "phase-1-r1",
+  "testapp_baseline_sha": "<TBD-pinned-at-run>",
+  "regressions": [
+    {
+      "slug": "t1_login_500",
+      "category": "tourist",
+      "description": "POST /session always returns 500",
+      "goal_id": "login",
+      "plant_endpoint": "/_plant?set=t1_login_500",
+      "expected_observation": "POST /session returns 500 (server error on login)",
+      "expected_kind": "failure",
+      "expected_signal_type": "network"
+    },
+    {
+      "slug": "t2_search_blank",
+      "category": "tourist",
+      "description": "/search returns a blank results page",
+      "goal_id": "search",
+      "plant_endpoint": "/_break?set=search",
+      "expected_observation": "search results list is empty (no items rendered)",
+      "expected_kind": "failure",
+      "expected_signal_type": "behavioral"
+    },
+    {
+      "slug": "k1_save10_at_49",
+      "category": "knowledge_visible",
+      "description": "SAVE10 coupon accepted with subtotal < 50 (predicate violated)",
+      "goal_id": "checkout",
+      "plant_endpoint": "/_plant?set=k1_save10_at_49",
+      "expected_observation": "POST /cart/apply with coupon SAVE10 and subtotal 49 returns 200 applied=true",
+      "expected_kind": "failure",
+      "expected_signal_type": "network"
+    },
+    {
+      "slug": "k2_stack_codes",
+      "category": "knowledge_visible",
+      "description": "Two coupons stack in the same cart (only one should apply)",
+      "goal_id": "checkout",
+      "plant_endpoint": "/_plant?set=k2_stack_codes",
+      "expected_observation": "POST /cart/apply accepts a second coupon while the first is still active",
+      "expected_kind": "failure",
+      "expected_signal_type": "network"
+    },
+    {
+      "slug": "k3_double_order",
+      "category": "knowledge_visible",
+      "description": "POST /orders with the same Idempotency-Key creates two distinct order_ids",
+      "goal_id": "checkout",
+      "plant_endpoint": "/_plant?set=k3_double_order",
+      "expected_observation": "POST /orders with the same Idempotency-Key returns two distinct order_ids",
+      "expected_kind": "failure",
+      "expected_signal_type": "network"
+    },
+    {
+      "slug": "k4_admin_settings",
+      "category": "knowledge_visible",
+      "description": "Non-admin user reaches /settings/admin without auth check",
+      "goal_id": "login",
+      "plant_endpoint": "/_plant?set=k4_admin_settings",
+      "expected_observation": "GET /settings/admin returns 200 admin content for a non-admin session",
+      "expected_kind": "failure",
+      "expected_signal_type": "network"
+    },
+    {
+      "slug": "k5_filter_lost",
+      "category": "knowledge_visible",
+      "description": "List filter dropped on pages >= 2",
+      "goal_id": "search",
+      "plant_endpoint": "/_plant?set=k5_filter_lost",
+      "expected_observation": "GET /list page=2 with filter applied returns items without the filter",
+      "expected_kind": "failure",
+      "expected_signal_type": "behavioral"
+    },
+    {
+      "slug": "s1_oracle_lies",
+      "category": "stale_trap",
+      "description": "POST /session returns 200 + cookie but the session is invalid; an R-mode arm trusting believed signals blindly passes this regression",
+      "goal_id": "login",
+      "plant_endpoint": "/_plant?set=s1_oracle_lies",
+      "expected_observation": "session cookie set on login but follow-up authenticated request fails",
+      "expected_kind": "failure",
+      "expected_signal_type": "network"
+    }
+  ]
+}
