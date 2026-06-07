@@ -44,8 +44,18 @@ def test_repeated_same_type_is_aggregated_not_duplicated() -> None:
 
 
 def test_diversity_promotes_to_believed() -> None:
-    kf = proj([ev("logout", "behavioral"), ev("POST /session 2xx", "network")])
+    # Two types from two DISTINCT sources → type-diverse AND source-independent.
+    kf = proj([ev("logout", "behavioral", src_id="a1"),
+               ev("POST /session 2xx", "network", src_id="a2")])
     assert {s.status.value for s in kf.success_signals} == {"believed"}
+
+
+def test_two_types_from_one_source_are_not_believed() -> None:
+    # Source-independence (ADR-0008): a single source cannot self-corroborate across
+    # types — both stay contested, never believed.
+    kf = proj([ev("logout", "behavioral", src_id="a1"),
+               ev("POST /session 2xx", "network", src_id="a1")])
+    assert {s.status.value for s in kf.success_signals} == {"contested"}
 
 
 def test_contradiction_is_preserved_as_contested_not_resolved() -> None:

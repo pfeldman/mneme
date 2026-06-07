@@ -87,22 +87,40 @@ def has_contradiction(presence: list[bool]) -> bool:
     return any(presence) and not all(presence)
 
 
+def _stable(s: SignalSummary) -> bool:
+    """Consistently present and not oscillating — eligible to count as evidence."""
+    return s.mostly_present and not is_flip_flop(s.presence)
+
+
 def agreeing_types(success: list[SignalSummary]) -> set[SignalType]:
     """Distinct success `type`s that are consistently present and stable (not
-    flip-flopping). These are the independent evidence the diversity rule counts."""
-    types: set[SignalType] = set()
-    for s in success:
-        if s.mostly_present and not is_flip_flop(s.presence):
-            types.add(s.type)
-    return types
+    flip-flopping). These are the candidate evidence the diversity rule counts."""
+    return {s.type for s in success if _stable(s)}
+
+
+def independent_diverse(success: list[SignalSummary]) -> bool:
+    """Evidence-type diversity AND source-independence (ADR-0008). The stable
+    success signals must span >=2 DIFFERENT types AND >=2 DISTINCT sources. This
+    closes the poisoning vector where a SINGLE source fabricates two evidence types
+    and self-corroborates: type-diversity alone is not independence. A seed counts as
+    one independent source."""
+    stable = [s for s in success if _stable(s)]
+    types = {s.type for s in stable}
+    if len(types) < 2:
+        return False
+    sources: set[str] = set()
+    for s in stable:
+        sources |= s.source_ids
+    return len(sources) >= 2
 
 
 def oracle_believed(success: list[SignalSummary]) -> bool:
-    """The diversity-or-seed gate (ADR-0005). The goal's success oracle is
-    trustworthy iff a seeded success signal exists OR >=2 DIFFERENT success types
-    agree. Counting agents/observations of the same type never satisfies this."""
-    seeded = any(s.is_seeded and s.mostly_present and not is_flip_flop(s.presence) for s in success)
-    return seeded or len(agreeing_types(success)) >= 2
+    """The diversity-or-seed gate (ADR-0005 + ADR-0008). The goal's success oracle is
+    trustworthy iff a seeded success signal exists OR >=2 different success types from
+    >=2 distinct sources agree. Same-type repeats and same-source multi-type evidence
+    never satisfy this."""
+    seeded = any(s.is_seeded and _stable(s) for s in success)
+    return seeded or independent_diverse(success)
 
 
 def _is_stale(summary: SignalSummary, now: datetime, current_version: str | None,
@@ -119,15 +137,16 @@ def _is_stale(summary: SignalSummary, now: datetime, current_version: str | None
     return False
 
 
-def classify(summary: SignalSummary, *, oracle_diverse: bool, agreeing: set[SignalType],
+def classify(summary: SignalSummary, *, oracle_independent: bool, agreeing: set[SignalType],
              now: datetime, current_version: str | None = None,
              config: TrustConfig | None = None) -> Status:
     """Assign a Status to one signal. Precedence (most→least severe):
     quarantined > contested(contradiction) > stale > believed > contested(uncorroborated).
 
-    `oracle_diverse` is `oracle_believed(success_signals)` for this goal; `agreeing`
-    is `agreeing_types(success_signals)`. They let a per-signal decision respect the
-    goal-level diversity rule without recomputing it per call.
+    `oracle_independent` is `independent_diverse(success_signals)` for this goal
+    (>=2 types from >=2 sources, ADR-0008); `agreeing` is
+    `agreeing_types(success_signals)`. They let a per-signal decision respect the
+    goal-level rule without recomputing it per call.
     """
     cfg = config or TrustConfig()
 
@@ -142,10 +161,11 @@ def classify(summary: SignalSummary, *, oracle_diverse: bool, agreeing: set[Sign
     if summary.is_seeded and summary.mostly_present:
         return Status.BELIEVED
 
-    # Agent-observed: believed only with evidence diversity for this goal, and only
-    # if THIS signal is one of the agreeing, different-type signals. A lone
-    # consistent type is held as `contested` (not yet trustworthy), never promoted.
-    if summary.mostly_present and oracle_diverse and summary.type in agreeing and len(agreeing) >= 2:
+    # Agent-observed: believed only when the goal's evidence is both type-diverse AND
+    # source-independent (ADR-0008), and THIS signal is one of the agreeing types. A
+    # lone type — or two types from a single source — stays `contested`, never promoted.
+    if (summary.mostly_present and oracle_independent
+            and summary.type in agreeing and len(agreeing) >= 2):
         return Status.BELIEVED
 
     return Status.CONTESTED

@@ -9,10 +9,14 @@ streams and check whether any UNSUPPORTED success signal reaches `believed`
 failure ("false pass").
 
 Two scenario classes:
-  RESIST  — cases ADR-0005 is meant to defeat; a breach here is a real bug.
-  PROBE   — deeper attacks that test the SPIRIT of the rule; a breach here is a
-            documented gap that informs Phase-1 hardening (not necessarily a bug
-            in today's stated rule).
+  RESIST   — must never produce a false belief (incl. single-source self-corroboration,
+             closed by the source-independence rule of ADR-0008).
+  INHERENT — a seed + a single different-type agent signal IS promoted to believed.
+             This is INDISTINGUISHABLE from legitimate cold-start corroboration (the
+             login example), so it is expected, not a bug: the oracle cannot tell an
+             honest single observation from a fabricated one. The mitigation is
+             temporal (contradiction → contested, oscillation → quarantined), not at
+             promotion time. Reported for transparency, never counted as a breach.
 
 Run:  python experiments/ui-mutation/oracle_stress.py
 """
@@ -101,21 +105,24 @@ def s_positive_control() -> int:
     return len(_believed_values(events))
 
 
-# --------------------------------------------------------------------------- PROBE
-
 def s_single_source_two_types() -> int:
-    """THE deep attack: ONE agent fabricates TWO different evidence types. The
-    stated rule counts type-diversity regardless of source, so this is promoted to
-    believed even though a single (possibly hallucinating) source produced both.
-    Type-diversity without SOURCE-independence is a poisoning vector."""
+    """THE deep attack: ONE source fabricates TWO different evidence types and tries
+    to self-corroborate. ADR-0008 source-independence requires the diverse types to
+    span >=2 distinct sources, so a single source can no longer promote itself →
+    must be 0."""
     events = [_ev("a1", "behavioral", POISON), _ev("a1", "network", POISON2)]
     return len(_believed_values(events) & {POISON, POISON2})
 
 
+# --------------------------------------------------------------------------- INHERENT
+
 def s_seed_rides_single_agent() -> int:
-    """A correct seed (behavioral) + a SINGLE agent asserting a different-type poison
-    (network). The seed supplies the 'diversity', so the lone agent's fabricated
-    network signal rides to believed."""
+    """A correct seed (behavioral) + a SINGLE agent asserting a different-type signal
+    (network). This IS promoted to believed — and it is structurally identical to the
+    legitimate cold-start corroboration pattern (seed of one type + an agent of
+    another type, the login example). The oracle cannot distinguish an honest from a
+    fabricated single observation, so this is the inherent trust boundary, not a
+    fixable gap. Mitigated temporally (contradiction/flip-flop), not at promotion."""
     seed = [ObservedSignal(kind="success", type="behavioral",
                            value="real: authenticated home reachable (AC)", present=True,
                            source_type="spec", source_id="AC-1", observed_app_version=CUR,
@@ -127,6 +134,7 @@ def s_seed_rides_single_agent() -> int:
 def run() -> dict:
     resist: list[tuple[str, int]] = [
         ("lone_single_type", s_lone_single_type()),
+        ("single_source_two_types", s_single_source_two_types()),
         ("contradiction", s_contradiction()),
         ("oscillation", s_oscillation()),
         ("stale_demotion", s_stale()),
@@ -135,23 +143,16 @@ def run() -> dict:
         resist.append((f"correlated_same_type x{k}", s_correlated_same_type(k)))
 
     control_believed = s_positive_control()
-    probes: list[tuple[str, int]] = [
-        ("single_source_two_types", s_single_source_two_types()),
-        ("seed_rides_single_agent", s_seed_rides_single_agent()),
-    ]
+    inherent = [("seed_rides_single_agent", s_seed_rides_single_agent())]
 
     resist_breaches = [name for name, fb in resist if fb > 0]
-    probe_breaches = [name for name, fb in probes if fb > 0]
     return {
         "resist": resist,
         "resist_breaches": resist_breaches,
         "positive_control_believed": control_believed,
-        "probes": probes,
-        "probe_breaches": probe_breaches,
-        # Core verdict: ADR-0005's targeted attacks are all resisted AND real
-        # evidence is still accepted. Probe breaches are reported separately as
-        # Phase-1 hardening signals, not core failures.
-        "CORE_PASSED": (not resist_breaches) and control_believed >= 1,
+        "inherent": inherent,
+        # All poisoning attacks resisted AND genuine evidence still accepted.
+        "PASSED": (not resist_breaches) and control_believed >= 1,
     }
 
 
@@ -165,16 +166,13 @@ def main() -> None:
         print(f"    {'OK ' if fb == 0 else 'XX '} {name:28} false_beliefs={fb}")
     print(f"Positive control (must be >=1 believed): {r['positive_control_believed']}")
     print("-" * 72)
-    print("PROBE scenarios (test the SPIRIT of diversity; breaches = Phase-1 gaps):")
-    for name, fb in r["probes"]:
-        print(f"    {'-- ' if fb == 0 else 'GAP'} {name:28} false_beliefs={fb}")
+    print("INHERENT (seed + single different-type agent → believed; = legitimate")
+    print("cold-start corroboration, indistinguishable from honest; mitigated over time):")
+    for name, fb in r["inherent"]:
+        print(f"    .. {name:28} believed={fb}")
     print("-" * 72)
-    print(f"CORE_PASSED (ADR-0005 attacks resisted + real evidence accepted): "
-          f"{r['CORE_PASSED']}")
-    if r["probe_breaches"]:
-        print("KNOWN GAPS (Phase-1 hardening — type-diversity needs source-independence):")
-        for name in r["probe_breaches"]:
-            print(f"    - {name}")
+    print(f"PASSED (all poisoning attacks resisted + real evidence accepted): "
+          f"{r['PASSED']}")
     print("=" * 72)
 
 

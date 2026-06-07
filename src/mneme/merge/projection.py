@@ -30,7 +30,7 @@ from ..oracle import (
     agreeing_types,
     classify,
     confidence_of,
-    oracle_believed,
+    independent_diverse,
 )
 from ..store import ObservationEvent, ObservedSignal
 
@@ -136,7 +136,7 @@ def project(
     success = [s for s in summaries.values() if s.kind == "success"]
     failure = [s for s in summaries.values() if s.kind == "failure"]
 
-    diverse = oracle_believed(success)
+    independent = independent_diverse(success)
     agreeing = agreeing_types(success)
 
     def build(summaries_subset: list[SignalSummary]) -> list[Signal]:
@@ -144,7 +144,7 @@ def project(
         for s in summaries_subset:
             status = classify(
                 s,
-                oracle_diverse=diverse,
+                oracle_independent=independent,
                 agreeing=agreeing,
                 now=at,
                 current_version=current_version,
