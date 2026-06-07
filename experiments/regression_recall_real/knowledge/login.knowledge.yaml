@@ -1,0 +1,106 @@
+# Seeded knowledge for the Conduit `login` goal (Phase 2 real-app port).
+# Authored as a human seed: source_type=human, status=believed from cold-start
+# per ADR-0005. Parallels experiments/regression_recall/knowledge/login.knowledge.yaml
+# in shape; the network signals target the Conduit REST API surface
+# (/api/users/login, /api/user) rather than the testapp.py /session+/me probes.
+#
+# auth_state is the Phase-2 additive projection (ADR-0017): the agent records
+# that a successful login leaves the session authenticated at user scope.
+schema_version: "0"
+goal_id: login
+goal: A returning Conduit user can authenticate and reach an authenticated surface.
+
+target:
+  app: conduit
+  environment: local
+  observed_app_versions: ["phase-2-r1-conduit"]
+
+success_signals:
+  - type: behavioral
+    value: a "Settings" link is visible in the top navigation after a successful login
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: POST /api/users/login returns 200 with a user object that includes a non-empty token field
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: GET /api/user with the just-issued bearer token returns 200 with the user's username
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+failure_signals:
+  - type: network
+    value: POST /api/users/login returns 500 (server error on login)
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: GET /api/user with the just-issued bearer token returns 401 unauthorized even though POST /api/users/login returned 200 with the token
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+risks:
+  - id: stale-bearer-token
+    description: POST /api/users/login may return 200 with a token that the
+      server has not actually registered as a valid session. Authenticated
+      follow-ups will fail. Detecting this requires probing GET /api/user
+      after login as an independent authenticated check; the believed
+      success_signals on /api/users/login alone cannot detect it.
+    trigger:
+      kind: http
+      method: GET
+      path: /api/user
+      expect: returns 200 with a user object whose username matches the just-logged-in
+        account (a 401 here despite a 200 on /api/users/login indicates a stale token)
+    mitigation: include GET /api/user in the post-login verification step of every
+      regression run on Conduit.
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+uncertainties:
+  - id: u-login-rate-limit
+    question: Does the Conduit reference backend rate-limit POST /api/users/login
+      after N failed attempts, or accept unlimited retries? The reference docs
+      do not specify.
+    raised_by: pablo-seed
+    raised_at: "2026-06-07T00:00:00Z"
+    resolved: false
+
+auth_state:
+  authenticated: true
+  scope: user
+
+meta:
+  created_at: "2026-06-07T00:00:00Z"
+  updated_at: "2026-06-07T00:00:00Z"
+  contributing_agents: []

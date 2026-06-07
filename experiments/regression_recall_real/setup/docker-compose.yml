@@ -1,0 +1,51 @@
+# Conduit (RealWorld reference Medium-clone) bring-up for the Phase 2
+# real-app regression-recall experiment. See ADR-0016 for the SUT pick and
+# the C1 (under-30-minute) bring-up ceiling.
+#
+# Layout:
+#   * backend    Node/Express RealWorld reference API at http://localhost:3000.
+#   * frontend   React RealWorld reference UI at http://localhost:4100.
+#
+# Both images come from the RealWorld GitHub org's reference implementations
+# (MIT-licensed; ADR-0016 sec 1 C4). The `image:` lines pin a tag rather than
+# `latest` so re-runs are reproducible; if the upstream tag rotates, update
+# this file plus `bring_up.sh` together so the SHAs the harness records stay
+# meaningful.
+#
+# Health: the backend exposes /api/tags (returns 200 with a tag list) which
+# the bring-up script polls; the frontend exposes / (HTML 200 once the bundle
+# is served). The 30-minute ceiling includes image pull on a cold cache.
+version: "3.9"
+
+services:
+  conduit-backend:
+    image: gothinkster/realworld-node-express:latest
+    container_name: praxis_conduit_backend
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      JWT_SECRET: praxis-experiment-not-a-real-secret
+      # Conduit's reference backend defaults to in-memory or sqlite; either
+      # is fine for the Phase 2 experiment because we re-seed fixtures via
+      # the API. No persistent volume needed.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/tags >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  conduit-frontend:
+    image: gothinkster/realworld-react-redux:latest
+    container_name: praxis_conduit_frontend
+    ports:
+      - "4100:80"
+    environment:
+      REACT_APP_BACKEND_URL: http://localhost:3000/api
+    depends_on:
+      - conduit-backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30

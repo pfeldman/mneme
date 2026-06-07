@@ -1,0 +1,97 @@
+# Seeded knowledge for the Conduit `favorite_article` goal.
+#
+# Parallels Phase-1 `checkout` idempotency: a mutating flow whose
+# post-condition is exposure-sensitive (double-applying favorite would
+# inflate favoritesCount). The s1-style auth requirement is captured via
+# auth_state and a follow-up GET /api/user check.
+schema_version: "0"
+goal_id: favorite_article
+goal: An authenticated Conduit user can toggle the favorite flag on another
+  user's article without double-counting or losing the toggle.
+
+target:
+  app: conduit
+  environment: local
+  observed_app_versions: ["phase-2-r1-conduit"]
+
+success_signals:
+  - type: behavioral
+    value: the favorite button on the article detail page flips visual state
+      (filled vs outlined heart) after a click
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: POST /api/articles/{slug}/favorite returns 200 with the article object
+      and favorited=true and favoritesCount incremented by exactly 1
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: DELETE /api/articles/{slug}/favorite returns 200 with favorited=false
+      and favoritesCount decremented by exactly 1
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+failure_signals:
+  - type: network
+    value: POST /api/articles/{slug}/favorite called twice returns favoritesCount=2
+      for the same user (idempotency violated)
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+risks:
+  - id: double-favorite-inflates-count
+    description: POST /api/articles/{slug}/favorite called twice in a row by
+      the same authenticated user may increment favoritesCount twice, even
+      though the second call should be a no-op (already favorited).
+    trigger:
+      kind: sequence
+      n: 2
+      action: POST /api/articles/{slug}/favorite as the same authenticated user
+      expect: favoritesCount in the response of the second call equals the
+        favoritesCount returned by the first call (no double increment)
+    mitigation: assert the favoritesCount on the second call equals the first.
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+uncertainties:
+  - id: u-favorite-anonymous
+    question: What does POST /api/articles/{slug}/favorite return for an
+      unauthenticated client (401 unauthorized, or 403 forbidden, or silent
+      no-op)? The reference docs are not explicit.
+    raised_by: pablo-seed
+    raised_at: "2026-06-07T00:00:00Z"
+    resolved: false
+
+auth_state:
+  authenticated: true
+  scope: user
+
+meta:
+  created_at: "2026-06-07T00:00:00Z"
+  updated_at: "2026-06-07T00:00:00Z"
+  contributing_agents: []
