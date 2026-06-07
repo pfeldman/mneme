@@ -99,3 +99,167 @@ def test_build_agent_without_extra_raises_clear_error(tmp_path) -> None:
             adapter.build_agent("authenticate-user")
     finally:
         builtins.__import__ = real_import
+
+
+# --- ADR-0017: adapter-boundary redaction for auth_state observations --------
+
+
+def test_redact_strips_bearer_tokens() -> None:
+    out = redact("Authorization: Bearer eyJabc.def123.signaturePart")
+    # Token must be gone; placeholder remains (either <jwt> or <token>).
+    assert "eyJabc" not in out
+    assert "signaturePart" not in out
+
+
+def test_redact_strips_cookie_header_values() -> None:
+    out = redact("Set-Cookie: session=abcdef0123456789; Path=/")
+    assert "abcdef0123456789" not in out
+    assert "cookie" in out.lower()
+
+
+def test_redact_strips_session_id_assignments() -> None:
+    out = redact("session_id=deadbeef1234567890abcdef")
+    assert "deadbeef" not in out
+    assert "session_id" in out.lower()
+
+
+def test_redact_strips_user_id_assignments() -> None:
+    out = redact("user_id=42-user-uuid-blah")
+    assert "user-uuid-blah" not in out
+    assert "user_id" in out.lower()
+
+
+def test_redact_keeps_invariant_descriptions_intact() -> None:
+    """ADR-0017 sec 3: redaction is the safety net; the discipline is to write
+    invariant descriptions, not values. A clean invariant description must
+    survive `redact()` substantially unchanged."""
+    invariant = "a session cookie is set after a successful POST to /api/users/login"
+    out = redact(invariant)
+    # We allow small substitutions but the gist must survive.
+    assert "session cookie" in out.lower()
+    assert "/api/users/login" in out
+
+
+def test_assert_auth_state_observation_safe_rejects_bearer() -> None:
+    """An adapter that tries to persist an auth_state observation carrying a
+    bearer credential is loud-rejected at the boundary (ADR-0017 sec 2)."""
+    from praxis.adapters import AuthStateLeakError, assert_auth_state_observation_safe
+    import pytest
+
+    obs = ObservedSignal(
+        kind="success", type="network",
+        value="Authorization: Bearer abcdef.ghijkl.mnopqr",
+        present=True, source_type="agent", source_id="conduit-1",
+    )
+    with pytest.raises(AuthStateLeakError):
+        assert_auth_state_observation_safe(obs)
+
+
+def test_assert_auth_state_observation_safe_rejects_cookie_and_session_id() -> None:
+    from praxis.adapters import AuthStateLeakError, assert_auth_state_observation_safe
+    import pytest
+
+    for bad in (
+        "Set-Cookie: token=abc123",
+        "Cookie: session=xyz",
+        "session_id=deadbeef",
+        "sid=abc",
+    ):
+        obs = ObservedSignal(
+            kind="success", type="network",
+            value=bad, present=True,
+            source_type="agent", source_id="conduit-1",
+        )
+        with pytest.raises(AuthStateLeakError):
+            assert_auth_state_observation_safe(obs)
+
+
+def test_assert_auth_state_observation_safe_rejects_user_id_and_email() -> None:
+    """user_id / account_id / JWT field names must trigger the boundary check.
+    Email-as-PII is caught by `redact()` rather than by this validator (per
+    the split: `redact` handles values, this validator handles forbidden FIELD
+    NAMES like `user_id` that name credentials by intent)."""
+    from praxis.adapters import AuthStateLeakError, assert_auth_state_observation_safe
+    import pytest
+
+    for bad in (
+        "user_id=42",
+        "account_id=customer-7",
+        "jwt subject is alice",
+        "tenant_id=acme",
+        "org_id=mindcloud",
+        "workspace_id=42",
+    ):
+        obs = ObservedSignal(
+            kind="success", type="network",
+            value=bad, present=True,
+            source_type="agent", source_id="conduit-1",
+        )
+        with pytest.raises(AuthStateLeakError):
+            assert_auth_state_observation_safe(obs)
+
+
+def test_assert_auth_state_observation_safe_accepts_invariant_descriptions() -> None:
+    """Posture descriptions ('session cookie is set', '/api/user returns 200')
+    are exactly what auth_state observations should look like (ADR-0017 sec 3).
+    The validator MUST let them through."""
+    from praxis.adapters import assert_auth_state_observation_safe
+
+    accepted_values = (
+        "a session cookie is set after a successful login",
+        "GET /api/user returns 200 with the just-issued session cookie",
+        "the response body has a user.username field, indicating an authenticated session",
+        "navigating to /editor renders the article editor (logged-in affordance)",
+    )
+    for value in accepted_values:
+        obs = ObservedSignal(
+            kind="success", type="network",
+            value=value, present=True,
+            source_type="agent", source_id="conduit-1",
+        )
+        # Should NOT raise.
+        assert_auth_state_observation_safe(obs)
+
+
+def test_assert_auth_state_observation_safe_inspects_raw_value_pre_redaction() -> None:
+    """The boundary check inspects the raw observation value the adapter saw
+    BEFORE `redact()` rewrote it. If the adapter scrubbed `Bearer xyz` to
+    `<token>` but the writer still intended to persist a credential, the
+    validator catches it through `raw_value`."""
+    from praxis.adapters import AuthStateLeakError, assert_auth_state_observation_safe
+    import pytest
+
+    redacted = ObservedSignal(
+        kind="success", type="network",
+        value="Authorization: <token>",  # scrubbed by redact()
+        present=True, source_type="agent", source_id="conduit-1",
+    )
+    raw = "Authorization: Bearer eyJabc.def.ghi"
+    with pytest.raises(AuthStateLeakError):
+        assert_auth_state_observation_safe(redacted, raw_value=raw)
+
+
+def test_redaction_pipeline_strips_token_before_event_lands_in_store(tmp_path) -> None:
+    """End-to-end: an adapter writing an observation carrying a raw bearer
+    token never lets that token reach the append-only store. ADR-0017 sec 3:
+    the adapter is the redaction point; the store sees only redacted values."""
+    from praxis.adapters import BrowserUseAdapter
+    from praxis.store import FileEventStore
+
+    store = FileEventStore(tmp_path)
+    adapter = BrowserUseAdapter(
+        store, target=Target(app="conduit"),
+        seeds={"login": _seed()}, current_version="1",
+    )
+    leaky = ObservedSignal(
+        kind="success", type="network",
+        value="GET /api/user returns 200 with Authorization: Bearer eyJabc.def.ghi",
+        present=True, source_type="agent", source_id="conduit-1",
+    )
+    adapter.write_observations("login", "conduit-1", [leaky], observed_app_version="1")
+    stored = store.read("login")[0]
+    persisted_value = stored.signals[0].value
+    assert "eyJabc" not in persisted_value
+    assert "def.ghi" not in persisted_value
+    # The semantic frame survived ("GET /api/user returns 200").
+    assert "/api/user" in persisted_value
