@@ -1,0 +1,105 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 34.21344520896673,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 10,
+    "arm": "memory",
+    "elapsed_seconds": 34.21340179105755,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "The /orders API endpoint (JSON) and the /order form endpoint (HTML) appear to be distinct: idempotency probing used /orders; the browser flow uses /cart/checkout -> POST /order.",
+      "No receipt URL (/orders/{id}/receipt or /orders/{id}) returned a valid page \u2014 both returned 404. The uncertainty [u-receipt-window] cannot be resolved; the receipt URL pattern appears to not be implemented or uses a different path.",
+      "Only one coupon code (SAVE10) was discoverable; SAVE20 returned 404 unknown coupon, so coupon-stacking with two different valid coupons could not be fully tested, but the active-list corruption bug is confirmed independently."
+    ],
+    "observations": [
+      {
+        "value": "REGRESSION (coupon-min-subtotal-bypass): POST /cart/apply with body {coupon: SAVE10, subtotal: 49} returns HTTP 200 with applied=true and discount=10, instead of the expected HTTP 422 with applied=false. The minimum-subtotal predicate (>= 50) is not enforced."
+      },
+      {
+        "value": "REGRESSION (coupon-stack / active list corruption): POST /cart/apply with SAVE10 returns active=[\"SAVE10\",\"SAVE10\",\"SAVE10\",\"SAVE10\",\"SAVE10\",\"SAVE10\"] \u2014 the same coupon is being appended multiple times on each call, and subsequent calls keep growing the list (7 entries after a second call). The active-coupon list is not deduplicated and does not reject a second coupon with 409."
+      },
+      {
+        "value": "REGRESSION (idempotent-orders / double-order): Two sequential POST /orders requests with the identical Idempotency-Key header (test-idem-key-001) and identical body returned distinct order_ids (A1019 then A1020), both with idempotent=false. The server is not caching Idempotency-Key -> order_id, causing duplicate orders on retry."
+      },
+      {
+        "value": "SUCCESS SIGNAL confirmed: POST /order (browser checkout flow via /cart/checkout) returns HTTP 200 with an order confirmation page containing <h1>Order confirmed</h1> and a confirmation paragraph with an order number, satisfying the behavioral oracle signal."
+      }
+    ],
+    "off_path_fraction": 0.7,
+    "tokens_used": 29239,
+    "visited_urls": [
+      "/cart/apply",
+      "/orders",
+      "/orders",
+      "/cart/apply",
+      "/cart/apply",
+      "/orders/A1019",
+      "/cart",
+      "/orders/A1020/receipt",
+      "/cart/checkout",
+      "/order"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 2,
+  "summary": {
+    "actions_used": 10,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "REGRESSION (coupon-min-subtotal-bypass): POST /cart/apply with body {coupon: SAVE10, subtotal: 49} returns HTTP 200 with applied=true and discount=10, instead of the expected HTTP 422 with applied=false. The minimum-subtotal predicate (>= 50) is not enforced.",
+        "seed": 2,
+        "slug": "k1_save10_at_49",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "k1_save10_at_49",
+          "reason": "The observation exactly describes POST /cart/apply with coupon SAVE10 and subtotal 49 returning 200 with applied=true, matching the manifest entry for k1_save10_at_49."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "REGRESSION (coupon-stack / active list corruption): POST /cart/apply with SAVE10 returns active=[\"SAVE10\",\"SAVE10\",\"SAVE10\",\"SAVE10\",\"SAVE10\",\"SAVE10\"] \u2014 the same coupon is being appended multiple times on each call, and subsequent calls keep growing the list (7 entries after a second call). The active-coupon list is not deduplicated and does not reject a second coupon with 409.",
+        "seed": 2,
+        "slug": "k2_stack_codes",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "k2_stack_codes",
+          "reason": "The observation shows POST /cart/apply accepting repeated coupon applications without rejection, directly matching the manifest entry about accepting a second coupon while the first is still active (duplicate/stacking behavior instead of a 409 rejection)."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "REGRESSION (idempotent-orders / double-order): Two sequential POST /orders requests with the identical Idempotency-Key header (test-idem-key-001) and identical body returned distinct order_ids (A1019 then A1020), both with idempotent=false. The server is not caching Idempotency-Key -> order_id, causing duplicate orders on retry.",
+        "seed": 2,
+        "slug": "k3_double_order",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "k3_double_order",
+          "reason": "The observation explicitly describes POST /orders with the same Idempotency-Key returning two distinct order_ids (A1019 and A1020), which matches the manifest entry for k3_double_order exactly."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "SUCCESS SIGNAL confirmed: POST /order (browser checkout flow via /cart/checkout) returns HTTP 200 with an order confirmation page containing <h1>Order confirmed</h1> and a confirmation paragraph with an order number, satisfying the behavioral oracle signal.",
+        "seed": 2,
+        "slug": null,
+        "judge_verdict": {
+          "label": "noise",
+          "slug": null,
+          "reason": "The observation describes a successful checkout flow returning an order confirmation page, which is expected behavior, not a regression; it does not match any manifest entry."
+        }
+      }
+    ],
+    "off_path_fraction": 0.7,
+    "release": "phase-1-r1",
+    "seed": 2,
+    "tokens_used": 29239
+  }
+}

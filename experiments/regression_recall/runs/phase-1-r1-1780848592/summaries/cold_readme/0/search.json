@@ -1,0 +1,49 @@
+{
+  "arm": "cold_readme",
+  "elapsed_seconds": 18.67873249994591,
+  "goal_id": "search",
+  "raw_output": {
+    "actions_used": 6,
+    "arm": "cold_readme",
+    "elapsed_seconds": 18.678711874992587,
+    "goal_id": "search",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "Active planted regression t2_search_blank confirmed via /_state. The search form at /search works correctly (empty query re-shows the form), but any non-empty query always returns 'No results found.' with no <ul class=\"results\"> structure, contradicting the documented behavior."
+    ],
+    "observations": [
+      {
+        "value": "GET /search?q=shirt (and any non-empty query) returns HTTP 200 with a 'Results' page containing only '<p class=\"error\">No results found.</p>' \u2014 there is no '<ul class=\"results\">' element and no '<li>' items rendered. The README states that submitting a query should return a results list rendered as <li> items inside a <ul class=\"results\">. Every non-empty search query (e.g. q=shirt, q=a, q=test) returns this empty error response instead of a populated results list."
+      }
+    ],
+    "off_path_fraction": 0.8333333333333334,
+    "tokens_used": 15662,
+    "visited_urls": [
+      "/search",
+      "/_state",
+      "/search?q=shirt",
+      "/search?q=",
+      "/search?q=a",
+      "/search?q=test"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 6,
+    "arm": "cold_readme",
+    "detections": [
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "GET /search?q=shirt (and any non-empty query) returns HTTP 200 with a 'Results' page containing only '<p class=\"error\">No results found.</p>' \u2014 there is no '<ul class=\"results\">' element and no '<li>' items rendered. The README states that submitting a query should return a results list rendered as <li> items inside a <ul class=\"results\">. Every non-empty search query (e.g. q=shirt, q=a, q=test) returns this empty error response instead of a populated results list.",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.8333333333333334,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 15662
+  }
+}

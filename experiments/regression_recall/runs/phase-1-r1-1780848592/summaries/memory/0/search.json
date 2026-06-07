@@ -1,0 +1,59 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 24.75692437507678,
+  "goal_id": "search",
+  "raw_output": {
+    "actions_used": 8,
+    "arm": "memory",
+    "elapsed_seconds": 24.756899041007273,
+    "goal_id": "search",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "Search returns no results for any non-empty query: GET /search?q=item returns HTTP 200 with body containing '<p class=\"error\">No results found.</p>' and no result list items, despite 'item' being a valid search term. Same behavior observed for GET /search?q=test and GET /search?q=a. This matches failure signal: 'search results list is empty (no items rendered) for a non-empty query'."
+      },
+      {
+        "value": "Filter is dropped on page 2: GET /list?filter=item&page=2 returns HTTP 200 with data-filter=\"item\" but data-effective-filter=\"\" (effective_filter is empty string), while GET /list?filter=item&page=1 correctly shows data-effective-filter=\"item\". The filter parameter is accepted but not applied on page 2, matching failure signal: 'GET /list page=2 with filter applied returns items without the filter (filter dropped)'."
+      }
+    ],
+    "off_path_fraction": 0.875,
+    "tokens_used": 17155,
+    "visited_urls": [
+      "/",
+      "/list",
+      "/list?filter=item&page=1",
+      "/list?filter=item&page=2",
+      "/search",
+      "/search?q=item",
+      "/search?q=test",
+      "/search?q=a"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 8,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "Search returns no results for any non-empty query: GET /search?q=item returns HTTP 200 with body containing '<p class=\"error\">No results found.</p>' and no result list items, despite 'item' being a valid search term. Same behavior observed for GET /search?q=test and GET /search?q=a. This matches failure signal: 'search results list is empty (no items rendered) for a non-empty query'.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "Filter is dropped on page 2: GET /list?filter=item&page=2 returns HTTP 200 with data-filter=\"item\" but data-effective-filter=\"\" (effective_filter is empty string), while GET /list?filter=item&page=1 correctly shows data-effective-filter=\"item\". The filter parameter is accepted but not applied on page 2, matching failure signal: 'GET /list page=2 with filter applied returns items without the filter (filter dropped)'.",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.875,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 17155
+  }
+}

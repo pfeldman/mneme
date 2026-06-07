@@ -1,0 +1,101 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 26.66310720902402,
+  "goal_id": "login",
+  "raw_output": {
+    "actions_used": 10,
+    "arm": "memory",
+    "elapsed_seconds": 26.663085750071332,
+    "goal_id": "login",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "POST /session returns 200 and sets Set-Cookie: session=ok for ANY credentials (including wrong ones like identifier=wrong@example.com&secret=wrongpass), indicating credential validation is completely bypassed \u2014 every login attempt succeeds."
+      },
+      {
+        "value": "GET /me with Cookie: session=ok returns 401 {\"authenticated\": false, \"reason\": \"session cookie missing or invalid\"} even though POST /session just returned 200 with that exact cookie \u2014 the issued session cookie is not recognized as valid by the server. This matches the failure signal: GET /me with the just-issued session cookie returns 401 unauthorized even though POST /session returned 200 with the cookie."
+      },
+      {
+        "value": "GET / with Cookie: session=ok returns 200 but the body contains no 'Sign out' control (body shows the unauthenticated nav with /login link only), confirming the session cookie is not recognized and the user is not actually authenticated on the home page."
+      },
+      {
+        "value": "POST /session accepts any arbitrary identifier/secret combination (e.g. identifier=alice&secret=alice, identifier=alice@example.com&secret=password123, identifier=wrong@example.com&secret=wrongpass) and returns 200 with Set-Cookie: session=ok \u2014 authentication logic appears to be disabled or broken, accepting all credentials."
+      }
+    ],
+    "off_path_fraction": 0.4,
+    "tokens_used": 22715,
+    "visited_urls": [
+      "/",
+      "/me",
+      "/login",
+      "/session",
+      "/session",
+      "/session",
+      "/me",
+      "/",
+      "/session",
+      "/session"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 2,
+  "summary": {
+    "actions_used": 10,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "POST /session returns 200 and sets Set-Cookie: session=ok for ANY credentials (including wrong ones like identifier=wrong@example.com&secret=wrongpass), indicating credential validation is completely bypassed \u2014 every login attempt succeeds.",
+        "seed": 2,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes a credential-validation bypass where POST /session returns 200 for any credentials, which is not listed in the manifest; the closest entry (t1_login_500) expects a 500 error, not a 200 success, so this is an unregistered behavior not matching any planted regression."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "GET /me with Cookie: session=ok returns 401 {\"authenticated\": false, \"reason\": \"session cookie missing or invalid\"} even though POST /session just returned 200 with that exact cookie \u2014 the issued session cookie is not recognized as valid by the server. This matches the failure signal: GET /me with the just-issued session cookie returns 401 unauthorized even though POST /session returned 200 with the cookie.",
+        "seed": 2,
+        "slug": "s1_oracle_lies",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "s1_oracle_lies",
+          "reason": "The observation explicitly describes GET /me returning 401 with an invalid session cookie despite POST /session returning 200 with that cookie, which directly matches the expected_observation for s1_oracle_lies."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "GET / with Cookie: session=ok returns 200 but the body contains no 'Sign out' control (body shows the unauthenticated nav with /login link only), confirming the session cookie is not recognized and the user is not actually authenticated on the home page.",
+        "seed": 2,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes the home page (GET /) not recognizing a cookie named 'session=ok', which is not a planted regression in the manifest; none of the manifest entries cover home-page session recognition, and a cookie with a literal value of 'ok' is not a valid session token per normal app behavior."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "POST /session accepts any arbitrary identifier/secret combination (e.g. identifier=alice&secret=alice, identifier=alice@example.com&secret=password123, identifier=wrong@example.com&secret=wrongpass) and returns 200 with Set-Cookie: session=ok \u2014 authentication logic appears to be disabled or broken, accepting all credentials.",
+        "seed": 2,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes a login endpoint that accepts arbitrary credentials, which is not listed in the manifest and is a distinct behavior from the planted t1_login_500 regression (which expects a 500 error, not a 200 with a cookie)."
+        }
+      }
+    ],
+    "off_path_fraction": 0.4,
+    "release": "phase-1-r1",
+    "seed": 2,
+    "tokens_used": 22715
+  }
+}

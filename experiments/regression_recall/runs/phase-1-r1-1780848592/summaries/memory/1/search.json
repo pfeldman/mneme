@@ -1,0 +1,61 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 16.002363916952163,
+  "goal_id": "search",
+  "raw_output": {
+    "actions_used": 5,
+    "arm": "memory",
+    "elapsed_seconds": 16.00233537494205,
+    "goal_id": "search",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "R-mode oracle signal 1 FAILED: search returns no results for non-empty query 'item'.",
+      "R-mode oracle signal 2 FAILED: /list?filter=item&page=2 has data-effective-filter='' instead of 'item'.",
+      "E-mode risk 'filter-lost-on-page-change' CONFIRMED: data-effective-filter attribute is empty on page 2 when filter='item' is passed.",
+      "Page 1 with filter works correctly (data-effective-filter='item'), making page-1-only testing miss the regression."
+    ],
+    "observations": [
+      {
+        "value": "Search results list is empty for a non-empty query: GET /search?q=item returns HTTP 200 with body containing '<p class=\"error\">No results found.</p>' and no list items, indicating a regression where search produces no results."
+      },
+      {
+        "value": "Filter is dropped on page 2: GET /list?filter=item&page=2 returns HTTP 200 with data-filter=\"item\" but data-effective-filter=\"\" (empty string), while GET /list?filter=item&page=1 correctly returns data-effective-filter=\"item\". The filter parameter is accepted but not applied when paginating to page 2."
+      }
+    ],
+    "off_path_fraction": 1.0,
+    "tokens_used": 8935,
+    "visited_urls": [
+      "/",
+      "/list",
+      "/search?q=item",
+      "/list?filter=item&page=1",
+      "/list?filter=item&page=2"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 1,
+  "summary": {
+    "actions_used": 5,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "Search results list is empty for a non-empty query: GET /search?q=item returns HTTP 200 with body containing '<p class=\"error\">No results found.</p>' and no list items, indicating a regression where search produces no results.",
+        "seed": 1,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "Filter is dropped on page 2: GET /list?filter=item&page=2 returns HTTP 200 with data-filter=\"item\" but data-effective-filter=\"\" (empty string), while GET /list?filter=item&page=1 correctly returns data-effective-filter=\"item\". The filter parameter is accepted but not applied when paginating to page 2.",
+        "seed": 1,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 1.0,
+    "release": "phase-1-r1",
+    "seed": 1,
+    "tokens_used": 8935
+  }
+}

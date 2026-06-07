@@ -1,0 +1,64 @@
+{
+  "arm": "cold",
+  "elapsed_seconds": 30.66548575006891,
+  "goal_id": "search",
+  "raw_output": {
+    "actions_used": 18,
+    "arm": "cold",
+    "elapsed_seconds": 30.66546004207339,
+    "goal_id": "search",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "GET /search?q=<any term> always returns HTTP 200 with 'No results found.' error message, regardless of the query string or authentication state. For example, GET /search?q=test, GET /search?q=a, GET /search?q=widget, GET /search?q=shirt, GET /search?q=* (with and without Cookie: session=ok) all return the same body: '<p class=\"error\">No results found.</p>'. The search endpoint appears completely broken \u2014 it never returns any results for any input."
+      }
+    ],
+    "off_path_fraction": 0.8888888888888888,
+    "tokens_used": 39249,
+    "visited_urls": [
+      "/",
+      "/search",
+      "/search?q=test",
+      "/search?q=",
+      "/search?q=a",
+      "/search?q=widget",
+      "/login",
+      "/cart",
+      "/session",
+      "/search?q=shirt",
+      "/search?q=shirt",
+      "/search?q=a",
+      "/products",
+      "/items",
+      "/search?q=*",
+      "/search?q=%25",
+      "/search",
+      "/search?q=blue+shirt"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 2,
+  "summary": {
+    "actions_used": 18,
+    "arm": "cold",
+    "detections": [
+      {
+        "arm": "cold",
+        "matched_manifest": true,
+        "observation_text": "GET /search?q=<any term> always returns HTTP 200 with 'No results found.' error message, regardless of the query string or authentication state. For example, GET /search?q=test, GET /search?q=a, GET /search?q=widget, GET /search?q=shirt, GET /search?q=* (with and without Cookie: session=ok) all return the same body: '<p class=\"error\">No results found.</p>'. The search endpoint appears completely broken \u2014 it never returns any results for any input.",
+        "seed": 2,
+        "slug": "t2_search_blank",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "t2_search_blank",
+          "reason": "The observation reports that search results are always empty (no items rendered) across all queries and auth states, directly matching the manifest's 't2_search_blank' entry describing an empty search results list with no items rendered."
+        }
+      }
+    ],
+    "off_path_fraction": 0.8888888888888888,
+    "release": "phase-1-r1",
+    "seed": 2,
+    "tokens_used": 39249
+  }
+}

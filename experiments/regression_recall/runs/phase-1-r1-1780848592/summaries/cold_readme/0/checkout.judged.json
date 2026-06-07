@@ -1,0 +1,80 @@
+{
+  "arm": "cold_readme",
+  "elapsed_seconds": 42.94995629100595,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 19,
+    "arm": "cold_readme",
+    "elapsed_seconds": 42.94993283308577,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "POST /orders with a repeated Idempotency-Key does not honour idempotency: two sequential POSTs to /orders with 'Idempotency-Key: fresh-key-abc' (card=4111111111111111) returned distinct order_ids ('A1005' and 'A1006') and 'idempotent: false' on both responses. The same pattern was observed with 'Idempotency-Key: test-key-123' (A1001 vs A1002) and 'Idempotency-Key: unique-key-xyz' (A1003 vs A1004). The README states the endpoint accepts an Idempotency-Key header, implying the same key should return the same order_id on repeat calls."
+      },
+      {
+        "value": "POST /cart/apply accumulates duplicate coupon entries in the 'active' list: applying coupon 'SAVE10' a second time (subtotal=40) returned {'active': ['SAVE10', 'SAVE10']} instead of deduplicating or rejecting the duplicate, indicating the active coupon list is not deduplicated across repeated applications."
+      }
+    ],
+    "off_path_fraction": 0.7894736842105263,
+    "tokens_used": 71207,
+    "visited_urls": [
+      "/",
+      "/cart",
+      "/cart/checkout",
+      "/login",
+      "/order",
+      "/order",
+      "/orders",
+      "/cart/apply",
+      "/orders",
+      "/orders",
+      "/orders",
+      "/cart/apply",
+      "/orders",
+      "/cart/apply",
+      "/list?page=1&filter=foo",
+      "/orders",
+      "/session",
+      "/orders",
+      "/orders"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 19,
+    "arm": "cold_readme",
+    "detections": [
+      {
+        "arm": "cold_readme",
+        "matched_manifest": true,
+        "observation_text": "POST /orders with a repeated Idempotency-Key does not honour idempotency: two sequential POSTs to /orders with 'Idempotency-Key: fresh-key-abc' (card=4111111111111111) returned distinct order_ids ('A1005' and 'A1006') and 'idempotent: false' on both responses. The same pattern was observed with 'Idempotency-Key: test-key-123' (A1001 vs A1002) and 'Idempotency-Key: unique-key-xyz' (A1003 vs A1004). The README states the endpoint accepts an Idempotency-Key header, implying the same key should return the same order_id on repeat calls.",
+        "seed": 0,
+        "slug": "k3_double_order",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "k3_double_order",
+          "reason": "The observation directly describes POST /orders with the same Idempotency-Key returning two distinct order_ids (e.g., A1005 and A1006), which matches the manifest entry for k3_double_order exactly."
+        }
+      },
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "POST /cart/apply accumulates duplicate coupon entries in the 'active' list: applying coupon 'SAVE10' a second time (subtotal=40) returned {'active': ['SAVE10', 'SAVE10']} instead of deduplicating or rejecting the duplicate, indicating the active coupon list is not deduplicated across repeated applications.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes duplicate coupon accumulation from applying the same coupon twice, which is not listed in the manifest; k2_stack_codes concerns stacking two *different* coupons while one is active, not duplicate entries from re-applying the same coupon."
+        }
+      }
+    ],
+    "off_path_fraction": 0.7894736842105263,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 71207
+  }
+}

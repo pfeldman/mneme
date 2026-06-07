@@ -1,0 +1,63 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 20.545073791989125,
+  "goal_id": "search",
+  "raw_output": {
+    "actions_used": 6,
+    "arm": "memory",
+    "elapsed_seconds": 20.54501341690775,
+    "goal_id": "search",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "GET /list?filter=item&page=1 \u2192 data-effective-filter='item' (correct)",
+      "GET /list?filter=item&page=2 \u2192 data-effective-filter='' (regression: filter dropped)",
+      "GET /search?q=item \u2192 No results found (regression: search broken)",
+      "GET /list (no params) \u2192 returns items 0-4 (baseline ok)",
+      "/search form found at GET /search, uses GET method with param 'q'"
+    ],
+    "observations": [
+      {
+        "value": "R-mode regression (behavioral): GET /search?q=item returns HTTP 200 with '<p class=\"error\">No results found.</p>' and no items rendered \u2014 search results list is empty for a non-empty query 'item'. This matches failure signal #1."
+      },
+      {
+        "value": "R-mode / E-mode regression (behavioral + filter-lost-on-page-change): GET /list?filter=item&page=2 returns HTTP 200 with data-filter=\"item\" but data-effective-filter=\"\" (empty string). The filter is accepted on the URL but dropped when page=2 is applied. Page 1 (GET /list?filter=item&page=1) correctly shows data-effective-filter=\"item\". This matches failure signal #2 and the E-mode trigger predicate: data-effective-filter is '' not 'item' on page 2."
+      }
+    ],
+    "off_path_fraction": 0.8333333333333334,
+    "tokens_used": 12887,
+    "visited_urls": [
+      "/",
+      "/list",
+      "/list?filter=item&page=1",
+      "/list?filter=item&page=2",
+      "/search",
+      "/search?q=item"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 2,
+  "summary": {
+    "actions_used": 6,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "R-mode regression (behavioral): GET /search?q=item returns HTTP 200 with '<p class=\"error\">No results found.</p>' and no items rendered \u2014 search results list is empty for a non-empty query 'item'. This matches failure signal #1.",
+        "seed": 2,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "R-mode / E-mode regression (behavioral + filter-lost-on-page-change): GET /list?filter=item&page=2 returns HTTP 200 with data-filter=\"item\" but data-effective-filter=\"\" (empty string). The filter is accepted on the URL but dropped when page=2 is applied. Page 1 (GET /list?filter=item&page=1) correctly shows data-effective-filter=\"item\". This matches failure signal #2 and the E-mode trigger predicate: data-effective-filter is '' not 'item' on page 2.",
+        "seed": 2,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.8333333333333334,
+    "release": "phase-1-r1",
+    "seed": 2,
+    "tokens_used": 12887
+  }
+}

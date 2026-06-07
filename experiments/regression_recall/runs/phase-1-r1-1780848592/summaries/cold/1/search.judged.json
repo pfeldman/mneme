@@ -1,0 +1,64 @@
+{
+  "arm": "cold",
+  "elapsed_seconds": 35.356953333946876,
+  "goal_id": "search",
+  "raw_output": {
+    "actions_used": 18,
+    "arm": "cold",
+    "elapsed_seconds": 35.35692625003867,
+    "goal_id": "search",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "GET /search?q=<any term> always returns HTTP 200 with title 'Results' but body contains only '<p class=\"error\">No results found.</p>' \u2014 no product results are ever returned regardless of the query string (tested with: 'test', 'a', 'widget', 'phone', 'acme', 'laptop', 'product', 'shirt', '*', both with and without a valid session cookie). A working search feature should return matching items for at least some queries."
+      }
+    ],
+    "off_path_fraction": 0.8888888888888888,
+    "tokens_used": 39314,
+    "visited_urls": [
+      "/",
+      "/search",
+      "/search?q=test",
+      "/search?q=",
+      "/search?q=a",
+      "/search?q=widget",
+      "/login",
+      "/cart",
+      "/session",
+      "/search?q=phone",
+      "/search?q=phone",
+      "/search?q=acme",
+      "/search?q=*",
+      "/search",
+      "/search?q=laptop",
+      "/search?q=product",
+      "/search?q=shirt",
+      "/products"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 1,
+  "summary": {
+    "actions_used": 18,
+    "arm": "cold",
+    "detections": [
+      {
+        "arm": "cold",
+        "matched_manifest": true,
+        "observation_text": "GET /search?q=<any term> always returns HTTP 200 with title 'Results' but body contains only '<p class=\"error\">No results found.</p>' \u2014 no product results are ever returned regardless of the query string (tested with: 'test', 'a', 'widget', 'phone', 'acme', 'laptop', 'product', 'shirt', '*', both with and without a valid session cookie). A working search feature should return matching items for at least some queries.",
+        "seed": 1,
+        "slug": "t2_search_blank",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "t2_search_blank",
+          "reason": "The observation reports that the search results list is empty (no items rendered) for any query, matching the manifest entry's expected observation of an empty search results list."
+        }
+      }
+    ],
+    "off_path_fraction": 0.8888888888888888,
+    "release": "phase-1-r1",
+    "seed": 1,
+    "tokens_used": 39314
+  }
+}

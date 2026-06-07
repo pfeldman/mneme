@@ -1,0 +1,105 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 33.8548587920377,
+  "goal_id": "login",
+  "raw_output": {
+    "actions_used": 11,
+    "arm": "memory",
+    "elapsed_seconds": 33.85482879099436,
+    "goal_id": "login",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "The cookie value 'session=ok' is a hardcoded literal \u2014 likely the server is issuing a placeholder/stub cookie rather than a real session token. Both the credential validation and the session issuance appear broken.",
+      "The first wrong-credential test (identifier=alice@example.com, secret=wrong1) also returned 200 + session=ok, confirming the bypass is not user-specific."
+    ],
+    "observations": [
+      {
+        "value": "REGRESSION (stale-session-cookie / failure signal 2): GET /me with Cookie: session=ok (just issued by POST /session returning 200) returns 401 {\"authenticated\": false, \"reason\": \"session cookie missing or invalid\"}. The session cookie set by a successful login is not recognized by the server as valid on follow-up authenticated requests."
+      },
+      {
+        "value": "REGRESSION (behavioral / failure signal 1 for home page): GET / with Cookie: session=ok returns 200 but does NOT include a 'Sign out' control \u2014 the response body shows the unauthenticated nav (login link only), meaning the session cookie is not being honoured server-side at all."
+      },
+      {
+        "value": "NEW RISK (authentication bypass): POST /session with completely invalid credentials (e.g. identifier=notauser@fake.com, secret=totallywrong) returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome / Sign out' page body \u2014 credential validation is not being performed. Any identifier/secret combination logs in successfully."
+      },
+      {
+        "value": "UNCERTAINTY RESOLVED (rate-limit): No rate-limiting observed on /session \u2014 repeated failed credential attempts (which paradoxically succeed due to the bypass above) all return 200. No 429 or lockout response was ever observed."
+      }
+    ],
+    "off_path_fraction": 0.36363636363636365,
+    "tokens_used": 28338,
+    "visited_urls": [
+      "/",
+      "/me",
+      "/login",
+      "/session",
+      "/session",
+      "/session",
+      "/me",
+      "/",
+      "/session",
+      "/session",
+      "/session"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 1,
+  "summary": {
+    "actions_used": 11,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "REGRESSION (stale-session-cookie / failure signal 2): GET /me with Cookie: session=ok (just issued by POST /session returning 200) returns 401 {\"authenticated\": false, \"reason\": \"session cookie missing or invalid\"}. The session cookie set by a successful login is not recognized by the server as valid on follow-up authenticated requests.",
+        "seed": 1,
+        "slug": "s1_oracle_lies",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "s1_oracle_lies",
+          "reason": "The observation explicitly describes GET /me returning 401 unauthorized immediately after POST /session returned 200 with a session cookie, matching the expected observation for s1_oracle_lies exactly."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "REGRESSION (behavioral / failure signal 1 for home page): GET / with Cookie: session=ok returns 200 but does NOT include a 'Sign out' control \u2014 the response body shows the unauthenticated nav (login link only), meaning the session cookie is not being honoured server-side at all.",
+        "seed": 1,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The manifest contains no entry for GET / failing to honour a session cookie, and the public rules do not establish that GET / must render a 'Sign out' control for authenticated sessions, so this observation cannot be matched to any planted regression."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "NEW RISK (authentication bypass): POST /session with completely invalid credentials (e.g. identifier=notauser@fake.com, secret=totallywrong) returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome / Sign out' page body \u2014 credential validation is not being performed. Any identifier/secret combination logs in successfully.",
+        "seed": 1,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The manifest does not contain a regression for credential validation bypass (any credentials accepted), and while this would be a serious bug, it is not listed in the pre-registered manifest entries; the closest entry (t1_login_500) describes a 500 error on login, not a successful login with invalid credentials."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "UNCERTAINTY RESOLVED (rate-limit): No rate-limiting observed on /session \u2014 repeated failed credential attempts (which paradoxically succeed due to the bypass above) all return 200. No 429 or lockout response was ever observed.",
+        "seed": 1,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The absence of rate-limiting on /session is not listed in the manifest and the public rules do not specify rate-limiting as a required behavior, so this is not a documented regression."
+        }
+      }
+    ],
+    "off_path_fraction": 0.36363636363636365,
+    "release": "phase-1-r1",
+    "seed": 1,
+    "tokens_used": 28338
+  }
+}
