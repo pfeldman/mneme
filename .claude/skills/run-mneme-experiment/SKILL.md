@@ -50,8 +50,16 @@ just the average. A cost edge inside one stdev of noise is not an edge.
    it, and for each flow it perturbs run the `memory` arm (regenerate from knowledge)
    and the `recorded_script` baseline (`experiments/ui-mutation/LOCAL_RUN.md` §6 —
    it should break). `_reset` after each. `gate2 = metrics.robustness_gate(...)`.
-4. **Guardrail**: include a few runs where the goal is NOT reached; confirm the
-   oracle never reports success. `metrics.oracle_error_rates(...)`.
+4. **Guardrail — oracle honesty under regression (the product-killer test).** For
+   each flow: `GET /_break?set=<flow>` (the goal becomes UNREACHABLE — success
+   signals never appear), then run the `memory` arm and HONESTLY record what you
+   observed. You must NOT claim success you cannot see: `succeeded=False`,
+   `ground_truth_success=False`, and `oracle_said_success` from
+   `runtimes.oracle_said_success(kf, observed)` — which must be False because the
+   believed success signals were not observed. `GET /_unbreak` after each.
+   `metrics.oracle_error_rates(...)` over these + the normal runs; **false_pass must
+   be 0** — a single false-pass here is the failure mode that makes shared memory
+   worse than nothing.
 5. **Verdict**: `metrics.verdict(gate1, gate2, oracle)`, then
    `metrics.write_markdown(...)` and `metrics.write_report(...)`.
 

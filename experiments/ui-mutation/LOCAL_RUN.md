@@ -104,9 +104,12 @@ saw (behavioral: a "Sign out"/results/confirmation element; network: the 2xx on
 - `GET /_reset` after each mutation.
 - `gate2 = metrics.robustness_gate(mutated_memory, recorded)`.
 
-**Guardrail — oracle correctness:** include a few runs where you DON'T complete the
-flow (simulate the app broken). Confirm the oracle reports failure
-(`oracle_said_success` False) — it must never false-pass. `metrics.oracle_error_rates`.
+**Guardrail — oracle honesty under regression (the product-killer test):** for each
+flow, `GET /_break?set=<flow>` so the goal is UNREACHABLE (success signals never
+appear), run the `memory` arm, and record honestly — `succeeded=False`,
+`ground_truth_success=False`, `oracle_said_success=runtimes.oracle_said_success(kf,
+observed)` (must be False: the believed signals were not observed). `GET /_unbreak`
+after each. `metrics.oracle_error_rates(...)`; **false_pass must be 0**.
 
 **Verdict:** `metrics.verdict(gate1, gate2, oracle)` →
 `metrics.write_markdown(...)`.

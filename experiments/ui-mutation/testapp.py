@@ -12,7 +12,12 @@ Mutation control (the harness or you toggle these between runs):
     GET /_mutate?set=rename_control      # also: move_field, swap_email_for_username,
                                          #       insert_intermediate_step
     GET /_reset                          # back to baseline
-    GET /_state                          # JSON: which mutations are active
+    GET /_state                          # JSON: active mutations + broken flows
+
+Regression control (for the live oracle-honesty check — the goal becomes
+UNREACHABLE; success signals never appear):
+    GET /_break?set=login                # also: search, checkout
+    GET /_unbreak                        # heal all flows
 
 Ground-truth success signals per flow (what an oracle should confirm):
     login    -> a "Sign out" control is present AND POST /session returned 2xx + cookie
@@ -29,6 +34,12 @@ from urllib.parse import parse_qs, urlparse
 # Active mutations (process-global; toggled via /_mutate, /_reset).
 MUTATIONS: set[str] = set()
 VALID = {"rename_control", "move_field", "swap_email_for_username", "insert_intermediate_step"}
+
+# Deliberately-regressed flows (the goal becomes UNREACHABLE; success signals never
+# appear). Toggled via /_break, /_unbreak. Used for the live oracle-honesty check:
+# the agent must report failure and the oracle must NOT false-pass.
+BROKEN: set[str] = set()
+VALID_BREAK = {"login", "search", "checkout"}
 
 _PAGE = """<!doctype html><html><head><title>{title}</title></head>
 <body><h1>{title}</h1>{body}
@@ -101,8 +112,13 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/_reset":
             MUTATIONS.clear()
             self._json({"active": []})
+        elif path == "/_break":
+            self._break(q)
+        elif path == "/_unbreak":
+            BROKEN.clear()
+            self._json({"broken": []})
         elif path == "/_state":
-            self._json({"active": sorted(MUTATIONS)})
+            self._json({"active": sorted(MUTATIONS), "broken": sorted(BROKEN)})
         else:
             self._send(page("Not found", "<p>404</p>"), status=404)
 
@@ -129,7 +145,8 @@ class Handler(BaseHTTPRequestHandler):
         secret = (form.get("secret") or [""])[0]
         # MOVE_FIELD swaps inputs; a positional recorded script types the password
         # into the identifier box and vice-versa, so credentials are wrong → fail.
-        ok = bool(ident) and bool(secret) and "@" not in secret and ident != "secret-typed-as-id"
+        ok = (bool(ident) and bool(secret) and "@" not in secret
+              and ident != "secret-typed-as-id" and "login" not in BROKEN)
         if ok:
             # behavioral (Sign out present) + network (2xx + cookie) success signals.
             self._send(page("Home", '<p>Welcome.</p><a href="/logout">Sign out</a>'),
@@ -147,6 +164,9 @@ class Handler(BaseHTTPRequestHandler):
                             f'<form method="get" action="/search">'
                             f'<label>Search<input name="q" type="text"></label>'
                             f'<button type="submit">{label}</button></form>'))
+        elif "search" in BROKEN:
+            # Regressed: the query returns nothing — no results list ever appears.
+            self._send(page("Results", '<p class="error">No results found.</p>'))
         else:
             self._send(page("Results",
                             f'<ul class="results"><li>Result for {query} #1</li>'
@@ -162,7 +182,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _order(self, form: dict) -> None:
         card = (form.get("card") or [""])[0]
-        if card:
+        if card and "checkout" not in BROKEN:
             self._send(page("Order confirmed",
                             '<p class="confirmation">Order #A1024 confirmed.</p>'))
         else:
@@ -177,6 +197,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         MUTATIONS.add(name)
         self._json({"active": sorted(MUTATIONS)})
+
+    def _break(self, q: dict) -> None:
+        name = (q.get("set") or [""])[0]
+        if name not in VALID_BREAK:
+            self._json({"error": f"unknown flow {name!r}", "valid": sorted(VALID_BREAK)}, 400)
+            return
+        BROKEN.add(name)
+        self._json({"broken": sorted(BROKEN)})
 
 
 def _payment_form() -> str:
@@ -193,7 +221,8 @@ def main() -> None:
     args = ap.parse_args()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Mneme test app on http://{args.host}:{args.port}  (Ctrl-C to stop)")
-    print("  flows: /login /search /cart   control: /_mutate?set=NAME /_reset /_state")
+    print("  flows: /login /search /cart   mutate: /_mutate?set=NAME /_reset")
+    print("  break: /_break?set=login|search|checkout /_unbreak   state: /_state")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
