@@ -1,0 +1,212 @@
+"""Phase-1 testapp endpoint smoke tests.
+
+Drive the new endpoints (coupons / orders / admin / list) directly via the
+stdlib request handler, confirming that each planted regression flips the
+expected behavior. Runs the server in-process on an ephemeral port so the
+tests don't need a separate process. Phase-0 mutations + breaks are exercised
+elsewhere; this file is strictly the new Phase-1 surface.
+"""
+from __future__ import annotations
+
+import json
+import socket
+import sys
+import threading
+import urllib.error
+import urllib.request
+from contextlib import contextmanager
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+
+# Importing the testapp under its experiment path:
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "experiments" / "ui-mutation"))
+
+import testapp  # noqa: E402
+
+
+@contextmanager
+def _server():
+    # Reset all process-global state between tests.
+    testapp.MUTATIONS.clear()
+    testapp.BROKEN.clear()
+    testapp._clear_planted_state()
+    # Bind to port 0 so the OS picks a free one - no flakiness from collisions.
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), testapp.Handler)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def _get(url: str) -> tuple[int, str, dict]:
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req) as resp:  # noqa: S310 - local server
+            return resp.status, resp.read().decode(), dict(resp.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode(), dict(e.headers or {})
+
+
+def _post(url: str, data: dict[str, str], headers: dict[str, str] | None = None
+          ) -> tuple[int, str, dict]:
+    body = "&".join(f"{k}={v}" for k, v in data.items()).encode()
+    req = urllib.request.Request(url, method="POST", data=body,
+                                  headers={"Content-Type": "application/x-www-form-urlencoded",
+                                            **(headers or {})})
+    try:
+        with urllib.request.urlopen(req) as resp:  # noqa: S310
+            return resp.status, resp.read().decode(), dict(resp.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode(), dict(e.headers or {})
+
+
+def _json(body: str) -> dict:
+    return json.loads(body)
+
+
+# --- /_plant + /_planted ---------------------------------------------------
+
+
+def test_plant_and_planted_manifest() -> None:
+    with _server() as base:
+        s, b, _ = _get(f"{base}/_planted")
+        assert s == 200 and _json(b)["planted"] == []
+        s, b, _ = _get(f"{base}/_plant?set=k1_save10_at_49")
+        assert s == 200 and _json(b)["planted"] == ["k1_save10_at_49"]
+        s, b, _ = _get(f"{base}/_planted")
+        assert _json(b)["planted"] == ["k1_save10_at_49"]
+
+
+def test_unknown_plant_rejected() -> None:
+    with _server() as base:
+        s, b, _ = _get(f"{base}/_plant?set=nope")
+        assert s == 400
+
+
+# --- k1_save10_at_49 -------------------------------------------------------
+
+
+def test_coupon_save10_rejected_below_threshold_by_default() -> None:
+    with _server() as base:
+        s, b, _ = _post(f"{base}/cart/apply", {"coupon": "SAVE10", "subtotal": "49"})
+        assert s == 422
+        assert _json(b)["applied"] is False
+
+
+def test_coupon_save10_accepted_below_threshold_when_planted() -> None:
+    with _server() as base:
+        _get(f"{base}/_plant?set=k1_save10_at_49")
+        s, b, _ = _post(f"{base}/cart/apply", {"coupon": "SAVE10", "subtotal": "49"})
+        assert s == 200
+        assert _json(b)["applied"] is True
+
+
+# --- k2_stack_codes --------------------------------------------------------
+
+
+def test_second_coupon_rejected_by_default() -> None:
+    with _server() as base:
+        _post(f"{base}/cart/apply", {"coupon": "SAVE10", "subtotal": "100"})
+        s, b, _ = _post(f"{base}/cart/apply", {"coupon": "BIGSAVE", "subtotal": "100"})
+        assert s == 409
+
+
+def test_second_coupon_accepted_when_stacking_planted() -> None:
+    with _server() as base:
+        _get(f"{base}/_plant?set=k2_stack_codes")
+        _post(f"{base}/cart/apply", {"coupon": "SAVE10", "subtotal": "100"})
+        s, b, _ = _post(f"{base}/cart/apply", {"coupon": "BIGSAVE", "subtotal": "100"})
+        assert s == 200
+        assert _json(b)["applied"] is True
+
+
+# --- k3_double_order -------------------------------------------------------
+
+
+def test_idempotency_key_dedupes_orders_by_default() -> None:
+    with _server() as base:
+        s1, b1, _ = _post(f"{base}/orders", {"card": "4111"},
+                          headers={"Idempotency-Key": "abc"})
+        s2, b2, _ = _post(f"{base}/orders", {"card": "4111"},
+                          headers={"Idempotency-Key": "abc"})
+        assert s1 == 200 and s2 == 200
+        assert _json(b1)["order_id"] == _json(b2)["order_id"]
+        assert _json(b2)["idempotent"] is True
+
+
+def test_idempotency_key_creates_two_orders_when_planted() -> None:
+    with _server() as base:
+        _get(f"{base}/_plant?set=k3_double_order")
+        _, b1, _ = _post(f"{base}/orders", {"card": "4111"},
+                         headers={"Idempotency-Key": "abc"})
+        _, b2, _ = _post(f"{base}/orders", {"card": "4111"},
+                         headers={"Idempotency-Key": "abc"})
+        assert _json(b1)["order_id"] != _json(b2)["order_id"]
+
+
+# --- k4_admin_settings -----------------------------------------------------
+
+
+def test_admin_settings_forbidden_by_default() -> None:
+    with _server() as base:
+        s, _, _ = _get(f"{base}/settings/admin")
+        assert s == 403
+
+
+def test_admin_settings_reachable_when_planted() -> None:
+    with _server() as base:
+        _get(f"{base}/_plant?set=k4_admin_settings")
+        s, b, _ = _get(f"{base}/settings/admin")
+        assert s == 200
+        assert "admin only" in b.lower()
+
+
+# --- k5_filter_lost --------------------------------------------------------
+
+
+def test_filter_persists_across_pages_by_default() -> None:
+    with _server() as base:
+        s, b, _ = _get(f"{base}/list?page=2&filter=item")
+        assert s == 200
+        assert 'data-effective-filter="item"' in b
+
+
+def test_filter_lost_on_page_2_when_planted() -> None:
+    with _server() as base:
+        _get(f"{base}/_plant?set=k5_filter_lost")
+        s, b1, _ = _get(f"{base}/list?page=2&filter=item")
+        assert 'data-effective-filter=""' in b1
+        # Page 1 with the same plant active still keeps the filter:
+        _, b2, _ = _get(f"{base}/list?page=1&filter=item")
+        assert 'data-effective-filter="item"' in b2
+
+
+# --- t1_login_500 ----------------------------------------------------------
+
+
+def test_login_500_when_planted() -> None:
+    with _server() as base:
+        _get(f"{base}/_plant?set=t1_login_500")
+        s, _, _ = _post(f"{base}/session", {"identifier": "x", "secret": "y"})
+        assert s == 500
+
+
+# --- /_unplant resets all -------------------------------------------------
+
+
+def test_unplant_clears_everything() -> None:
+    with _server() as base:
+        _get(f"{base}/_plant?set=k1_save10_at_49")
+        _get(f"{base}/_plant?set=k3_double_order")
+        s, b, _ = _get(f"{base}/_unplant")
+        assert s == 200 and _json(b)["planted"] == []
+        # Coupon predicate is back in force.
+        s, _, _ = _post(f"{base}/cart/apply", {"coupon": "SAVE10", "subtotal": "49"})
+        assert s == 422
