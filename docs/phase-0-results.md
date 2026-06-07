@@ -85,8 +85,20 @@ noise, two agreeing cost proxies). The cost/robustness axes of the thesis hold.
   legitimate cold-start corroboration and mitigated temporally, not a bug. Still
   open: a LIVE honesty check (does the agent report absence honestly against a
   deliberately broken app?) once `testapp` grows a break flag.
-- ⏳ **Breadth:** one model (Claude Code), one local controlled app, one writer.
-  Phase 1 widens flows/apps; Phase 2 adds concurrent writers.
+- ✅ **Maintenance over time (the MBT-revival test): done offline.**
+  `experiments/ui-mutation/evolution.py` evolves the app across 4 versions and has
+  the agent maintain the memory. Classic MBT died because maintaining the model by
+  HAND cost more than the tests; this measures whether the agent does it cheaply.
+  Result: across cosmetic, implementation, and semantic changes the model **never
+  drifts to believed-garbage** (silent_drift=0), stays correct at every version, and
+  a human is needed for **only 1 of 4** changes — the genuine "what success MEANS"
+  change (MFA). Cosmetic + implementation changes self-heal with zero human help
+  (semantic invariants survive them), and on the deep change the oracle REFUSES to
+  believe stale truth rather than drifting — so it asks for a re-seed instead of
+  lying. This also hardened the oracle: a stale signal no longer lends independence
+  to new claims. Still a single writer / one model / controlled app — Phase 1 widens
+  flows/apps, Phase 2 adds concurrent writers, and the human-intervention rate must
+  be re-measured on a real app over real releases.
 
 The cost and robustness bets are empirically supported with margin. The remaining
 risk is concentrated where docs/06 always said it would be — the oracle. ADR-0007

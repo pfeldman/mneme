@@ -123,6 +123,14 @@ def oracle_believed(success: list[SignalSummary]) -> bool:
     return seeded or independent_diverse(success)
 
 
+def is_stale(summary: SignalSummary, *, now: datetime, current_version: str | None = None,
+             config: TrustConfig | None = None) -> bool:
+    """Public staleness check. A stale signal (aged out, or only seen under other app
+    versions) must not lend its type/source to corroborating FRESH claims — otherwise
+    an old seed could prop up brand-new assertions across releases."""
+    return _is_stale(summary, now, current_version, config or TrustConfig())
+
+
 def _is_stale(summary: SignalSummary, now: datetime, current_version: str | None,
               config: TrustConfig) -> bool:
     if summary.last_verified is None:

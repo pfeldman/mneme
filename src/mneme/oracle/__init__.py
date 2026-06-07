@@ -35,6 +35,7 @@ from .trust import (
     has_contradiction,
     independent_diverse,
     is_flip_flop,
+    is_stale,
     oracle_believed,
 )
 
@@ -47,5 +48,6 @@ __all__ = [
     "has_contradiction",
     "independent_diverse",
     "is_flip_flop",
+    "is_stale",
     "oracle_believed",
 ]

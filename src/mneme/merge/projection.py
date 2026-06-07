@@ -31,6 +31,7 @@ from ..oracle import (
     classify,
     confidence_of,
     independent_diverse,
+    is_stale,
 )
 from ..store import ObservationEvent, ObservedSignal
 
@@ -136,8 +137,15 @@ def project(
     success = [s for s in summaries.values() if s.kind == "success"]
     failure = [s for s in summaries.values() if s.kind == "failure"]
 
-    independent = independent_diverse(success)
-    agreeing = agreeing_types(success)
+    # Independence/diversity are judged over FRESH success evidence only: a stale
+    # signal (off-version or aged) must not lend its type/source to corroborate new
+    # claims, or an old seed could prop up brand-new assertions across releases.
+    fresh_success = [
+        s for s in success
+        if not is_stale(s, now=at, current_version=current_version, config=cfg)
+    ]
+    independent = independent_diverse(fresh_success)
+    agreeing = agreeing_types(fresh_success)
 
     def build(summaries_subset: list[SignalSummary]) -> list[Signal]:
         out: list[Signal] = []
