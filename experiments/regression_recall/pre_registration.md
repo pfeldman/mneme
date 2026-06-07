@@ -18,7 +18,7 @@ Pre-registered to defend against:
 | Ground-truth manifest | `manifest.json` | Which regressions are planted; the `expected_observation` per regression that the false-positive judge grades against. |
 | Frozen README | `README_FROZEN.md` | The `cold_readme` arm's context. Authored without manifest access. |
 | Per-goal sentences | `cold_readme_per_goal.md` | The one-sentence-per-goal grounding handed to the `cold_readme` arm. Same authoring constraint as the README. |
-| E-mode prompt template | `emode_prompt.txt` | The exploration-mode prompt the memory arm uses. Version-pinned per run. |
+| E-mode prompt source | `src/praxis/runner/prompts.py` | The exploration-mode prompt the memory arm uses (rendered by `render_exploration_prompt`). The Python module sha is what gets pinned; a separate `.txt` would invite drift between docs and code. |
 | Judge prompt | `judge_prompt.txt` | The false-positive adjudication prompt; its sha is logged with every judgment event. |
 | Kill-criteria thresholds | `metrics.py` (the defaults to `evaluate`) | The exact sigma bounds and minimum gaps that decide continue / kill. |
 
@@ -36,7 +36,7 @@ arm fires:
   "frozen_readme_sha": "...",
   "cold_readme_per_goal_sha": "...",
   "manifest_sha": "...",
-  "emode_prompt_sha": "...",
+  "prompts_py_sha": "...",
   "judge_prompt_sha": "...",
   "metrics_sha": "...",
   "praxis_git_sha": "...",

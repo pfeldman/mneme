@@ -42,24 +42,19 @@ regression-test.
   `/order` with a non-empty card number returns an "Order confirmed" page
   with a confirmation marker.
 - **A user can apply a coupon to their cart.** `POST /cart/apply` with
-  `coupon=<CODE>` and `subtotal=<INT>` applies a discount if the coupon
-  exists, the subtotal meets the coupon's minimum, and no other coupon is
-  already active in the cart. Successful applications return JSON with
-  `applied: true` and the active coupon list. Known coupon codes: `SAVE10`
-  (minimum subtotal 50), `BIGSAVE` (minimum subtotal 100).
-- **A user can place an idempotent order.** `POST /orders` with a form-
-  encoded card number returns JSON containing an `order_id`. When the
-  request carries an `Idempotency-Key` header, repeating the request with
-  the SAME key returns the SAME `order_id` (the response's `idempotent`
-  field flips to `true` on repeats).
-- **Only an admin can reach admin settings.** `GET /settings/admin`
-  returns 403 unless the session presents an `admin` role cookie; with
-  `Cookie: role=admin` it returns the admin settings page.
-- **List pages preserve filters.** `GET /list?page=N&filter=X` returns 5
-  items per page with the filter applied. The filter applies to every
-  page, not only the first; the rendered HTML embeds `data-page`,
-  `data-filter`, and `data-effective-filter` so an agent can confirm what
-  the server actually applied.
+  `coupon=<CODE>` and `subtotal=<INT>` returns JSON describing whether
+  the coupon was accepted, the active coupon list, and any reason the
+  request was rejected.
+- **A user can place an order.** `POST /orders` with a form-encoded card
+  number returns JSON containing an `order_id`. The endpoint accepts an
+  optional `Idempotency-Key` header.
+- **Some pages are reserved.** `GET /settings/admin` is the
+  administrative settings page; standard sessions are not expected to
+  reach it.
+- **List pages take a filter.** `GET /list?page=N&filter=X` returns five
+  items per page, and the rendered HTML embeds `data-page`,
+  `data-filter`, and `data-effective-filter` attributes describing what
+  the server actually applied to the response.
 
 ## What the agent should NOT confuse for a regression
 
@@ -76,31 +71,31 @@ capabilities:
   during normal probing.
 - `/_state` returns the current control-plane state.
 
-## Recommended probing strategy (cold reader's guide)
-
-A reasonable cold approach for a returning user:
-
-1. Walk the three Phase-0 happy paths (login, search, checkout) end to
-   end and confirm each capability above behaves as described.
-2. For the cart endpoints, send a representative coupon, send the same
-   coupon at a low subtotal, send a second coupon while the first is
-   active. Check whether the responses match the rules above.
-3. For orders, send the same `Idempotency-Key` twice and verify the
-   server returns the same `order_id`.
-4. Hit `/settings/admin` without an admin cookie and confirm it 403s.
-5. Apply a filter on `/list?page=1` and follow to `/list?page=2` with the
-   same filter; verify the filter is still applied (look at
-   `data-effective-filter`).
-
-If any of those probes returns something different from the rules above,
-flag it as a regression.
-
 ## Authoring notes
 
 This README intentionally avoids:
-- Naming any specific planted regression. The reviewer doesn't know them.
-- Listing the slugs in `manifest.json` or any reference to it.
-- Hinting at which capability is the stale-trap case (the manifest hides
-  that on purpose; this README does too).
+- Naming any specific planted regression. The reviewer does not know them.
+- Listing slugs in `manifest.json` or any reference to it.
+- Documenting exact predicates / thresholds / postconditions for any
+  endpoint (no "minimum subtotal", no "same key returns same id"). A
+  stranger to this app reads documented capabilities and infers what
+  "broken" means; the README hands the cold arm capabilities, not test
+  cases.
+- A "recommended probing strategy" section. Telling the cold arm WHICH
+  edge cases to probe is the manifest in disguise.
+- Hinting at which capability is the stale-trap case.
 - Praxis-specific framing (`knowledge`, `oracle`, `believed`, `seeded`).
   This is the cold arm's context; Praxis terminology would tip the agent.
+
+## Open authoring caveat (called out for the run record)
+
+The current draft was written by the same Claude session that authored
+the planted-regression manifest, NOT by a separately-isolated reviewer
+under the 72-hour wash-out protocol the pre-registration calls for
+(`pre_registration.md` "Threats to validity"). Before any live arm runs,
+this README and `cold_readme_per_goal.md` must be re-authored or
+endorsed by an independent reviewer (Pablo role-playing the cold-arm
+advocate, with no manifest access in the session). The leakage check
+(< 30% Jaccard between any sentence here and any manifest entry's
+`expected_observation`) is run as part of the pre-flight checklist in
+`LOCAL_RUN.md`.

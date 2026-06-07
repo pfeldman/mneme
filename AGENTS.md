@@ -1,16 +1,26 @@
-# AGENTS.md — build brief for Claude Code
+# AGENTS.md - build brief for Claude Code
 
-You are building **Mneme**, a shared semantic-memory layer for QA agents. This
-file is your contract. Read it fully before writing code, then read
-`docs/01-vision-and-thesis.md`, `docs/02-architecture.md`, `docs/04-mvp-experiment.md`,
+You are building **Praxis** (formerly `mneme`; renamed in ADR-0009), a
+shared **operational-knowledge** layer for QA agents. This file is your
+contract. Read it fully before writing code, then read
+`docs/01-vision-and-thesis.md`, `docs/02-architecture.md`,
+`docs/04-mvp-experiment.md`, `docs/phase-0-results.md`,
+`docs/adr/0009-phase-1-scope-and-praxis-reframe.md`,
+`docs/phase-1-plan.md`, `docs/phase-1-experiment.md`,
 and `schema/knowledge.schema.json`.
 
 ## What you are building (and what you are NOT)
-You ARE building a memory/knowledge layer: agents store and maintain knowledge
-about a system under test, decoupled from the procedure used to reach a goal.
+You ARE building an **operational-knowledge** layer: agents store and
+maintain knowledge about a system under test (success/failure oracles,
+risks, uncertainties), decoupled from the procedure used to reach a goal.
+The Phase 1 reframe (ADR-0009) calls this out explicitly: Phase 0
+measured "knowing what success means saves tokens", not "memory wins".
+The durable claim is that operational knowledge - what counts as
+success, what is risky, what is unknown - is what survives a strong
+cold agent navigating happy paths cheaply.
 
 You are NOT building a test runner, a selector engine, or a recorder. If you
-catch yourself persisting click-by-click steps as the source of truth, STOP —
+catch yourself persisting click-by-click steps as the source of truth, STOP -
 that is the failure mode this project exists to avoid. The procedure is
 disposable; the knowledge is the asset.
 
@@ -31,36 +41,45 @@ disposable; the knowledge is the asset.
    identically). The first oracle for a goal is **seeded, not self-certified**.
    A confidently-wrong oracle is worse than no memory.
 
-## Build order — do not skip ahead
-**Phase 0 — validate the thesis (`experiments/ui-mutation/`). Build this FIRST.**
-Nothing else matters until the experiment clears its gates. Measurement order is
-deliberate: the **existential gate (memory vs a COLD agent on cost/reliability)
-runs FIRST** — if a cold agent already wins, the layer has no reason to exist
-(docs/06). Robustness vs a recorded script is Measurement 2.
+## Build order - do not skip ahead
 
-Minimum to run Phase 0:
-- `model/`: load/dump/validate `*.knowledge.yaml` against the **minimal Phase-0
-  schema** (`schema/knowledge.schema.json`). Do NOT implement the Phase-1
-  reference schema (states/paths/risks/uncertainties).
-- `store/`: a `FileEventStore` (one JSON file per observation event).
-- `merge/`: `project(events) -> KnowledgeFile` computing confidence + status from
-  same-type observation counts + recency. Never last-write-wins.
-- `oracle/`: the diversity-or-seed rule above; quarantine flip-floppers.
-- `adapters/browser_use.py` (`read_knowledge` / `write_observations`).
-- `adapters/playwright.py`: emit a recorded script as the brittle baseline.
-- `experiments/ui-mutation/`: fill `metrics.py`, `harness.py`, `mutate.py`;
-  run the **existential gate first** and short-circuit if it fails.
+**Phase 0 - validated and closed (2026-06-07).** UI-mutation experiment
+under `experiments/ui-mutation/` cleared all three gates with margin
+(see `docs/phase-0-results.md`, ADR-0007). What Phase 0 actually measured
+is "knowing what success means saves tokens" - narrower than the early
+framing claimed (ADR-0009). Do NOT rebuild Phase 0; it is the baseline.
 
-**Phase 1 — OSS memory library.** Harden core; activate the richer schema
-(`knowledge.phase1.schema.json`: states, paths-as-graph, risks, uncertainties);
-add a Stagehand adapter and benchmark Mneme against its action cache; publish docs.
+**Phase 1 - operational-knowledge layer + regression-recall falsifier
+(IN PROGRESS).** ADR-0009 scopes Phase 1 deliberately:
+- Activate ONLY the Phase-1 schema fields the regression-recall
+  experiment consumes: `risks` (with structured triggers) and
+  `uncertainties`. Leave `states` and `paths` deferred. `refuted`
+  status was rejected (violated ADR-0008 source-independence).
+- Ship `src/praxis/runner/` with two modes:
+  - R-mode (`regression.py`): pre-deploy check. Reads believed
+    success/failure signals, computes pass/fail per goal. Auditor
+    scenarios are NOT an input (leak path closed).
+  - E-mode (`exploration.py`): hunts off-happy-path. Reads risks +
+    uncertainties + failure-signal watch-list. Logs
+    `off_path_fraction` so the experiment's hard kill criterion
+    (>= 0.4) can fire if E-mode collapses into R-mode.
+- CLI (`src/praxis/cli/`): `init / learn / regress / explore /
+  review / status`. Stdlib argparse only.
+- `experiments/regression_recall/`: planted-regression manifest +
+  metrics with sigma-bounded kill gates + arm harness + frozen
+  pre-registration artifacts. Subscription-path protocol in
+  `LOCAL_RUN.md`.
+- Stagehand adapter and auditor-as-input are DEFERRED to Phase 1.5.
 
-**Phase 2 — multi-agent.** Concurrent writers, contradiction detection, recency
-decay, and an explicit **exploration incentive** so agents don't all converge on
-the happy path and silently shrink coverage (docs/05, docs/06).
+**Phase 2 - multi-agent.** Concurrent writers, contradiction detection,
+recency decay, an explicit **exploration incentive** so agents don't
+all converge on the happy path and silently shrink coverage (docs/05,
+docs/06). Also: real-app generalization (move off `testapp.py`),
+`refuted` status + auditor-as-input revisited with proper diversity.
 
-**Phase 3 — trust/product layer.** Governance, secret redaction, provenance
-dashboards, poisoning detection, hosted shared memory, retention policy. The moat.
+**Phase 3 - trust/product layer.** Governance, secret redaction,
+provenance dashboards, poisoning detection, hosted shared memory,
+retention policy. The moat.
 
 ## Conventions
 - Python 3.11+, pydantic v2 for the model, `ruff` + `mypy` clean, `pytest`.
@@ -73,11 +92,15 @@ dashboards, poisoning detection, hosted shared memory, retention policy. The moa
 - Ask before adding any dependency beyond pydantic/pyyaml + the Browser Use extra.
 
 ## Definition of done for any change
-- `schema/examples/*.knowledge.yaml` still validate against the Phase-0 schema.
-- New assertion fields propagate provenance + confidence.
-- Tests pass; `ruff` and `mypy` clean.
-- If you touched store/projection, a test proves two agents' concurrent writes
-  do not lose knowledge.
+- `schema/examples/*.knowledge.yaml` still validate against the active
+  schema (`schema/knowledge.schema.json` - Phase-1 since ADR-0009).
+- New assertion fields propagate provenance + confidence (signals and
+  risks) or author + timestamp (uncertainties).
+- Tests pass; `ruff` and `mypy` clean; `bash verify.sh` ends ALL GREEN.
+- If you touched store/projection, a test proves two agents' concurrent
+  writes do not lose knowledge.
+- If you touched the Phase-1 schema, the model<->schema agreement test
+  catches drift.
 
 ## How to think when stuck
 The hardest module is `oracle/`, not `store/`. Storage is easy; deciding what is

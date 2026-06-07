@@ -19,7 +19,7 @@
       "category": "tourist",
       "description": "/search returns a blank results page",
       "goal_id": "search",
-      "plant_endpoint": "/_break?set=search",
+      "plant_endpoint": "/_plant?set=t2_search_blank",
       "expected_observation": "search results list is empty (no items rendered)",
       "expected_kind": "failure",
       "expected_signal_type": "behavioral"

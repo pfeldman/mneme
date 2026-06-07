@@ -198,3 +198,19 @@ arm (adversarial concern 1).
 - The Stagehand benchmark promised in docs/07 is deferred to a separate
   Phase 1.5 experiment with its own pre-registration. Half-commit
   removed.
+
+## Open gap recorded for Phase 1.5
+
+E-mode emits candidate observations / risks / uncertainties as a typed
+result, but the store's event model only carries signal observations.
+Candidate risks + uncertainties survive the run only inside the
+`ExplorationResult` returned to the caller; the next `praxis review`
+session does NOT surface them because the projection has nothing new
+to fold in. Phase 1 ships the read path (R-mode + E-mode in the live
+experiment) and the data plumbing for signal observations; the
+"agent-written candidates persist as contested across sessions" half
+lands in Phase 1.5, alongside the Stagehand benchmark and the auditor
+protocol. The signal-side of E-mode (`candidate_observations`) IS
+persisted via `adapter.write_observations` today and goes through the
+existing oracle gate; only the new-risks / new-uncertainties side is
+deferred.

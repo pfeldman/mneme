@@ -198,6 +198,25 @@ def test_login_500_when_planted() -> None:
         assert s == 500
 
 
+# --- t2_search_blank -------------------------------------------------------
+
+
+def test_search_returns_results_by_default() -> None:
+    with _server() as base:
+        s, b, _ = _get(f"{base}/search?q=foo")
+        assert s == 200
+        assert "results" in b.lower()
+        assert "no results found" not in b.lower()
+
+
+def test_search_blank_when_planted() -> None:
+    with _server() as base:
+        _get(f"{base}/_plant?set=t2_search_blank")
+        s, b, _ = _get(f"{base}/search?q=foo")
+        assert s == 200
+        assert "no results found" in b.lower()
+
+
 # --- /_unplant resets all -------------------------------------------------
 
 

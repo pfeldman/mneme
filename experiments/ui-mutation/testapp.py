@@ -66,6 +66,7 @@ VALID_BREAK = {"login", "search", "checkout"}
 PLANTED: set[str] = set()
 VALID_PLANT = {
     "t1_login_500",          # tourist: POST /session always 500s
+    "t2_search_blank",       # tourist: /search returns a blank results page
     "k1_save10_at_49",       # coupons: SAVE10 accepted with subtotal < 50
     "k2_stack_codes",        # coupons: two coupons stack in same cart
     "k3_double_order",       # idempotency: same Idempotency-Key creates two orders
@@ -239,8 +240,11 @@ class Handler(BaseHTTPRequestHandler):
                             f'<form method="get" action="/search">'
                             f'<label>Search<input name="q" type="text"></label>'
                             f'<button type="submit">{label}</button></form>'))
-        elif "search" in BROKEN:
-            # Regressed: the query returns nothing — no results list ever appears.
+        elif "search" in BROKEN or "t2_search_blank" in PLANTED:
+            # Regressed: the query returns nothing - no results list ever
+            # appears. Both the Phase-0 BROKEN toggle and the Phase-1 planted
+            # slug route here so the manifest can use a uniform
+            # /_plant?set=t2_search_blank instead of a special-cased /_break.
             self._send(page("Results", '<p class="error">No results found.</p>'))
         else:
             self._send(page("Results",

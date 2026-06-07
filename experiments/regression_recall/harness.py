@@ -272,8 +272,15 @@ def aggregate_records(records: list[RunRecord], manifest: Manifest,
     summary is the UNION of detections across goals (so seed-level recall
     is computed over ALL planted regressions for the release).
     """
+    return aggregate(
+        arm, _per_seed_summaries(records, manifest, arm=arm), manifest,
+    )
+
+
+def _per_seed_summaries(records: list[RunRecord], manifest: Manifest,
+                         *, arm: Arm) -> list[RunSummary]:
+    """Build per-seed RunSummary objects for one arm by unioning across goals."""
     by_seed: dict[int, RunSummary] = {}
-    # Collect off_path_fraction values per seed and average at the end.
     off_path_values: dict[int, list[float]] = {}
     for r in records:
         if r.arm != arm:
@@ -290,11 +297,10 @@ def aggregate_records(records: list[RunRecord], manifest: Manifest,
         s.detections.extend(r.summary.detections)
         if r.summary.off_path_fraction is not None:
             off_path_values[r.seed].append(r.summary.off_path_fraction)
-    # Finalize the per-seed average for off_path_fraction.
     for seed, values in off_path_values.items():
         if values:
             by_seed[seed].off_path_fraction = sum(values) / len(values)
-    return aggregate(arm, list(by_seed.values()), manifest)
+    return list(by_seed.values())
 
 
 def report(records: list[RunRecord], plan: RunPlan,
@@ -302,29 +308,29 @@ def report(records: list[RunRecord], plan: RunPlan,
             *, out_dir: Path | None = None,
             control_records: list[RunRecord] | None = None,
             ) -> Literal["continue", "kill"]:
-    """Compute aggregates + verdict; write results.md + results.json."""
+    """Compute aggregates + verdict; write results.md + results.json.
+
+    `control_records` are runs against the UNMUTATED control release. They
+    enter the per-arm aggregate as `control_summaries` so the false-pass
+    guardrail (kill gate 4) measures "memory claims a regression when none
+    was planted". Each control RunRecord becomes one seed-level
+    `RunSummary` via the same per-seed union as the main records.
+    """
     m = manifest or default_manifest()
-    arms: dict[Arm, ArmAggregate] = {
-        a: aggregate_records(records, m, arm=a) for a in plan.arms
-    }
-    # Build control summaries for the false-pass guardrail.
+    # Per-arm aggregates start from the planted-release records.
+    control_summaries_by_arm: dict[Arm, list[RunSummary]] = {}
     if control_records:
-        control_by_arm: dict[Arm, list[RunSummary]] = {}
-        for r in control_records:
-            control_by_arm.setdefault(r.arm, []).append(r.summary)
-        for a, ctrl_summaries in control_by_arm.items():
-            if a in arms:
-                # Re-aggregate with the control feed for false-pass calc.
-                seed_summaries = [
-                    aggregate_records(records, m, arm=a)
-                    for _ in [0]
-                ]
-                _ = seed_summaries  # we only needed the side effect
-                arms[a] = aggregate(
-                    a,
-                    [r.summary for r in records if r.arm == a],
-                    m, control_summaries=ctrl_summaries,
-                )
+        for a in plan.arms:
+            control_summaries_by_arm[a] = _per_seed_summaries(
+                control_records, m, arm=a,
+            )
+    arms: dict[Arm, ArmAggregate] = {}
+    for a in plan.arms:
+        per_seed = _per_seed_summaries(records, m, arm=a)
+        arms[a] = aggregate(
+            a, per_seed, m,
+            control_summaries=control_summaries_by_arm.get(a),
+        )
 
     verdict = evaluate(arms["memory"], arms["cold_readme"])
 

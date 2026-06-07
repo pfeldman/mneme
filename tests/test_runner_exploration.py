@@ -193,6 +193,40 @@ def test_exploration_unknown_goal_raises() -> None:
             runner.run_one("nope", lambda _: {"candidate_observations": []})
 
 
+def test_exploration_drops_new_risk_with_banned_expect_phrase() -> None:
+    """A new risk whose `expect` predicate matches a banned phrase is
+    rejected by the trigger validator (ADR-0009 sec 4) and surfaces in
+    `notes`. It never enters `new_risks` and so never reaches the store."""
+    kf = _kf_with_risks()
+    with tempfile.TemporaryDirectory() as td:
+        adapter = _seeded_adapter(kf, Path(td))
+        prov = _provenance(source_type=SourceType.AGENT,
+                           source_id="praxis-explore").model_dump(mode="json")
+
+        def executor(prompt: str) -> dict:
+            return {
+                "candidate_observations": [],
+                "new_risks": [{
+                    "id": "vague-claim",
+                    "description": "agent saw something flaky",
+                    "trigger": {"kind": "http", "method": "GET", "path": "/x",
+                                 "expect": "fails under high load"},
+                    "status": "contested",
+                    "confidence": 0.5,
+                    "provenance": prov,
+                }],
+                "new_uncertainties": [],
+                "actions": 1, "tokens": 100,
+                "visited_urls": [],
+            }
+
+        runner = ExplorationRunner(adapter)
+        result = runner.run_one("checkout", executor)
+        assert result.new_risks == []
+        assert any("REJECTED" in n and "vague-claim" in n
+                   for n in result.notes)
+
+
 def test_exploration_does_not_persist_when_disabled() -> None:
     kf = _kf_with_risks()
     with tempfile.TemporaryDirectory() as td:

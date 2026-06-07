@@ -96,7 +96,7 @@ sealed shas:
   "frozen_readme_sha": "<git hash-object README_FROZEN.md>",
   "cold_readme_per_goal_sha": "<git hash-object cold_readme_per_goal.md>",
   "manifest_sha": "<git hash-object manifest.json>",
-  "emode_prompt_sha": "<git hash-object emode_prompt.txt>",
+  "prompts_py_sha": "<git hash-object src/praxis/runner/prompts.py>",
   "judge_prompt_sha": "<git hash-object judge_prompt.txt>",
   "metrics_sha": "<git hash-object metrics.py>",
   "model": "claude-sonnet-4-6",
@@ -140,14 +140,13 @@ ALL eight regressions before the arms run:
 
 ```bash
 curl -s 'http://127.0.0.1:8000/_plant?set=t1_login_500'
+curl -s 'http://127.0.0.1:8000/_plant?set=t2_search_blank'
 curl -s 'http://127.0.0.1:8000/_plant?set=k1_save10_at_49'
 curl -s 'http://127.0.0.1:8000/_plant?set=k2_stack_codes'
 curl -s 'http://127.0.0.1:8000/_plant?set=k3_double_order'
 curl -s 'http://127.0.0.1:8000/_plant?set=k4_admin_settings'
 curl -s 'http://127.0.0.1:8000/_plant?set=k5_filter_lost'
 curl -s 'http://127.0.0.1:8000/_plant?set=s1_oracle_lies'
-# t2_search_blank uses the Phase-0 break endpoint:
-curl -s 'http://127.0.0.1:8000/_break?set=search'
 
 # verify the manifest matches what the harness expects:
 curl -s 'http://127.0.0.1:8000/_planted'

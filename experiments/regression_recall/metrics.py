@@ -42,7 +42,12 @@ class Detection:
     matched_manifest: bool
 
 
-_PARAPHRASE_FLOOR = 0.5
+# Single source of truth for the paraphrase floor that decides whether an
+# arm's observation matches a planted regression's `expected_observation`.
+# The pre-registration (docs/phase-1-experiment.md + manifest.json header)
+# names 0.6; the runner imports this constant so the value cannot drift.
+PARAPHRASE_FLOOR: float = 0.6
+_PARAPHRASE_FLOOR = PARAPHRASE_FLOOR  # back-compat alias for legacy uses
 
 _STOPWORDS = frozenset({
     "a", "an", "the", "is", "are", "and", "or", "of", "to", "in", "on",

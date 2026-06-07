@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 from ..adapters.spi import KnowledgeAdapter
 from ..model import Risk, Status, Uncertainty
+from ..model.trigger_validator import validate_risk
 from ..store import ObservedSignal
 from .prompts import render_exploration_prompt
 
@@ -116,16 +117,30 @@ class ExplorationRunner:
             for o in candidates_raw
         ]
         new_risks_raw = raw.get("new_risks", [])
-        new_risks: list[Risk] = [
+        new_risks_unvalidated: list[Risk] = [
             r if isinstance(r, Risk) else Risk.model_validate(r)
             for r in new_risks_raw
         ]
-        # New risks emitted by an agent must enter as `contested`, never
-        # `believed`, regardless of what the executor said. This enforces
-        # ADR-0008: a single source cannot self-corroborate.
-        for r in new_risks:
+        # Drop new risks whose trigger fails the banned-phrase validator
+        # (ADR-0009 sec 4). A risk like `expect: "under high load"` slides
+        # past the discriminated-union shape check but is exactly the
+        # schema-rot vector the validator exists to refuse. Rejected risks
+        # surface in `notes` so the operator can see why and rephrase.
+        new_risks: list[Risk] = []
+        rejected_notes: list[str] = list(raw.get("notes", []))
+        for r in new_risks_unvalidated:
+            outcome = validate_risk(r)
+            if outcome.outcome == "rejected":
+                rejected_notes.append(
+                    f"REJECTED new risk {r.id!r}: {outcome.reason}"
+                )
+                continue
+            # New risks emitted by an agent must enter as `contested`, never
+            # `believed`, regardless of what the executor said. This enforces
+            # ADR-0008: a single source cannot self-corroborate.
             if r.status == Status.BELIEVED:
                 r.status = Status.CONTESTED
+            new_risks.append(r)
 
         new_uncertainties_raw = raw.get("new_uncertainties", [])
         new_uncertainties: list[Uncertainty] = [
@@ -135,7 +150,7 @@ class ExplorationRunner:
         visited = list(raw.get("visited_urls", []))
         actions = int(raw.get("actions", 0))
         tokens = raw.get("tokens")
-        notes = list(raw.get("notes", []))
+        notes = rejected_notes
 
         if persist_observations and candidates:
             self.adapter.write_observations(

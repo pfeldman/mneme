@@ -60,13 +60,19 @@ ExecutorResult = dict
 Executor = Callable[[str], ExecutorResult]
 
 
-# Floor for word-overlap match between a paraphrased observation and a target
-# signal value. Tuned so "sign-out becomes available" matches "a sign-out
-# action becomes available" (most content words in common). Setting too high
-# would force every paraphrase to be UNCERTAIN; too low and unrelated values
-# bleed into PASS. The regression-recall experiment's judge prompt
-# (docs/phase-1-experiment.md) is the source of truth for ambiguous cases;
-# this function is the cheap deterministic pre-filter.
+# Floor for word-overlap between a paraphrased agent observation and a
+# SEED signal value (success_signals / failure_signals from the
+# knowledge file). Phase-1 product surface: this decides whether
+# `praxis regress` counts a real-world observation as matching the
+# documented oracle. Tuned so "sign-out becomes available" matches
+# "a sign-out action becomes available" (most content words in common).
+#
+# DELIBERATELY DIFFERENT from `experiments.regression_recall.metrics.
+# PARAPHRASE_FLOOR` (0.6), which adjudicates observations against a
+# pre-registered manifest in the experiment harness. The runner is
+# lenient (real agent paraphrase varies a lot); the experiment matcher
+# is strict (the manifest pins canonical phrasing to keep the falsifier
+# rigorous). Both fall back to the LLM-judge for ambiguous cases.
 _PARAPHRASE_THRESHOLD = 0.5
 
 _STOPWORDS = frozenset({

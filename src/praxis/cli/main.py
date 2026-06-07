@@ -196,13 +196,24 @@ def _executor_from_paste(prompt: str) -> dict[str, Any]:
     back from stdin. The user runs the agent externally (subscription
     path with Claude Code + Playwright MCP) and pastes the resulting
     JSON when prompted.
+
+    Refuses to proceed on empty stdin: a careless Ctrl-D used to silently
+    produce an empty observation list, an UNCERTAIN verdict, and a green
+    `praxis regress` exit when the agent had not actually run. The CI
+    gate has to remain trustworthy; "I forgot to paste" is loud, not
+    silent.
     """
     print("\n" + "=" * 78)
     print("PROMPT TO PASTE INTO YOUR AGENT SESSION (run it, collect output):")
     print("=" * 78)
     print(prompt)
     print("=" * 78)
-    print("\nPaste the agent's JSON output (end with a blank line then Ctrl-D):")
+    print(
+        "\nPaste the agent's JSON output. End with a blank line then Ctrl-D. "
+        "If the agent emitted nothing, pass an explicit "
+        "`{\"observations\": [], \"actions\": 0, \"tokens\": null, "
+        "\"visited_urls\": []}` so the empty case is intentional."
+    )
     chunks: list[str] = []
     try:
         for line in sys.stdin:
@@ -211,8 +222,11 @@ def _executor_from_paste(prompt: str) -> dict[str, Any]:
         pass
     text = "".join(chunks).strip()
     if not text:
-        return {"observations": [], "actions": 0, "tokens": None,
-                "visited_urls": []}
+        raise SystemExit(
+            "no agent output received on stdin. Refusing to record an empty "
+            "observation list silently. Re-run after pasting the agent's "
+            "JSON, or pass --from-file PATH."
+        )
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
