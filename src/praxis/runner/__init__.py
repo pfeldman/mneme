@@ -12,6 +12,11 @@ end-to-end shape.
 """
 from __future__ import annotations
 
+from .exploration import (
+    ExplorationResult,
+    ExplorationRunner,
+    compute_off_path_fraction,
+)
 from .regression import (
     RegressionRunner,
     RegressionVerdict,
@@ -21,9 +26,12 @@ from .regression import (
 from .report import write_junit_xml, write_markdown_report
 
 __all__ = [
+    "ExplorationResult",
+    "ExplorationRunner",
     "RegressionRunner",
     "RegressionVerdict",
     "RunResult",
+    "compute_off_path_fraction",
     "verdict_from_observations",
     "write_junit_xml",
     "write_markdown_report",

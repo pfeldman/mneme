@@ -199,6 +199,22 @@ def project(
     )
 
 
+def _passthrough_risks_uncertainties(seed: KnowledgeFile, kf: KnowledgeFile) -> KnowledgeFile:
+    """Phase-1 passthrough: seeded risks + uncertainties survive projection.
+
+    Phase 1 does not aggregate risks across events (that is Phase 2 when
+    multi-writer corroboration matters); the seed is the source of truth for
+    risks and uncertainties, and E-mode emits NEW candidates as store events
+    that `praxis review` promotes via the human-in-the-loop seam (docs/05).
+    Until then, downstream consumers (E-mode prompt rendering) need the
+    seeded risks/uncertainties to appear in the believed projection.
+    """
+    return kf.model_copy(update={
+        "risks": list(seed.risks) if seed.risks else None,
+        "uncertainties": list(seed.uncertainties) if seed.uncertainties else None,
+    })
+
+
 def project_with_seed(
     seed: KnowledgeFile,
     events: list[ObservationEvent],
@@ -228,7 +244,7 @@ def project_with_seed(
                     confidence=sig.confidence,
                 )
             )
-    return project(
+    projected = project(
         events,
         goal_id=seed.goal_id,
         goal=seed.goal,
@@ -238,3 +254,4 @@ def project_with_seed(
         current_version=current_version,
         config=config,
     )
+    return _passthrough_risks_uncertainties(seed, projected)
