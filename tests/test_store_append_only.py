@@ -6,9 +6,9 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timedelta, timezone
 
-from mneme.merge import project
-from mneme.model import Target
-from mneme.store import FileEventStore, ObservationEvent, ObservedSignal
+from praxis.merge import project
+from praxis.model import Target
+from praxis.store import FileEventStore, ObservationEvent, ObservedSignal
 
 
 def _sig(value: str, type_: str = "behavioral") -> ObservedSignal:

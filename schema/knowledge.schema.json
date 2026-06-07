@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mneme.dev/schema/knowledge/v0",
+  "$id": "https://praxis.dev/schema/knowledge/v0",
   "title": "Mneme SUT Knowledge (Phase 0, minimal)",
   "description": "Minimal Phase-0 schema: just enough to run the validation experiment. Goal + success/failure signals + mandatory provenance/confidence. States, paths, risks and uncertainties are deferred to Phase 1 (see knowledge.phase1.schema.json). Trimmed deliberately to avoid schema rot before the thesis is validated.",
   "type": "object",

@@ -1,4 +1,4 @@
-"""Pytest bootstrap: make `mneme` (src layout) and the hyphen-named experiment
+"""Pytest bootstrap: make `praxis` (src layout) and the hyphen-named experiment
 package importable without an editable install."""
 from __future__ import annotations
 

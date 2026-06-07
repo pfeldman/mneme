@@ -2,8 +2,8 @@
 
 **Summary.** Ship a small, opinionated knowledge-driven test runner (`praxis
 regress` and `praxis explore`) on top of the Phase-0 core, plus the
-regression-recall experiment that falsifies the moat. Rename `mneme` to
-`praxis`. Do NOT activate states, paths, refuted status, or the Stagehand
+regression-recall experiment that falsifies the moat. Rename the package
+from its old name to `praxis`. Do NOT activate states, paths, refuted status, or the Stagehand
 adapter; defer Stagehand and the auditor protocol-as-input to Phase 1.5.
 
 ## Goal
@@ -24,7 +24,7 @@ Deliver Pablo's vision end-to-end against an extended `testapp.py`:
 ## Scope
 
 ### In
-- Rename `mneme` -> `praxis` (package, repo prose, schema $id, imports).
+- Rename the package to `praxis` (package, repo prose, schema $id, imports).
 - Phase-1 schema activation for `risks` (with structured `trigger`) and
   `uncertainties` only. `success_signals` and `failure_signals` stay active
   (the latter promoted to load-bearing).
@@ -174,8 +174,8 @@ overlap with Phase-0 mutations (those toggle UI shape, not behavior).
 
 1. **Branch + design docs committed** (ADR-0009, this plan,
    `phase-1-experiment.md`). No code yet.
-2. **Rename `mneme` -> `praxis`** in one commit. `verify.sh` stays green
-   after. (Repo rename on GitHub is a manual step Pablo handles.)
+2. **Rename the package to `praxis`** in one commit. `verify.sh` stays
+   green after. (Repo rename on GitHub is a manual step Pablo handles.)
 3. **Schema activation**: add `risks` (with structured trigger validator)
    and `uncertainties` arrays. Pydantic model mirrors them. `test_model_
    schema_agree.py` updated. Schema examples updated.

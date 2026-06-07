@@ -2,15 +2,15 @@
 They store knowledge (oracles), never procedures."""
 from __future__ import annotations
 
-from mneme.adapters import BrowserUseAdapter, KnowledgeAdapter, redact
-from mneme.model import (
+from praxis.adapters import BrowserUseAdapter, KnowledgeAdapter, redact
+from praxis.model import (
     KnowledgeFile,
     Meta,
     Provenance,
     Signal,
     Target,
 )
-from mneme.store import FileEventStore, ObservedSignal
+from praxis.store import FileEventStore, ObservedSignal
 
 
 def test_redaction_strips_secrets_and_pii() -> None:

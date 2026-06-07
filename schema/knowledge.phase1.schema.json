@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mneme.dev/schema/knowledge/v0",
+  "$id": "https://praxis.dev/schema/knowledge/v0",
   "title": "Mneme SUT Knowledge (Phase 1 target -- REFERENCE ONLY)",
   "description": "Knowledge a QA agent holds about achieving a goal against a system under test. Stores invariants (what to look for), never coordinates (how to click). Every assertion carries provenance and confidence.",
   "type": "object",

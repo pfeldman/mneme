@@ -125,6 +125,6 @@ class BrowserUseAdapter:
         except ImportError as exc:  # pragma: no cover - depends on optional extra
             raise ImportError(
                 "the Browser Use adapter requires the optional extra: "
-                "pip install 'mneme[browser-use]'"
+                "pip install 'praxis[browser-use]'"
             ) from exc
         return Agent(task=self.build_agent_task(goal_id), **agent_kwargs)

@@ -28,7 +28,7 @@ def test_example_validates_against_json_schema(example: Path) -> None:
 
 @pytest.mark.parametrize("example", EXAMPLES, ids=_example_ids())
 def test_example_loads_via_model_and_round_trips(example: Path) -> None:
-    from mneme.model import load, loads, dumps
+    from praxis.model import load, loads, dumps
 
     kf = load(example)
     assert loads(dumps(kf)) == kf  # YAML round-trip is lossless
@@ -36,7 +36,7 @@ def test_example_loads_via_model_and_round_trips(example: Path) -> None:
 
 @pytest.mark.parametrize("example", EXAMPLES, ids=_example_ids())
 def test_every_signal_has_provenance_and_confidence(example: Path) -> None:
-    from mneme.model import load
+    from praxis.model import load
 
     kf = load(example)
     signals = list(kf.success_signals) + list(kf.failure_signals or [])

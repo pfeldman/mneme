@@ -30,15 +30,15 @@ _SRC = Path(__file__).resolve().parents[2] / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from mneme.merge import project_with_seed  # noqa: E402
-from mneme.model import (  # noqa: E402
+from praxis.merge import project_with_seed  # noqa: E402
+from praxis.model import (  # noqa: E402
     KnowledgeFile,
     Meta,
     Provenance,
     Signal,
     Target,
 )
-from mneme.store import ObservationEvent, ObservedSignal  # noqa: E402
+from praxis.store import ObservationEvent, ObservedSignal  # noqa: E402
 
 GOAL = "authenticate-user"
 EXPLORER = "explorer-1"  # Phase 0: ONE writer

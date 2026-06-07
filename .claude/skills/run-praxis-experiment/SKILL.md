@@ -1,5 +1,5 @@
 ---
-name: run-mneme-experiment
+name: run-praxis-experiment
 description: Run the Mneme UI-mutation experiment LIVE using Claude Code as the browser agent (via a Playwright MCP) against the local test app. Use when the user wants to execute the live existential/robustness gates with their Claude Code subscription (no API key, no local model). For the offline machinery check, run `bash verify.sh` instead.
 ---
 
@@ -18,7 +18,7 @@ summarized below. Measurement ORDER is the whole point — never reorder it.
    `python experiments/ui-mutation/testapp.py --port 8000`
    Flows: http://127.0.0.1:8000/login /search /cart.
    Mutations: `GET /_mutate?set=NAME`, `GET /_reset`, `GET /_state`.
-3. Build a `mneme.adapters.BrowserUseAdapter` over a fresh `FileEventStore`, seeded
+3. Build a `praxis.adapters.BrowserUseAdapter` over a fresh `FileEventStore`, seeded
    for all three flows (use `experiments/ui-mutation/runtimes.py:make_adapter`).
    `GET /_reset` first.
 

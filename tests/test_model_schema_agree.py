@@ -11,7 +11,7 @@ SCHEMA = json.loads((ROOT / "schema" / "knowledge.schema.json").read_text())
 
 
 def test_top_level_required_fields_match() -> None:
-    from mneme.model import KnowledgeFile
+    from praxis.model import KnowledgeFile
 
     schema_required = set(SCHEMA["required"])
     model_required = {
@@ -21,7 +21,7 @@ def test_top_level_required_fields_match() -> None:
 
 
 def test_signal_required_fields_match() -> None:
-    from mneme.model import Signal
+    from praxis.model import Signal
 
     schema_required = set(SCHEMA["$defs"]["signal"]["required"])
     model_required = {
@@ -31,7 +31,7 @@ def test_signal_required_fields_match() -> None:
 
 
 def test_provenance_required_fields_match() -> None:
-    from mneme.model import Provenance
+    from praxis.model import Provenance
 
     schema_required = set(SCHEMA["$defs"]["provenance"]["required"])
     model_required = {
@@ -41,7 +41,7 @@ def test_provenance_required_fields_match() -> None:
 
 
 def test_enums_match() -> None:
-    from mneme.model import SignalType, SourceType, Status
+    from praxis.model import SignalType, SourceType, Status
 
     assert [t.value for t in SignalType] == SCHEMA["$defs"]["signal"]["properties"]["type"]["enum"]
     assert ([s.value for s in SourceType]
@@ -52,7 +52,7 @@ def test_enums_match() -> None:
 def test_signal_type_order_is_most_to_least_durable() -> None:
     # The oracle relies on this ordering being meaningful (different types are
     # independent evidence); freeze it so a reorder is a conscious change.
-    from mneme.model import SignalType
+    from praxis.model import SignalType
 
     assert [t.value for t in SignalType] == [
         "behavioral", "network", "accessibility", "text", "url", "visual",
@@ -63,7 +63,7 @@ def test_model_rejects_signal_without_provenance() -> None:
     import pytest
     from pydantic import ValidationError
 
-    from mneme.model import Signal
+    from praxis.model import Signal
 
     with pytest.raises(ValidationError):
         Signal.model_validate({"type": "behavioral", "value": "x",

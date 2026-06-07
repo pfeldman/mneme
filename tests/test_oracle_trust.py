@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from mneme.model import SignalType, SourceType, Status
-from mneme.oracle import (
+from praxis.model import SignalType, SourceType, Status
+from praxis.oracle import (
     SignalSummary,
     agreeing_types,
     classify,

@@ -146,7 +146,7 @@ def validate_against_json_schema(data: dict[str, Any], *, schema_path: Path | No
     """Validate a plain dict against `schema/knowledge.schema.json`.
 
     `jsonschema` is a dev-only dependency, so it is imported lazily here — the
-    core (`import mneme.model`) stays on pydantic + pyyaml only (ADR-0003).
+    core (`import praxis.model`) stays on pydantic + pyyaml only (ADR-0003).
     Raises `jsonschema.ValidationError` on failure.
     """
     import json

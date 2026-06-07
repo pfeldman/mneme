@@ -41,7 +41,7 @@ two runs of the same model are not independent.
 
 ## How an oracle becomes trustworthy
 `believed` iff a seeded (human/spec) signal exists OR ≥2 signals of different
-`type` agree. See `src/mneme/oracle` and ADR-0005. The login example shows both.
+`type` agree. See `src/praxis/oracle` and ADR-0005. The login example shows both.
 
 ## Phase-1 extensions (reference schema only)
 - `states` — semantic state identity via redundant recognition signals.

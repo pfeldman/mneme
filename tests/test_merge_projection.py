@@ -7,15 +7,15 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from mneme.merge import project, project_with_seed
-from mneme.model import (
+from praxis.merge import project, project_with_seed
+from praxis.model import (
     KnowledgeFile,
     Meta,
     Provenance,
     Signal,
     Target,
 )
-from mneme.store import ObservationEvent, ObservedSignal
+from praxis.store import ObservationEvent, ObservedSignal
 
 NOW = datetime(2026, 6, 1, tzinfo=timezone.utc)
 

@@ -23,7 +23,7 @@ bash verify.sh
 ```
 
 To run the experiment LIVE with a Claude Code subscription (no API key), see
-`experiments/ui-mutation/LOCAL_RUN.md` or invoke the `/run-mneme-experiment` skill.
+`experiments/ui-mutation/LOCAL_RUN.md` or invoke the `/run-praxis-experiment` skill.
 
 ## Definition of done for any change to the model/schema
 - `schema/examples/*` still validate.
