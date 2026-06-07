@@ -1,6 +1,6 @@
 # ADR-0012: Multi-writer concurrency contract: append-only safety, source-independence under contention, and day-one adversarial harness
 
-Status: Proposed
+Status: Accepted (2026-06-07)
 
 ## Context
 

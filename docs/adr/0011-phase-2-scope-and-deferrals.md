@@ -1,6 +1,6 @@
 # ADR-0011: Phase 2 scope, activated schema fields, and out-of-scope deferrals
 
-Status: Proposed
+Status: Accepted (2026-06-07)
 
 ## Context
 

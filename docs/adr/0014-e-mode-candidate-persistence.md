@@ -1,6 +1,6 @@
 # ADR-0014: E-mode candidate persistence as sibling CandidateEvent
 
-Status: Proposed
+Status: Accepted (2026-06-07)
 
 ## Context
 

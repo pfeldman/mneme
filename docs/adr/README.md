@@ -15,10 +15,10 @@ per decision; never edit a superseded one (mark it `Superseded by ADR-XXXX`).
 | 0008 | Type-diversity needs source-independence (Phase-1 oracle hardening) |
 | 0009 | Phase 1 scope, regression-recall falsifier, and the praxis reframe |
 | 0010 | Phase 1 regression-recall gate cleared (provisionally) - proceed to Phase 1.5 |
-| 0011 | Phase 2 scope: five load-bearing items, schema activations, and Phase 1.5 / Phase 3 deferrals (Proposed) |
-| 0012 | Multi-writer concurrency contract: file-per-event store, source_id = agent_identity, day-one adversarial harness (Proposed) |
-| 0013 | Recency decay as projection-time derivation; status flips emit decay events, anchored by observed_app_version (Proposed) |
-| 0014 | E-mode candidate persistence as sibling CandidateEvent type with the same diversity-or-seed promotion rule (Proposed) |
-| 0015 | Exploration reward pre-registered, observability-only in Phase 2, paired with adversarial Goodhart review and random-walk baseline (Proposed) |
-| 0016 | Real-app SUT selection: pre-registered criteria, Conduit recommended (Saleor fallback), new run dir parallel to Phase 1 (Proposed) |
-| 0017 | Additive auth_state projected field (authenticated + scope), adapter-boundary redaction, no tokens/cookies/PII in knowledge (Proposed) |
+| 0011 | Phase 2 scope: five load-bearing items, schema activations, and Phase 1.5 / Phase 3 deferrals (Accepted) |
+| 0012 | Multi-writer concurrency contract: file-per-event store, source_id = agent_identity, day-one adversarial harness (Accepted) |
+| 0013 | Recency decay as projection-time derivation; status flips emit decay events, anchored by observed_app_version (Accepted) |
+| 0014 | E-mode candidate persistence as sibling CandidateEvent type with the same diversity-or-seed promotion rule (Accepted) |
+| 0015 | Exploration reward pre-registered, observability-only in Phase 2, paired with adversarial Goodhart review and random-walk baseline (Accepted) |
+| 0016 | Real-app SUT selection: pre-registered criteria, Conduit recommended (Saleor fallback), new run dir parallel to Phase 1 (Accepted) |
+| 0017 | Additive auth_state projected field (authenticated + scope), adapter-boundary redaction, no tokens/cookies/PII in knowledge (Accepted) |

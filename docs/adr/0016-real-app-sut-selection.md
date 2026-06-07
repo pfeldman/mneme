@@ -1,6 +1,6 @@
 # ADR-0016: Real-app SUT selection: pre-registered criteria and Conduit recommendation
 
-Status: Proposed
+Status: Accepted (2026-06-07)
 
 ## Context
 

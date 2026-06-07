@@ -1,6 +1,6 @@
 # ADR-0013: Recency decay as a projection-time event-driven demotion
 
-Status: Proposed
+Status: Accepted (2026-06-07)
 
 ## Context
 

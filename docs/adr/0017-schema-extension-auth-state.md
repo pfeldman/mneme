@@ -1,6 +1,6 @@
 # ADR-0017: Schema additive extension: auth_state projected field
 
-Status: Proposed
+Status: Accepted (2026-06-07)
 
 ## Context
 

@@ -1,6 +1,6 @@
 # ADR-0015: Exploration reward function: pre-registered, observability-only for Phase 2
 
-Status: Proposed
+Status: Accepted (2026-06-07)
 
 ## Context
 
