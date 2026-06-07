@@ -46,6 +46,7 @@ step "pytest"            python -m pytest -q
 step "ruff"              python -m ruff check .
 step "mypy"             python -m mypy
 step "offline harness"   python experiments/ui-mutation/harness.py
+step "oracle stress"     python experiments/ui-mutation/oracle_stress.py
 
 echo ""
 echo "############################ SUMMARY ############################"

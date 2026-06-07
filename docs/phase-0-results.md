@@ -73,11 +73,17 @@ noise, two agreeing cost proxies). The cost/robustness axes of the thesis hold.
 - ⏳ **Cost in tokens/$ : still a proxy.** Actions and wall time both favor memory,
   but the docs/06 existential risk is framed in tokens/$. One API-key run should
   confirm the margin survives in money, not just actions/time.
-- ⏳ **Oracle adversarial stress: still open.** 68 clean runs (mostly happy-path +
-  2 negatives) keep false_pass at 0, but silent poisoning — the failure mode that
-  makes shared memory worse than nothing — needs deliberate stress: broken-app
-  variants, contradictory/poisoned observations, stale versions. This is the one
-  that can still kill the product.
+- 🟡 **Oracle adversarial stress: done offline, with a finding.**
+  `experiments/ui-mutation/oracle_stress.py` injects poisoned event streams into the
+  real core. The oracle RESISTS every ADR-0005-targeted attack (lone single type;
+  correlated agents up to N=100; contradiction; oscillation; stale) and still accepts
+  genuine 2-source/2-type evidence. BUT two probes breach the spirit of the rule: a
+  SINGLE source asserting two different evidence types — and a seed letting a single
+  agent's different-type fabrication ride — are wrongly promoted to `believed`.
+  **Type-diversity without source-independence is a poisoning vector** (ADR-0008).
+  Fix deferred to Phase 1; the gap is tested and loud, not silent. A live honesty
+  check (does the agent report absence honestly against a deliberately broken app?)
+  still wants a run via `testapp` once a break flag exists.
 - ⏳ **Breadth:** one model (Claude Code), one local controlled app, one writer.
   Phase 1 widens flows/apps; Phase 2 adds concurrent writers.
 
