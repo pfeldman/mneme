@@ -15,7 +15,7 @@ Public API:
 """
 from __future__ import annotations
 
-from .browser_use import BrowserUseAdapter
+from .browser_use import BrowserUseAdapter, CandidateRejected
 from .spi import KnowledgeAdapter, redact
 
-__all__ = ["BrowserUseAdapter", "KnowledgeAdapter", "redact"]
+__all__ = ["BrowserUseAdapter", "CandidateRejected", "KnowledgeAdapter", "redact"]
