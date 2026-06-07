@@ -11,12 +11,21 @@ backend (→ SQLite → Postgres+pgvector at scale).
 
 Public API:
     ObservedSignal, ObservationEvent  -- the immutable event model
-    EventStore                        -- backend interface (append/read/since)
+    DecayEvent                        -- projection-driven status-flip event
+                                         (ADR-0013, Phase 2)
+    EventStore                        -- backend interface (append/read/since
+                                         + append_decay/read_decay)
     FileEventStore                    -- one-JSON-file-per-event MVP backend
 """
 from __future__ import annotations
 
-from .events import ObservationEvent, ObservedSignal
+from .events import DecayEvent, ObservationEvent, ObservedSignal
 from .file_store import EventStore, FileEventStore
 
-__all__ = ["EventStore", "FileEventStore", "ObservationEvent", "ObservedSignal"]
+__all__ = [
+    "DecayEvent",
+    "EventStore",
+    "FileEventStore",
+    "ObservationEvent",
+    "ObservedSignal",
+]
