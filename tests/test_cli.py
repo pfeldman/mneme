@@ -239,3 +239,47 @@ def test_review_says_nothing_contested_when_clean(
     out = capsys.readouterr().out
     assert rc == 0
     assert "Nothing to review" in out or "nothing contested" in out.lower()
+
+
+def test_review_surfaces_candidate_risks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A persisted candidate risk with a single source shows up in the
+    Phase-2 `praxis review` queue with provenance + the promotion hint
+    (ADR-0014 sec 4)."""
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+
+    # Drive the explore path to persist a candidate risk with a single
+    # source so the projection keeps it `contested`.
+    obs_file = tmp_path / "agent.json"
+    obs_file.write_text(json.dumps({
+        "candidate_observations": [],
+        "new_risks": [{
+            "id": "phishy-redirect",
+            "description": "login redirects to an unexpected host",
+            "trigger": {"kind": "http", "method": "GET",
+                         "path": "/login/callback",
+                         "expect": "Location header matches the configured origin"},
+            "status": "contested", "confidence": 0.6,
+            "provenance": {
+                "source_type": "agent", "source_id": "praxis-cli",
+                "last_verified": "2026-06-07T00:00:00Z",
+                "observation_count": 1,
+            },
+        }],
+        "new_uncertainties": [],
+        "actions": 1, "tokens": 200, "visited_urls": [],
+    }))
+    _run(["explore", "--goal", "login", "--from-file", str(obs_file)], tmp_path)
+
+    capsys.readouterr()
+    rc = _run(["review"], tmp_path)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "phishy-redirect" in out
+    assert "candidate_risk" in out
+    # The promotion hint is rendered (seed event = new yaml seed).
+    assert "seed" in out.lower()

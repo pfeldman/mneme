@@ -227,6 +227,49 @@ def test_exploration_drops_new_risk_with_banned_expect_phrase() -> None:
                    for n in result.notes)
 
 
+def test_exploration_persists_accepted_new_risks_as_candidate_events() -> None:
+    """ADR-0014: agent-proposed new risks become durable `CandidateEvent`s
+    via the adapter's `write_candidates` path. The runner forces
+    `agent_identity = self.agent_id`, never `run_uuid` (ADR-0008)."""
+    kf = _kf_with_risks()
+    with tempfile.TemporaryDirectory() as td:
+        adapter = _seeded_adapter(kf, Path(td))
+        prov = _provenance(source_type=SourceType.AGENT,
+                            source_id="should-be-overwritten").model_dump(mode="json")
+
+        def executor(prompt: str) -> dict:
+            return {
+                "candidate_observations": [],
+                "new_risks": [{
+                    "id": "newly-found",
+                    "description": "an unobserved failure mode",
+                    "trigger": {"kind": "http", "method": "GET", "path": "/x",
+                                 "expect": "Location header equals /home"},
+                    "status": "contested", "confidence": 0.6,
+                    "provenance": prov,
+                }],
+                "new_uncertainties": [{
+                    "id": "u-receipt-window",
+                    "question": "how long is the receipt URL valid?",
+                    "raised_by": "ignored-by-adapter",
+                    "raised_at": "2026-06-07T00:00:00Z",
+                }],
+                "actions": 2, "tokens": 200, "visited_urls": [],
+            }
+
+        runner = ExplorationRunner(adapter, agent_id="praxis-explore")
+        runner.run_one("checkout", executor)
+        cands = adapter.store.read_candidates("checkout")
+        # One risk + one uncertainty -> two CandidateEvents.
+        assert len(cands) == 2
+        # The adapter forced `agent_identity` on every event.
+        assert {ev.agent_identity for ev in cands} == {"praxis-explore"}
+        # The risk event also has provenance.source_id forced.
+        risk_ev = next(ev for ev in cands if ev.candidate_kind == "candidate_risk")
+        assert risk_ev.provenance is not None
+        assert risk_ev.provenance.source_id == "praxis-explore"
+
+
 def test_exploration_does_not_persist_when_disabled() -> None:
     kf = _kf_with_risks()
     with tempfile.TemporaryDirectory() as td:
