@@ -1,0 +1,95 @@
+# Seeded knowledge for the `login` goal of the regression-recall experiment.
+# Authored as a human seed: source_type=human, status=believed from
+# cold-start per ADR-0005. Risks reflect what a returning maintainer
+# would have accumulated from prior releases of this app.
+schema_version: "0"
+goal_id: login
+goal: A returning user can authenticate and then make authenticated requests.
+
+target:
+  app: praxis-testapp
+  environment: local
+  observed_app_versions: ["phase-1-r1"]
+
+success_signals:
+  - type: behavioral
+    value: a "Sign out" control is present on the home page after successful login
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: POST /session returns 2xx and sets a session cookie named "session"
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: GET /me with the just-issued session cookie returns 200 authenticated true
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+failure_signals:
+  - type: network
+    value: POST /session returns 500 (server error on login)
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: GET /me with the just-issued session cookie returns 401 unauthorized even though POST /session returned 200 with the cookie
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+risks:
+  - id: stale-session-cookie
+    description: A successful HTTP response from /session may set a cookie that
+      the server has not actually registered as a valid session. Authenticated
+      follow-ups will fail. The believed success_signals at the HTTP layer
+      alone cannot detect this; an authenticated follow-up call is required.
+    trigger:
+      kind: http
+      method: GET
+      path: /me
+      expect: returns 200 with authenticated=true (a 401 here despite a 200
+        on /session indicates the session is invalid)
+    mitigation: include /me (or any authenticated endpoint) in the post-login
+      verification step of every regression run.
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+uncertainties:
+  - id: u-login-rate-limit
+    question: Is there a rate-limit on /session beyond N failed attempts? Lockout behavior is not documented in the testapp surface.
+    raised_by: pablo-seed
+    raised_at: "2026-06-07T00:00:00Z"
+    resolved: false
+
+meta:
+  created_at: "2026-06-07T00:00:00Z"
+  updated_at: "2026-06-07T00:00:00Z"
+  contributing_agents: []

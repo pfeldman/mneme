@@ -79,24 +79,27 @@ class RunPlan:
 def build_default_plan(*, release: str = "phase-1-r1",
                        budget_tokens_per_goal: int = 5000,
                        n_seeds: int = 5) -> RunPlan:
-    """Standard 3-arm x 5-seed x 6-goal plan (90 runs).
+    """Standard 3-arm x 5-seed x 3-goal plan (45 runs).
 
-    Goals match the testapp's flows; happy_path_urls are the canonical
-    paths the regression mode would walk on each goal. The harness uses
+    Goals match the manifest's `goal_id` distribution: login (3
+    regressions), search (2), checkout (3). `happy_path_urls` are the
+    canonical paths the regression mode would walk; the harness uses
     them only for `off_path_fraction` on the memory arm's E-mode pass.
+
+    A previous draft listed 6 goals (split apply_coupon / idempotent_order
+    / admin_access into their own goals). Dropped because the manifest
+    distributes those regressions under `login` and `checkout` already;
+    splitting them creates empty-goal padding that biases the report.
     """
     return RunPlan(
         release=release,
         arms=("cold", "cold_readme", "memory"),
         seeds=tuple(range(n_seeds)),
         goals=(
-            GoalSpec("login", ["/login", "/session"]),
-            GoalSpec("search", ["/search"]),
-            GoalSpec("checkout", ["/cart", "/cart/checkout", "/checkout/continue",
-                                    "/order", "/orders"]),
-            GoalSpec("apply_coupon", ["/cart", "/cart/apply"]),
-            GoalSpec("idempotent_order", ["/cart", "/orders"]),
-            GoalSpec("admin_access", ["/login", "/settings/admin"]),
+            GoalSpec("login", ["/login", "/session", "/me"]),
+            GoalSpec("search", ["/search", "/list"]),
+            GoalSpec("checkout", ["/cart", "/cart/apply", "/cart/checkout",
+                                    "/checkout/continue", "/order", "/orders"]),
         ),
         budget_tokens_per_goal=budget_tokens_per_goal,
     )

@@ -217,6 +217,65 @@ def test_search_blank_when_planted() -> None:
         assert "no results found" in b.lower()
 
 
+# --- /me + s1 stale-trap detection ----------------------------------------
+
+
+def test_me_returns_200_for_valid_session() -> None:
+    """Baseline: a successful login produces a session that /me accepts."""
+    with _server() as base:
+        # Capture the Set-Cookie value from a successful login.
+        s, _, headers = _post(f"{base}/session",
+                               {"identifier": "alice", "secret": "pw"})
+        assert s == 200
+        cookie = headers.get("Set-Cookie", "").split(";")[0]
+        # Pass it back to /me.
+        req = urllib.request.Request(f"{base}/me", headers={"Cookie": cookie})
+        with urllib.request.urlopen(req) as resp:  # noqa: S310
+            body = json.loads(resp.read().decode())
+            assert body["authenticated"] is True
+
+
+def test_me_returns_401_when_s1_oracle_lies_planted() -> None:
+    """s1_oracle_lies: /session looks fine, but the session is not valid;
+    /me rejects with 401. This is the stale-trap an R-mode arm trusting
+    only the believed login signals would miss without probing /me."""
+    with _server() as base:
+        _get(f"{base}/_plant?set=s1_oracle_lies")
+        s, _, headers = _post(f"{base}/session",
+                               {"identifier": "alice", "secret": "pw"})
+        assert s == 200  # login looks OK at HTTP level
+        cookie = headers.get("Set-Cookie", "").split(";")[0]
+        # But /me with that cookie still returns 401.
+        req = urllib.request.Request(f"{base}/me", headers={"Cookie": cookie})
+        try:
+            urllib.request.urlopen(req)  # noqa: S310
+            raise AssertionError("expected 401")
+        except urllib.error.HTTPError as e:
+            assert e.code == 401
+
+
+# --- /_reset_state -------------------------------------------------------
+
+
+def test_reset_state_clears_cart_but_keeps_plants() -> None:
+    """Real blocker found in the Phase-1 dry run: cart accumulated across
+    arms. /_reset_state clears side effects without touching PLANTED."""
+    with _server() as base:
+        _get(f"{base}/_plant?set=k1_save10_at_49")
+        # Apply a coupon to dirty the cart.
+        _post(f"{base}/cart/apply", {"coupon": "SAVE10", "subtotal": "100"})
+        # Hit reset.
+        s, b, _ = _get(f"{base}/_reset_state")
+        assert s == 200
+        body = _json(b)
+        assert body["reset"] is True
+        assert "k1_save10_at_49" in body["planted_still_active"]
+        # The cart is fresh: a second apply now succeeds without "stacking".
+        s2, _, _ = _post(f"{base}/cart/apply",
+                          {"coupon": "BIGSAVE", "subtotal": "100"})
+        assert s2 == 200  # would have been 409 if SAVE10 still in the cart
+
+
 # --- /_unplant resets all -------------------------------------------------
 
 

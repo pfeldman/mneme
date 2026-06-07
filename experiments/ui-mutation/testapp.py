@@ -175,6 +175,19 @@ class Handler(BaseHTTPRequestHandler):
             # Ground-truth manifest endpoint: harness compares observations
             # against this AFTER each arm runs to compute recall.
             self._json({"planted": sorted(PLANTED)})
+        elif path == "/_reset_state":
+            # Clears side-effect state (cart, orders, sessions) WITHOUT
+            # touching PLANTED slugs. Call between arms in the experiment
+            # harness so two arms running back-to-back against the same
+            # plant state do not contaminate each other through process-
+            # global side effects (a real blocker found in the Phase-1
+            # dry run: cart accumulating coupons across arms).
+            _CART_COUPONS.clear()
+            _ORDER_KEY_TO_ID.clear()
+            _AUTH_SESSIONS.clear()
+            self._json({"reset": True, "planted_still_active": sorted(PLANTED)})
+        elif path == "/me":
+            self._me()
         elif path == "/list":
             self._list(q)
         elif path == "/settings/admin":
@@ -359,6 +372,30 @@ class Handler(BaseHTTPRequestHandler):
         _ORDER_KEY_TO_ID[key] = order_id
         self._json({"order_id": order_id,
                     "idempotent": "k3_double_order" not in PLANTED})
+
+    def _me(self) -> None:
+        """GET /me - authenticated identity endpoint.
+        Returns 200 with the session id ONLY if the cookie matches an entry
+        in _AUTH_SESSIONS (which `_session` populates on successful login).
+        Returns 401 otherwise.
+
+        This endpoint is what catches `s1_oracle_lies`: with that slug
+        planted, `_session` does NOT register the session, so `/me` returns
+        401 even though /session looked fine. An R-mode arm that trusts only
+        the believed login success_signals will pass; an arm that includes a
+        follow-up authenticated check will catch it.
+        """
+        cookie = self.headers.get("Cookie", "")
+        sid = ""
+        for kv in cookie.split(";"):
+            kv = kv.strip()
+            if kv.startswith("session="):
+                sid = kv.split("=", 1)[1].strip()
+        if sid and sid in _AUTH_SESSIONS:
+            self._json({"authenticated": True, "session_id": sid})
+        else:
+            self._json({"authenticated": False, "reason":
+                         "session cookie missing or invalid"}, 401)
 
     def _admin_settings(self) -> None:
         """GET /settings/admin  - admin-only page.

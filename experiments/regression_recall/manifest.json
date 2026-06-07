@@ -77,10 +77,10 @@
     {
       "slug": "s1_oracle_lies",
       "category": "stale_trap",
-      "description": "POST /session returns 200 + cookie but the session is invalid; an R-mode arm trusting believed signals blindly passes this regression",
+      "description": "POST /session returns 200 + cookie but the session is invalid; GET /me with the cookie returns 401 even though /session looked fine. An R-mode arm trusting the believed login success_signals blindly passes; catching the regression requires probing /me as a follow-up authenticated check.",
       "goal_id": "login",
       "plant_endpoint": "/_plant?set=s1_oracle_lies",
-      "expected_observation": "session cookie set on login but follow-up authenticated request fails",
+      "expected_observation": "GET /me with the just-issued session cookie returns 401 unauthorized even though POST /session returned 200 with the cookie",
       "expected_kind": "failure",
       "expected_signal_type": "network"
     }

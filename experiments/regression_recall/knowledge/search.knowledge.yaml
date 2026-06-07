@@ -1,0 +1,75 @@
+schema_version: "0"
+goal_id: search
+goal: A user can search and find results, and filters persist across paginated pages.
+
+target:
+  app: praxis-testapp
+  environment: local
+  observed_app_versions: ["phase-1-r1"]
+
+success_signals:
+  - type: behavioral
+    value: a non-empty results list appears for a non-empty search query
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: behavioral
+    value: GET /list with filter X on page 1 and page 2 both show items matching the filter
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+failure_signals:
+  - type: behavioral
+    value: search results list is empty (no items rendered) for a non-empty query
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: behavioral
+    value: GET /list page=2 with filter applied returns items without the filter (filter dropped)
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+risks:
+  - id: filter-lost-on-page-change
+    description: The list endpoint accepts a filter on the URL but may drop it
+      when navigating to subsequent pages. Easy to miss because page 1 looks fine.
+    trigger:
+      kind: http
+      method: GET
+      path: /list
+      body_or_params: { "page": 2, "filter": "item" }
+      expect: data-effective-filter attribute matches the filter argument ("item")
+        rather than empty string
+    mitigation: probe every list endpoint at page 1 AND page 2 with the same filter.
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+uncertainties: []
+
+meta:
+  created_at: "2026-06-07T00:00:00Z"
+  updated_at: "2026-06-07T00:00:00Z"
+  contributing_agents: []

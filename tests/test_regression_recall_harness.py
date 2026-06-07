@@ -24,22 +24,24 @@ from regression_recall.manifest import default_manifest
 
 
 def _strong_memory_executor(arm, goal_id, prompt, inputs):
-    """A fake executor where memory finds 7/8 regressions reliably and
-    spends most actions off the happy path; cold_readme finds the two
-    tourist regressions; cold finds none.
+    """A fake executor where memory finds all 8 regressions reliably and
+    spends most actions off the happy path; cold_readme finds one
+    tourist regression; cold finds none.
 
     The fake emits observations whose text overlaps strongly with the
     manifest's expected_observation so the deterministic Jaccard matcher
-    scores them as hits.
+    scores them as hits. Updated post-dry-run: s1 detection routes
+    through /me (not "follow-up authenticated request fails") to match
+    the manifest change documented in ADR-0009.
     """
     if arm == "memory":
         if goal_id == "login":
             obs = [
                 {"value": "POST /session returns 500 (server error on login)"},
                 {"value": "GET /settings/admin returns 200 admin content for non-admin"},
-                {"value": "session cookie set on login but follow-up authenticated request fails"},
+                {"value": "GET /me with the just-issued session cookie returns 401 unauthorized even though POST /session returned 200 with the cookie"},
             ]
-            visited = ["/login", "/session", "/settings/admin", "/_state"]
+            visited = ["/login", "/session", "/me", "/settings/admin", "/_state"]
         elif goal_id == "search":
             obs = [
                 {"value": "search results list is empty (no items rendered)"},
@@ -131,8 +133,10 @@ def test_run_plan_verdict_continue_when_memory_dominates(tmp_path: Path) -> None
                                budget_tokens_per_goal=1000)
     records = run_plan(plan, _strong_memory_executor,
                        base_url="http://x", out_dir=tmp_path / "runs")
-    # Per-goal records: 3 arms x 5 seeds x 6 goals = 90.
-    assert len(records) == 90
+    # Per-goal records: 3 arms x 5 seeds x 3 goals = 45 (the default plan
+    # consolidated to 3 goals after the Phase-1 dry-run revealed the 6-
+    # goal split padded the experiment with empty goals).
+    assert len(records) == 45
     verdict = report(records, plan, out_dir=tmp_path)
     # The fake executor is rigged so memory wins. Verdict must continue.
     assert verdict == "continue"
@@ -176,12 +180,12 @@ def test_aggregate_records_unions_detections_per_seed() -> None:
     records = run_plan(plan, _strong_memory_executor, base_url="http://x")
     m = default_manifest()
     agg = aggregate_records(records, m, arm="memory")
-    # Each seed's memory arm collects detections from all 6 goals.
+    # Each seed's memory arm collects detections from all 3 goals.
     # Expected hits per seed (from _strong_memory_executor):
     #   login -> t1_login_500, k4_admin_settings, s1_oracle_lies
     #   search -> t2_search_blank, k5_filter_lost
     #   checkout -> k1_save10_at_49, k2_stack_codes, k3_double_order
-    # Total = 8/8 - actually all 8.
+    # Total = 8/8 of the manifest's regressions.
     assert agg.recall_mean == 1.0
     # Off-path fraction averaged across goals per seed.
     assert agg.off_path_fraction_mean == 0.6

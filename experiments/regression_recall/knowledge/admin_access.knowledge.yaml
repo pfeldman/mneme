@@ -1,0 +1,55 @@
+schema_version: "0"
+goal_id: admin_access
+goal: Only an authenticated admin user can reach /settings/admin; standard sessions are rejected.
+
+target:
+  app: praxis-testapp
+  environment: local
+  observed_app_versions: ["phase-1-r1"]
+
+success_signals:
+  - type: network
+    value: GET /settings/admin without a role=admin cookie returns 403 forbidden
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+failure_signals:
+  - type: network
+    value: GET /settings/admin returns 200 admin content for a non-admin session
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+risks:
+  - id: admin-route-without-auth
+    description: Direct navigation to /settings/admin may bypass the auth check;
+      a prior release leaked admin content to non-admin users via direct URL access.
+    trigger:
+      kind: http
+      method: GET
+      path: /settings/admin
+      expect: response status 403 forbidden when no admin role cookie is present
+    mitigation: enforce auth check on every admin route, not only on the link from the dashboard.
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+uncertainties: []
+
+meta:
+  created_at: "2026-06-07T00:00:00Z"
+  updated_at: "2026-06-07T00:00:00Z"
+  contributing_agents: []
