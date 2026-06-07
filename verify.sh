@@ -48,6 +48,7 @@ step "mypy"             python -m mypy
 step "offline harness"   python experiments/ui-mutation/harness.py
 step "oracle stress"     python experiments/ui-mutation/oracle_stress.py
 step "evolution"         python experiments/ui-mutation/evolution.py
+step "multi-writer harness" python experiments/multi_writer/harness.py
 
 echo ""
 echo "############################ SUMMARY ############################"
