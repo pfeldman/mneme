@@ -160,6 +160,22 @@ class ExplorationRunner:
                 observed_app_version=self.observed_app_version,
             )
 
+        # ADR-0014: agent-proposed risks and uncertainties become durable
+        # CandidateEvents (sibling to ObservationEvent). The runner forces
+        # `agent_identity = self.agent_id` so the source-independence rule
+        # (ADR-0008) binds here too: N same-model E-mode runs count as ONE
+        # source under `independent_diverse(...)`, never self-promote.
+        if persist_observations and (new_risks or new_uncertainties):
+            write = getattr(self.adapter, "write_candidates", None)
+            if write is not None:
+                write(
+                    goal_id=goal_id,
+                    agent_identity=self.agent_id,
+                    new_risks=new_risks,
+                    new_uncertainties=new_uncertainties,
+                    observed_app_version=self.observed_app_version,
+                )
+
         off_path = compute_off_path_fraction(visited, happy_path_urls or [])
 
         return ExplorationResult(

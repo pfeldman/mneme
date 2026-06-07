@@ -23,6 +23,7 @@ from typing import Any
 import yaml
 
 from ..adapters import BrowserUseAdapter
+from ..merge import contested_candidates, project_candidates
 from ..model import KnowledgeFile, Target, dump, load
 from ..runner import (
     ExplorationRunner,
@@ -319,6 +320,18 @@ def _cmd_explore(args: argparse.Namespace) -> int:
 
 
 def _cmd_review(args: argparse.Namespace) -> int:
+    """Surface the human review queue (ADR-0014).
+
+    Two surfaces:
+      1. Contested SIGNALS in the projection (legacy Phase-1 read-only
+         digest, unchanged).
+      2. Contested CANDIDATE events (Phase-2 addition): agent-proposed
+         risks / uncertainties that have not yet been corroborated by an
+         independent source. Each entry shows provenance, the source ids
+         involved, and the operator path for promotion - which is to
+         append a NEW seed event, never to edit the candidate in place
+         (ADR-0001 + ADR-0014 sec 4).
+    """
     proj = discover_project()
     adapter = proj.adapter()
     seeds = proj.seeds()
@@ -329,6 +342,7 @@ def _cmd_review(args: argparse.Namespace) -> int:
         print("no goals to review.", file=sys.stderr)
         return 2
     any_contested = False
+    store = proj.store()
     for gid in goal_ids:
         kf = adapter.read_knowledge(gid)
         if kf is None:
@@ -337,7 +351,12 @@ def _cmd_review(args: argparse.Namespace) -> int:
                            if s.status.value == "contested"]
         contested_fail = [s for s in (kf.failure_signals or [])
                            if s.status.value == "contested"]
-        if not (contested_succ or contested_fail):
+        cand_events = store.read_candidates(gid)
+        projected = project_candidates(
+            cand_events, goal_id=gid, seed=seeds.get(gid),
+        )
+        contested_cands = contested_candidates(projected)
+        if not (contested_succ or contested_fail or contested_cands):
             continue
         any_contested = True
         print(f"\n## {gid}")
@@ -347,13 +366,41 @@ def _cmd_review(args: argparse.Namespace) -> int:
         for s in contested_fail:
             print(f"  [contested failure / {s.type.value}] {s.value}  "
                   f"(confidence={s.confidence:.2f}, by {s.provenance.source_id})")
+        for pc in contested_cands:
+            if pc.risk is not None:
+                trig = pc.risk.trigger
+                trig_str = (
+                    f"{trig.method} {trig.path}" if trig.kind == "http"
+                    else f"{trig.n}x {trig.action}"  # SequenceTrigger
+                )
+                src_list = ", ".join(sorted(pc.distinct_source_ids))
+                print(
+                    f"  [contested candidate_risk / {trig.kind}] {pc.candidate_id}: "
+                    f"{pc.risk.description}\n"
+                    f"     trigger: {trig_str}  expect: {trig.expect}\n"
+                    f"     confidence={pc.risk.confidence:.2f}  "
+                    f"sources={{{src_list}}}  "
+                    f"events={len(pc.corroborating_events)}"
+                )
+            elif pc.uncertainty is not None:
+                src_list = ", ".join(sorted(pc.distinct_source_ids))
+                print(
+                    f"  [contested candidate_uncertainty] {pc.candidate_id}: "
+                    f"{pc.uncertainty.question}\n"
+                    f"     raised_by={pc.uncertainty.raised_by}  "
+                    f"sources={{{src_list}}}  "
+                    f"events={len(pc.corroborating_events)}"
+                )
     if not any_contested:
         print("nothing contested. Nothing to review.")
     else:
         print(
-            "\nNote: this is a Phase-1 read-only digest. The accept / "
-            "quarantine / ignore workflow lands in Phase 1.5; for now, "
-            "edit the seed YAML to promote an observation."
+            "\nPromote a candidate by adding a corresponding seed entry "
+            "(same id, source_type human/spec) to the goal's "
+            "*.knowledge.yaml. The candidate event itself is immutable "
+            "(ADR-0001); seed + candidate together satisfy the "
+            "diversity rule (ADR-0008) and the next projection will "
+            "promote it to `believed`."
         )
     return 0
 
