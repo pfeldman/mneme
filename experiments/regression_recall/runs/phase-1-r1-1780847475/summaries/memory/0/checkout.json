@@ -1,0 +1,86 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 37.368405541055836,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 15,
+    "arm": "memory",
+    "elapsed_seconds": 37.368390499963425,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "POST /session with any credentials (e.g. identifier=baduser, secret=badpass) returns HTTP 200 with Set-Cookie: session=ok and a welcome page \u2014 authentication is not validated; any username/password combination succeeds."
+      },
+      {
+        "value": "POST /session always sets the same static cookie value 'session=ok' regardless of user identity, meaning all sessions are indistinguishable and there is no real session management."
+      },
+      {
+        "value": "POST /order with a valid card (e.g. card=4111111111111111) always returns HTTP 200 with order confirmation 'Order #A1024 confirmed.' \u2014 the order number is hardcoded and never increments across repeated calls, indicating a broken/stubbed order-creation flow."
+      },
+      {
+        "value": "POST /cart/checkout (the 'Proceed to checkout' action from the cart page) reaches the Payment page (HTTP 200) without requiring any session cookie \u2014 unauthenticated users can proceed directly to payment without being redirected to login."
+      }
+    ],
+    "off_path_fraction": 0.4,
+    "tokens_used": 34498,
+    "visited_urls": [
+      "/",
+      "/checkout",
+      "/cart",
+      "/login",
+      "/cart/checkout",
+      "/session",
+      "/order",
+      "/order",
+      "/order",
+      "/cart/checkout",
+      "/order",
+      "/order",
+      "/session",
+      "/order",
+      "/session"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 15,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "POST /session with any credentials (e.g. identifier=baduser, secret=badpass) returns HTTP 200 with Set-Cookie: session=ok and a welcome page \u2014 authentication is not validated; any username/password combination succeeds.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "POST /session always sets the same static cookie value 'session=ok' regardless of user identity, meaning all sessions are indistinguishable and there is no real session management.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "POST /order with a valid card (e.g. card=4111111111111111) always returns HTTP 200 with order confirmation 'Order #A1024 confirmed.' \u2014 the order number is hardcoded and never increments across repeated calls, indicating a broken/stubbed order-creation flow.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "POST /cart/checkout (the 'Proceed to checkout' action from the cart page) reaches the Payment page (HTTP 200) without requiring any session cookie \u2014 unauthenticated users can proceed directly to payment without being redirected to login.",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.4,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 34498
+  }
+}

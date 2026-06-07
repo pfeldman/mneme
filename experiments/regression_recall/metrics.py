@@ -108,6 +108,18 @@ class RunSummary:
     def false_positives(self) -> int:
         return sum(1 for d in self.detections if not d.matched_manifest)
 
+    def false_positive_rate(self) -> float:
+        """Per-seed FP rate (precision-complement): fp / (fp + tp).
+
+        The pre-registration's kill criterion is rate-based
+        (`false_positive_rate > rate + 0.05`), and the 0.05 threshold only
+        makes sense in [0, 1]. Returns 0.0 when no claims were made.
+        """
+        fp = self.false_positives()
+        tp = len(self.hit_slugs())
+        total = fp + tp
+        return fp / total if total else 0.0
+
 
 @dataclass(frozen=True)
 class ArmAggregate:
@@ -146,7 +158,10 @@ def aggregate(arm: Arm, summaries: list[RunSummary], manifest: Manifest,
     for s in summaries:
         hits = s.hit_slugs()
         per_seed_recall.append(len(hits) / n_planted if n_planted else 0.0)
-        per_seed_fp.append(s.false_positives())
+        # FP RATE, not raw count, per pre-registration. Bug fix:
+        # the prior implementation aggregated counts and compared against
+        # a [0,1]-scale threshold; this returns the precision-complement.
+        per_seed_fp.append(s.false_positive_rate())
         for cat, rs in by_category.items():
             denom = len(rs)
             num = sum(1 for r in rs if r.slug in hits)

@@ -1,0 +1,57 @@
+{
+  "arm": "cold_readme",
+  "elapsed_seconds": 31.507344124955125,
+  "goal_id": "search",
+  "raw_output": {
+    "actions_used": 12,
+    "arm": "cold_readme",
+    "elapsed_seconds": 31.507329290965572,
+    "goal_id": "search",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "The /_state endpoint confirmed planted regressions including t2_search_blank.",
+      "Empty query (?q=) correctly re-shows the search form (no regression there).",
+      "Authentication does not change search behavior \u2014 same blank results whether cookie is present or not."
+    ],
+    "observations": [
+      {
+        "value": "GET /search?q=widget (and any non-empty query, with or without session cookie) returns HTTP 200 with body containing only '<p class=\"error\">No results found.</p>' \u2014 no '<ul class=\"results\">' list and no '<li>' items are ever rendered. The README specifies that submitting a query should return a results list whose items are rendered as <li> inside a <ul class=\"results\">. Every tested query (e.g. q=widget, q=a, q=test, q=item) produced the same blank 'No results found' response, consistent with the planted regression t2_search_blank visible in /_state."
+      }
+    ],
+    "off_path_fraction": 0.9166666666666666,
+    "tokens_used": 33600,
+    "visited_urls": [
+      "/search",
+      "/",
+      "/search?q=widget",
+      "/search?q=",
+      "/search?q=a",
+      "/search?q=test",
+      "/_state",
+      "/session",
+      "/login",
+      "/session",
+      "/search?q=widget",
+      "/search?q=item"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 12,
+    "arm": "cold_readme",
+    "detections": [
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "GET /search?q=widget (and any non-empty query, with or without session cookie) returns HTTP 200 with body containing only '<p class=\"error\">No results found.</p>' \u2014 no '<ul class=\"results\">' list and no '<li>' items are ever rendered. The README specifies that submitting a query should return a results list whose items are rendered as <li> inside a <ul class=\"results\">. Every tested query (e.g. q=widget, q=a, q=test, q=item) produced the same blank 'No results found' response, consistent with the planted regression t2_search_blank visible in /_state.",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.9166666666666666,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 33600
+  }
+}

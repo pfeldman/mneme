@@ -1,0 +1,75 @@
+{
+  "release": "phase-1-r1",
+  "arms": {
+    "cold": {
+      "arm": "cold",
+      "n_seeds": 1,
+      "recall_mean": 0.0,
+      "recall_stdev": 0.0,
+      "per_category_recall": {
+        "tourist": 0.0,
+        "knowledge_visible": 0.0,
+        "stale_trap": 0.0
+      },
+      "per_category_recall_stdev": {
+        "tourist": 0.0,
+        "knowledge_visible": 0.0,
+        "stale_trap": 0.0
+      },
+      "false_positive_mean": 15.0,
+      "false_positive_stdev": 0.0,
+      "false_pass_rate": 0.0,
+      "stale_trap_recall": 0.0,
+      "off_path_fraction_mean": 0.5710872162485066
+    },
+    "cold_readme": {
+      "arm": "cold_readme",
+      "n_seeds": 1,
+      "recall_mean": 0.0,
+      "recall_stdev": 0.0,
+      "per_category_recall": {
+        "tourist": 0.0,
+        "knowledge_visible": 0.0,
+        "stale_trap": 0.0
+      },
+      "per_category_recall_stdev": {
+        "tourist": 0.0,
+        "knowledge_visible": 0.0,
+        "stale_trap": 0.0
+      },
+      "false_positive_mean": 9.0,
+      "false_positive_stdev": 0.0,
+      "false_pass_rate": 0.0,
+      "stale_trap_recall": 0.0,
+      "off_path_fraction_mean": 0.5483660130718954
+    },
+    "memory": {
+      "arm": "memory",
+      "n_seeds": 1,
+      "recall_mean": 0.0,
+      "recall_stdev": 0.0,
+      "per_category_recall": {
+        "tourist": 0.0,
+        "knowledge_visible": 0.0,
+        "stale_trap": 0.0
+      },
+      "per_category_recall_stdev": {
+        "tourist": 0.0,
+        "knowledge_visible": 0.0,
+        "stale_trap": 0.0
+      },
+      "false_positive_mean": 10.0,
+      "false_positive_stdev": 0.0,
+      "false_pass_rate": 0.0,
+      "stale_trap_recall": 0.0,
+      "off_path_fraction_mean": 0.5083333333333333
+    }
+  },
+  "verdict": "kill",
+  "killed_by": [
+    "overall_recall",
+    "knowledge_visible_recall",
+    "false_positive_guardrail",
+    "stale_trap_recall"
+  ]
+}

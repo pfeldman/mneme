@@ -1,0 +1,98 @@
+{
+  "arm": "cold_readme",
+  "elapsed_seconds": 42.45013804198243,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 17,
+    "arm": "cold_readme",
+    "elapsed_seconds": 42.45013012504205,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "POST /session accepts any credentials (including invalid ones like identifier='bad', secret='bad') and responds with HTTP 200 and Set-Cookie: session=ok, granting a valid session. Authentication is not enforced \u2014 all login attempts succeed."
+      },
+      {
+        "value": "POST /cart/checkout does not require authentication. When called without any session cookie, it returns HTTP 200 with the Payment page instead of redirecting to login or returning 401/403."
+      },
+      {
+        "value": "POST /order does not require authentication. When called without any session cookie (e.g., POST /order with card=4111111111111111 and no Cookie header), it returns HTTP 200 Order confirmed (#A1024), allowing unauthenticated order placement."
+      },
+      {
+        "value": "POST /order accepts any non-empty card number (including '0000000000000000') and returns HTTP 200 Order confirmed. No card validation is performed beyond rejecting an empty string."
+      },
+      {
+        "value": "The order confirmation number is always 'Order #A1024' regardless of the number of orders placed or the session context \u2014 it is not unique/incremented per order."
+      }
+    ],
+    "off_path_fraction": 0.4117647058823529,
+    "tokens_used": 38344,
+    "visited_urls": [
+      "/",
+      "/README_FROZEN.md",
+      "/cold_readme_per_goal.md",
+      "/cart",
+      "/login",
+      "/session",
+      "/cart/checkout",
+      "/order",
+      "/order",
+      "/cart/checkout",
+      "/order",
+      "/order",
+      "/cart/checkout",
+      "/session",
+      "/session",
+      "/order",
+      "/order"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 17,
+    "arm": "cold_readme",
+    "detections": [
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "POST /session accepts any credentials (including invalid ones like identifier='bad', secret='bad') and responds with HTTP 200 and Set-Cookie: session=ok, granting a valid session. Authentication is not enforced \u2014 all login attempts succeed.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "POST /cart/checkout does not require authentication. When called without any session cookie, it returns HTTP 200 with the Payment page instead of redirecting to login or returning 401/403.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "POST /order does not require authentication. When called without any session cookie (e.g., POST /order with card=4111111111111111 and no Cookie header), it returns HTTP 200 Order confirmed (#A1024), allowing unauthenticated order placement.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "POST /order accepts any non-empty card number (including '0000000000000000') and returns HTTP 200 Order confirmed. No card validation is performed beyond rejecting an empty string.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "The order confirmation number is always 'Order #A1024' regardless of the number of orders placed or the session context \u2014 it is not unique/incremented per order.",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.4117647058823529,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 38344
+  }
+}

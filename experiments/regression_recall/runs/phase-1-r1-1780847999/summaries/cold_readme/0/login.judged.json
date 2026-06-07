@@ -1,0 +1,57 @@
+{
+  "arm": "cold_readme",
+  "elapsed_seconds": 18.480254582944326,
+  "goal_id": "login",
+  "raw_output": {
+    "actions_used": 6,
+    "arm": "cold_readme",
+    "elapsed_seconds": 18.479457708075643,
+    "goal_id": "login",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "Valid credentials (user@example.com / password) also return 200 with session cookie \u2014 correct.",
+      "Invalid credentials with non-empty values (wrong@example.com / wrongpass, notauser / badpassword123) return 200 with session=ok cookie \u2014 regression.",
+      "Empty credentials (identifier=&secret=) correctly return 401 with 'Invalid credentials.' error page.",
+      "The regression appears to be that the app only checks whether the fields are non-empty, not whether the credentials actually match any valid account."
+    ],
+    "observations": [
+      {
+        "value": "POST /session with invalid non-empty credentials (e.g., identifier=wrong@example.com&secret=wrongpass, or identifier=notauser&secret=badpassword123) returns HTTP 200 with Set-Cookie: session=ok and a Home page containing 'Sign out', instead of the expected HTTP 401 with an inline error. Only empty credentials trigger the correct 401 response. This means authentication is bypassed for any non-empty credential pair."
+      }
+    ],
+    "off_path_fraction": 0.16666666666666666,
+    "tokens_used": 16102,
+    "visited_urls": [
+      "/login",
+      "/",
+      "/session",
+      "/session",
+      "/session",
+      "/session"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 6,
+    "arm": "cold_readme",
+    "detections": [
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "POST /session with invalid non-empty credentials (e.g., identifier=wrong@example.com&secret=wrongpass, or identifier=notauser&secret=badpassword123) returns HTTP 200 with Set-Cookie: session=ok and a Home page containing 'Sign out', instead of the expected HTTP 401 with an inline error. Only empty credentials trigger the correct 401 response. This means authentication is bypassed for any non-empty credential pair.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes authentication bypass for non-empty invalid credentials returning 200 with a valid session, which is not listed in the manifest and is a distinct bug from any planted regression (t1_login_500 expects a 500, s1_oracle_lies expects 401 on /me after successful login, not 200 on /session with bad credentials)."
+        }
+      }
+    ],
+    "off_path_fraction": 0.16666666666666666,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 16102
+  }
+}

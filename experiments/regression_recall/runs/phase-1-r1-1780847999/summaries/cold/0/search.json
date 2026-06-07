@@ -1,0 +1,74 @@
+{
+  "arm": "cold",
+  "elapsed_seconds": 41.20019720902201,
+  "goal_id": "search",
+  "raw_output": {
+    "actions_used": 23,
+    "arm": "cold",
+    "elapsed_seconds": 41.200184209039435,
+    "goal_id": "search",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "GET /search?q=<any term> always returns HTTP 200 with body containing '<p class=\"error\">No results found.</p>' regardless of the query term (tested with: 'test', 'apple', 'shirt', 'widget', 'product', 'blue+shirt', 'pants', 'a', '*'). Search never returns any results."
+      },
+      {
+        "value": "GET /logout returns HTTP 404 Not Found even though the app renders a '<a href=\"/logout\">Sign out</a>' link on the home page after a successful login (POST /session with any credentials sets session=ok and shows the Sign out link). POST /logout also returns 404. The logout endpoint is completely missing."
+      }
+    ],
+    "off_path_fraction": 0.9130434782608695,
+    "tokens_used": 41412,
+    "visited_urls": [
+      "/",
+      "/search",
+      "/search?q=test",
+      "/login",
+      "/cart",
+      "/search?q=",
+      "/search?q=apple",
+      "/search?q=shirt",
+      "/search?q=a",
+      "/session",
+      "/search?q=*",
+      "/search?q=a",
+      "/search",
+      "/search?q=widget",
+      "/search?q=product",
+      "/products",
+      "/api/search?q=test",
+      "/logout",
+      "/cart/checkout",
+      "/search?q=blue+shirt",
+      "/logout",
+      "/session",
+      "/search?q=pants"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 23,
+    "arm": "cold",
+    "detections": [
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "GET /search?q=<any term> always returns HTTP 200 with body containing '<p class=\"error\">No results found.</p>' regardless of the query term (tested with: 'test', 'apple', 'shirt', 'widget', 'product', 'blue+shirt', 'pants', 'a', '*'). Search never returns any results.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "GET /logout returns HTTP 404 Not Found even though the app renders a '<a href=\"/logout\">Sign out</a>' link on the home page after a successful login (POST /session with any credentials sets session=ok and shows the Sign out link). POST /logout also returns 404. The logout endpoint is completely missing.",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.9130434782608695,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 41412
+  }
+}

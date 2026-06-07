@@ -1,0 +1,77 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 19.502560917055234,
+  "goal_id": "login",
+  "raw_output": {
+    "actions_used": 4,
+    "arm": "memory",
+    "elapsed_seconds": 19.501831750036217,
+    "goal_id": "login",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "Login flow: GET /login renders a form POSTing to /session with fields 'identifier' and 'secret'. Credentials admin@example.com/password and user@example.com/password both authenticated successfully. Session token is a static string 'ok', not a secure random token."
+    ],
+    "observations": [
+      {
+        "value": "POST /session with identifier=admin@example.com and secret=password returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome.' home page, indicating successful login."
+      },
+      {
+        "value": "POST /session with identifier=user@example.com and secret=password also returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome.' home page, indicating successful login."
+      },
+      {
+        "value": "The session cookie issued is a static, non-random value 'session=ok; Path=/', meaning any user (or attacker) can forge a valid session by setting Cookie: session=ok without ever authenticating."
+      },
+      {
+        "value": "The /session endpoint appears to accept any submitted credentials (both admin@example.com and user@example.com with 'password' succeed), suggesting no real credential validation is being performed."
+      }
+    ],
+    "off_path_fraction": 0.25,
+    "tokens_used": 6519,
+    "visited_urls": [
+      "/",
+      "/login",
+      "/session",
+      "/session"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 4,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "POST /session with identifier=admin@example.com and secret=password returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome.' home page, indicating successful login.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "POST /session with identifier=user@example.com and secret=password also returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome.' home page, indicating successful login.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "The session cookie issued is a static, non-random value 'session=ok; Path=/', meaning any user (or attacker) can forge a valid session by setting Cookie: session=ok without ever authenticating.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "The /session endpoint appears to accept any submitted credentials (both admin@example.com and user@example.com with 'password' succeed), suggesting no real credential validation is being performed.",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.25,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 6519
+  }
+}

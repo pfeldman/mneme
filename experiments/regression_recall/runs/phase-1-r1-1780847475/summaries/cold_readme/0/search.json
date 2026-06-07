@@ -1,0 +1,63 @@
+{
+  "arm": "cold_readme",
+  "elapsed_seconds": 39.57217054103967,
+  "goal_id": "search",
+  "raw_output": {
+    "actions_used": 20,
+    "arm": "cold_readme",
+    "elapsed_seconds": 39.57214283302892,
+    "goal_id": "search",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "The app has a /search page that accepts a GET form with a 'q' parameter. Every non-empty query tested returns a Results page containing only '<p class=\"error\">No results found.</p>'. This is true both for anonymous users and authenticated users (session=ok cookie set after successful login with admin@example.com/password). An empty query q= returns the bare search form without a results section. No other product/catalog endpoints were found (/products, /catalog, /product/1, /item/1 all 404). The search appears to be entirely non-functional."
+    ],
+    "observations": [
+      {
+        "value": "GET /search?q=<any_term> always returns HTTP 200 with 'No results found.' regardless of the query string. Tested with: q=shirt, q=a, q=the, q=%, q=*, and q=shirt with an authenticated session cookie. No product results are ever returned, indicating the search feature is completely broken (returns no results for any query)."
+      }
+    ],
+    "off_path_fraction": 0.9,
+    "tokens_used": 46145,
+    "visited_urls": [
+      "/README_FROZEN.md",
+      "/cold_readme_per_goal.md",
+      "/search",
+      "/login",
+      "/search?q=",
+      "/search?q=shirt",
+      "/search?q=a",
+      "/search?q=the",
+      "/session",
+      "/products",
+      "/search?q=shirt",
+      "/search?q=a",
+      "/cart",
+      "/catalog",
+      "/item/1",
+      "/product/1",
+      "/search?q=%25",
+      "/search?q=*",
+      "/api/search?q=a",
+      "/search"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 20,
+    "arm": "cold_readme",
+    "detections": [
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "GET /search?q=<any_term> always returns HTTP 200 with 'No results found.' regardless of the query string. Tested with: q=shirt, q=a, q=the, q=%, q=*, and q=shirt with an authenticated session cookie. No product results are ever returned, indicating the search feature is completely broken (returns no results for any query).",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.9,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 46145
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 46.47168141591828,
+  "goal_id": "search",
+  "raw_output": {
+    "actions_used": 16,
+    "arm": "memory",
+    "elapsed_seconds": 46.4716646670131,
+    "goal_id": "search",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "R-mode: /search accepts GET with ?q= parameter, renders a search form at /search (no q), and renders a Results page for any non-empty q.",
+      "E-mode: Every possible query (broad, narrow, single char, multi-word) returns the identical 235-byte 'No results found' response with HTTP 200. POST /search returns 404. /api/search returns 404.",
+      "The cart page is reachable at /cart (200) and shows a checkout button pointing to POST /cart/checkout.",
+      "No query-term reflection in results page body \u2014 the response is identical regardless of query input, suggesting the search backend is completely broken (empty catalog, broken DB connection, or similar)."
+    ],
+    "observations": [
+      {
+        "value": "GET /search?q=<any term> always returns HTTP 200 with body containing only '<p class=\"error\">No results found.</p>' \u2014 no results are ever returned regardless of query. Tested with: 'widget', 'apple', 'gizmo', 'foo', 'a', 'the', 'acme', 'product', 'test+item'. Every query yields the same 235-byte 'No results found' response, indicating the search index/data source is broken or disconnected."
+      },
+      {
+        "value": "GET /search?q=<term> response body never echoes the submitted query term back to the user. A working search results page would typically display the search term (e.g. 'Results for: widget'); this reflection is absent across all tested queries."
+      }
+    ],
+    "off_path_fraction": 0.875,
+    "tokens_used": 32753,
+    "visited_urls": [
+      "/",
+      "/search",
+      "/search?q=widget",
+      "/search?q=",
+      "/search?q=apple",
+      "/search?q=gizmo",
+      "/search?q=foo",
+      "/search?q=<script>alert(1)</script>",
+      "/search?q=a",
+      "/search?q=the",
+      "/api/search?q=a",
+      "/search",
+      "/search?q=acme",
+      "/search?q=product",
+      "/search?q=test+item",
+      "/cart"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 16,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "GET /search?q=<any term> always returns HTTP 200 with body containing only '<p class=\"error\">No results found.</p>' \u2014 no results are ever returned regardless of query. Tested with: 'widget', 'apple', 'gizmo', 'foo', 'a', 'the', 'acme', 'product', 'test+item'. Every query yields the same 235-byte 'No results found' response, indicating the search index/data source is broken or disconnected.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "GET /search?q=<term> response body never echoes the submitted query term back to the user. A working search results page would typically display the search term (e.g. 'Results for: widget'); this reflection is absent across all tested queries.",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.875,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 32753
+  }
+}

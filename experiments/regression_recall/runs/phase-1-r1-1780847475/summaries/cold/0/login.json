@@ -1,0 +1,61 @@
+{
+  "arm": "cold",
+  "elapsed_seconds": 20.11825520801358,
+  "goal_id": "login",
+  "raw_output": {
+    "actions_used": 6,
+    "arm": "cold",
+    "elapsed_seconds": 20.117196875042282,
+    "goal_id": "login",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "The login form at GET /login (HTTP 200) submits to POST /session with fields 'identifier' (email) and 'secret' (password).",
+      "Both admin@example.com/password and user@example.com/password also returned HTTP 200 with session=ok, consistent with the broken auth check.",
+      "The regression is that credential validation is bypassed for any non-empty input: the app sets session=ok regardless of whether the supplied identifier/secret match any real account."
+    ],
+    "observations": [
+      {
+        "value": "POST /session with completely invalid credentials (identifier=wrong@wrong.com, secret=badpassword) returns HTTP 200, sets 'Set-Cookie: session=ok; Path=/', and renders the authenticated Home page ('Welcome. Sign out'). Authentication is not actually validating credentials \u2014 any non-empty identifier/secret pair is accepted as a successful login."
+      },
+      {
+        "value": "POST /session with empty identifier and empty secret returns HTTP 401 with body containing 'Invalid credentials.' \u2014 confirming the server does have a rejection path, but it only triggers on empty inputs, not on genuinely wrong credentials."
+      }
+    ],
+    "off_path_fraction": 0.16666666666666666,
+    "tokens_used": 9570,
+    "visited_urls": [
+      "/",
+      "/login",
+      "/session",
+      "/session",
+      "/session",
+      "/session"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 6,
+    "arm": "cold",
+    "detections": [
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /session with completely invalid credentials (identifier=wrong@wrong.com, secret=badpassword) returns HTTP 200, sets 'Set-Cookie: session=ok; Path=/', and renders the authenticated Home page ('Welcome. Sign out'). Authentication is not actually validating credentials \u2014 any non-empty identifier/secret pair is accepted as a successful login.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /session with empty identifier and empty secret returns HTTP 401 with body containing 'Invalid credentials.' \u2014 confirming the server does have a rejection path, but it only triggers on empty inputs, not on genuinely wrong credentials.",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.16666666666666666,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 9570
+  }
+}

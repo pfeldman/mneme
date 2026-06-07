@@ -96,10 +96,18 @@ def build_default_plan(*, release: str = "phase-1-r1",
         arms=("cold", "cold_readme", "memory"),
         seeds=tuple(range(n_seeds)),
         goals=(
-            GoalSpec("login", ["/login", "/session", "/me"]),
-            GoalSpec("search", ["/search", "/list"]),
-            GoalSpec("checkout", ["/cart", "/cart/apply", "/cart/checkout",
-                                    "/checkout/continue", "/order", "/orders"]),
+            # `happy_path_urls` is the R-MODE walk only - the URLs an
+            # agent confirming the believed oracle would visit. Risk-
+            # relevant endpoints (/me for the s1 stale-trap, /cart/apply
+            # for coupons, /orders for idempotency, /settings/admin) are
+            # NOT happy-path: they are exactly what E-mode probes off it,
+            # and counting them as on-path mis-classifies productive
+            # risk-probing as happy-path walking (off_path drops below
+            # the floor for arms that legitimately probe risks).
+            GoalSpec("login", ["/login", "/session"]),
+            GoalSpec("search", ["/search"]),
+            GoalSpec("checkout", ["/cart", "/cart/checkout",
+                                    "/checkout/continue", "/order"]),
         ),
         budget_tokens_per_goal=budget_tokens_per_goal,
     )

@@ -1,0 +1,78 @@
+{
+  "arm": "cold_readme",
+  "elapsed_seconds": 57.667506749974564,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 17,
+    "arm": "cold_readme",
+    "elapsed_seconds": 57.66748187504709,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "POST /orders with the same Idempotency-Key header does not return the same order_id. Two consecutive requests with Idempotency-Key: fresh-key-abc (body: card=4111111111111111) returned distinct order IDs A1003 and A1004, both with \"idempotent\": false. The idempotency key is not being honored."
+      },
+      {
+        "value": "POST /orders with the README-documented field name 'card_number' (body: card_number=4111111111111111) returns HTTP 422 {\"error\": \"missing card\"}. The endpoint silently requires the field name 'card' instead of 'card_number', contradicting the README which states the endpoint accepts a form-encoded card number via 'card_number'."
+      }
+    ],
+    "off_path_fraction": 0.11764705882352941,
+    "tokens_used": 64043,
+    "visited_urls": [
+      "/cart",
+      "/login",
+      "/session",
+      "/cart/apply",
+      "/cart/checkout",
+      "/orders",
+      "/order",
+      "/orders",
+      "/orders",
+      "/order",
+      "/orders",
+      "/cart/apply",
+      "/orders",
+      "/orders",
+      "/cart/apply",
+      "/orders",
+      "/orders"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 17,
+    "arm": "cold_readme",
+    "detections": [
+      {
+        "arm": "cold_readme",
+        "matched_manifest": true,
+        "observation_text": "POST /orders with the same Idempotency-Key header does not return the same order_id. Two consecutive requests with Idempotency-Key: fresh-key-abc (body: card=4111111111111111) returned distinct order IDs A1003 and A1004, both with \"idempotent\": false. The idempotency key is not being honored.",
+        "seed": 0,
+        "slug": "k3_double_order",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "k3_double_order",
+          "reason": "The observation directly describes POST /orders with the same Idempotency-Key returning two distinct order IDs (A1003 and A1004), matching the manifest entry for k3_double_order exactly."
+        }
+      },
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "POST /orders with the README-documented field name 'card_number' (body: card_number=4111111111111111) returns HTTP 422 {\"error\": \"missing card\"}. The endpoint silently requires the field name 'card' instead of 'card_number', contradicting the README which states the endpoint accepts a form-encoded card number via 'card_number'.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes a field-name mismatch between the README and the implementation for POST /orders, but no such regression is listed in the manifest; this is a distinct bug not covered by any manifest entry."
+        }
+      }
+    ],
+    "off_path_fraction": 0.11764705882352941,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 64043
+  }
+}

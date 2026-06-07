@@ -17,6 +17,10 @@ dependencies = [
 dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10", "jsonschema>=4"]
 # Adapters are extras so the core stays runtime-agnostic (see ADR-0003).
 browser-use = ["browser-use"]
+# Live regression-recall experiment executor (Anthropic API + HTTP probe tool).
+# Optional - the core + tests run without it; only `experiments/regression_recall/
+# exec_anthropic.py` needs the SDK.
+live = ["anthropic>=0.40"]
 # stagehand / playwright adapters declared as they are implemented.
 
 [project.scripts]

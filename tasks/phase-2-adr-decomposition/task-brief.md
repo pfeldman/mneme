@@ -1,0 +1,67 @@
+decompose Phase 2 plan into pre-implementation ADRs (docs only, sealed artifacts untouched).
+
+## Context
+
+We are on branch `claude/mneme-phase-1`. The Phase 1 live regression-recall run is being executed by another agent in parallel against the in-progress run directory `experiments/regression_recall/runs/phase-1-r1-1780847475/`. ADR-0010 (Phase 1 verdict) is NOT yet written and will be authored by a separate task after the live run finishes. The goal of THIS task is to land the seven pre-implementation ADRs that the Phase 2 plan requires, without touching any sealed artifact and without pre-empting ADR-0010.
+
+## Deliverables
+
+Author each ADR file under `docs/adr/`. Each file follows the structural template in `docs/adr/README.md` (Context, Decision, Consequences, with Status: Proposed until Pablo accepts; cite phase-2 source items in Context and the invariants respected in Consequences).
+
+- `docs/adr/0011-phase-2-scope-and-deferrals.md`: Phase 2 scope umbrella. Names the FIVE load-bearing Phase 2 work items (multi-writer concurrency, recency decay, exploration incentive, real-app SUT port, E-mode candidate persistence), identifies which schema fields each activates or extends, and explicitly DEFERS to Phase 1.5 the auditor protocol with `refuted` status (was previously in the Phase 2 draft plan; reverted to ADR-0009's deferral) and the Stagehand adapter + head-to-head experiment design + run. Also defers to Phase 3: governance/RBAC/hosted-shared-memory, dashboards, secret redaction beyond adapter regex, poisoning detection beyond diversity-or-seed, web UI, pricing/GTM. Resolves the Phase-1.5-vs-Phase-2 boundary explicitly, item by item. Covers P2-02, P2-20, P2-21, P2-22, P2-23, P2-24.
+
+- `docs/adr/0012-multi-writer-concurrency-contract.md`: Multi-writer concurrency contract, split into TWO named sections inside one document. (a) Store-layer contract: append-only file_store layout (one file per event id) is the lock-free mechanism; no last-write-wins; no in-place mutation; no non-deterministic shard merging; deterministic projection under concurrent appends. (b) Gate-layer contract under contention: `source_id` = `agent_identity` (model + prompt lineage), NOT run_uuid or session id, so N concurrent writers of the same model count as one source under ADR-0008. Contradictions remain `contested`; oscillation remains `quarantined`; no consensus synthetic entries that drop per-source provenance. Phase 2 multi-writer store is SINGLE-TENANT BY CONTRACT with a per-store-root path convention (`store/<tenant_id>/events/`) enforced at the file_store boundary as a placeholder; cross-tenant writes are explicitly UNSAFE; hosted/shared multi-tenant remains Phase 3. Adversarial harness ships in the SAME COMMIT as multi-writer store changes (named decision section, not a consequence bullet); CI gate refuses to merge multi-writer store PRs without the corresponding scenarios in `experiments/multi_writer/`. Covers P2-03, P2-05, P2-19.
+
+- `docs/adr/0013-recency-decay-as-projection-derivation.md`: Recency decay as projection-time event-driven demotion, never in-place mutation. Decay is computed from existing event timestamps + a deterministic decay function over `observed_app_version` (primary) and wall-clock (secondary). Pure derivation for confidence shifts; explicit decay-event append for status flips (`believed` -> `stale`, `contested` -> `stale`). Re-promotion to `believed` requires fresh diverse evidence; decay is unidirectional. CRITICAL: decay is implemented as a projection-time re-evaluation of `independent_diverse(...)` over the surviving non-staled signal set; the instant the surviving set fails the diversity-or-seed check, status flips and a decay event is appended. Same-type repeats CANNOT keep a believed status alive once the diverse signal has staled. Multi-writer-and-decay collision (which `observed_app_version` anchors the projection's `current_version` when writers disagree) is fully decided here, not deferred to ADR-0012. Covers P2-04.
+
+- `docs/adr/0014-e-mode-candidate-persistence.md`: E-mode candidate persistence via a sibling `CandidateEvent` type (NOT an extension of `ObservationEvent`, which stays signals-only) with its own `schema_version`. Candidates persist as `contested` by default; promotion requires the SAME `independent_diverse(...)` rule from `oracle/trust.py` (>=2 distinct `source_id`s AND >=2 distinct evidence types), NOT a relaxed form. Two writers of the same `agent_identity` with same-type candidate observations remain one source under multi-writer (ADR-0012 + ADR-0008 INHERENT boundary). Provenance + confidence mandatory; uncertainties carry author + timestamp; `risks.trigger` structured validator from ADR-0009 applies on write. `praxis review` surfaces a queue of contested candidates with provenance; human promotion writes a NEW seed event, never edits the candidate event. Unresolved candidates decay to `stale` per ADR-0013, never to silent removal. Covers P2-17, P2-18.
+
+- `docs/adr/0015-exploration-reward-pre-registration.md`: Exploration reward function pre-registered before any optimization. Formula: `reward = (resolved_uncertainties + alpha * new_unique_candidate_risks) / budget_tokens`, where `unique` is canonicalized by the trigger validator and `alpha` is pre-registered. Strictly observability for Phase 2; does NOT feed agent state. Adversarial review of Goodhart attacks (separately-isolated session, deliverable = list of attacks with predicted reward inflation + mitigation or accepted rationale) must precede any run. Random-walk baseline (same budget, no risks/uncertainties input) runs concurrently with the memory arm on the first Phase 2 multi-writer experiment. `off_path_fraction` floor from ADR-0009 stays; new `unique_candidates_per_budget` floor and `goodhart_score` red-flag heuristic added. Consequences section names explicitly: reporting a metric IS optimizing for it; alpha and resolution criteria become sealed under `praxis_git_sha` at run-start, changes invalidate prior data (ADR-0009 precedent). Covers P2-06, P2-07.
+
+- `docs/adr/0016-real-app-sut-selection.md`: Real-app SUT selection. Pre-registers criteria: public + dockerizable in under 30 min on a developer laptop; at least three goal-shaped flows comparable to the Phase 1 four (login, search, checkout, admin_access); known issue history usable for future auditor work (Phase 1.5); license permits redistribution of seeded knowledge artifacts. Evaluates Conduit / Saleor / OpenMRS; recommendation Conduit (fallback Saleor). Picks four-or-five goals for the port, parallel to Phase 1 for cross-SUT comparability. Pre-registers `experiments/regression_recall_real/` as a NEW directory; Phase 1 sealed artifacts are NOT touched, the port copies independently. Covers P2-08, P2-09, P2-10.
+
+- `docs/adr/0017-schema-extension-auth-state.md`: Schema additive extension for session/auth-state, surfaced by the ADR-0016 real-app port. NEW projected field shape: `auth_state: {authenticated: bool, scope: string|null}` derived from observable behavioral and network signals. MUST NOT carry: tokens, cookies, user IDs, session IDs, or anything matching the no-secrets-tokens-pii-in-knowledge invariant. Redaction at the adapter boundary stays the rule; the schema only describes the abstract auth-state. `schema/knowledge.schema.json` is updated; the pydantic model is updated; the model-schema agreement test must pass in the same commit. This ADR is separate from ADR-0016 BECAUSE bundling SUT selection with a PII-fragile schema extension is the canonical way to leak under porting pressure. Covers the schema half of P2-10.
+
+## Constraints
+
+- ADRs are docs only. Do NOT introduce any implementation code in this task.
+- Do NOT modify any of these sealed artifacts:
+  - `experiments/regression_recall/pre_registration.md`, `LOCAL_RUN.md`, `manifest.json`, `manifest.py`, `README_FROZEN.md`, `cold_readme_per_goal.md`, `judge_prompt.txt`, `metrics.py`, `harness.py`, `run_live.py`, `exec_anthropic.py`, `budget.json`
+  - `experiments/regression_recall/knowledge/{login,search,checkout,admin_access}.knowledge.yaml`
+  - `experiments/regression_recall/runs/phase-1-r1-1780847475/` (entire directory, including `run_manifest.json` and `summaries/`)
+  - `experiments/ui-mutation/testapp.py`, `mutate.py`, `runtimes.py`
+  - `src/praxis/runner/` (entire package: `prompts.py`, `__init__.py`, `regression.py`, `exploration.py`, `report.py`)
+  - `src/praxis/model/`, `src/praxis/store/`, `src/praxis/oracle/`, `src/praxis/merge/`, `src/praxis/adapters/`, `src/praxis/cli/`
+  - `schema/`
+  - `pyproject.toml`
+- Do NOT pre-empt ADR-0010 by asserting what Phase 1 concluded. Where an ADR depends on a Phase 1 result, frame it conditionally (e.g. "assuming ADR-0010 records a continue verdict") and let ADR-0010 land separately.
+- Each ADR must explicitly cite which invariants it respects, by name, from this set: operational-knowledge-not-procedures, invariants-not-coordinates-hierarchy, provenance-and-confidence-mandatory, append-only-store-no-mutation, concurrent-writes-lose-no-knowledge, runtime-agnostic-core, oracle-diversity-rule, first-oracle-must-be-seeded, loud-and-traceable-over-silent-and-convenient, no-self-corroboration-source-independence, contradictions-preserved-as-contested, no-secrets-tokens-pii-in-knowledge, tenant-scoping-prevents-leakage, schema-is-single-source-of-truth, exploration-incentive-against-coverage-collapse, adapter-spi-tiny-and-stable, knowledge-not-mbt-procedure-cache, no-silent-success-when-app-broken, human-intervention-rate-must-stay-bounded, no-procedures-secrets-or-run-data-as-storage-targets, single-runtime-coupling-forbidden.
+- Each ADR follows the structural template referenced in `docs/adr/README.md`: a numbered slug filename, `Status: Proposed`, Context (problem + phase-2 source items), Decision (the rule + forbidden alternatives), Consequences (positive, negative, invariants respected, invariants this ADR does NOT cover), and an explicit relation to prior ADRs (Extends / Refines / Supersedes).
+- Status of every new ADR is `Proposed` until Pablo accepts. Do NOT mark any as Accepted in this task.
+- ADRs land sequentially in numeric order; later ADRs may forward-reference earlier ADRs in this same batch but must not forward-reference later ones.
+
+## Acceptance
+
+- Every one of the seven ADR files exists at the path listed in Deliverables, follows the template, cites its phase-2 source items by id (P2-XX), names the invariants it respects, and names which invariants it explicitly does NOT cover.
+- `docs/adr/README.md` is updated with a row per new ADR (number, title, one-line summary, status: Proposed). Existing rows for ADR-0001 through ADR-0009 are unchanged. ADR-0010 row is NOT added by this task.
+- `bash verify.sh` stays ALL GREEN (should be trivial since this task is doc-only; no schema or code changes).
+- `git status` shows NO modifications to any path in the sealed-artifact list above. Cross-check with `git diff --name-only HEAD` against the sealed list.
+- ADR-0011 explicitly lists the auditor protocol + `refuted` status AND the Stagehand adapter + head-to-head as deferred to Phase 1.5, mirroring ADR-0009's deferral pattern.
+- ADR-0012 contains a named subsection committing the adversarial harness to ship in the same commit as multi-writer store changes (not a consequence bullet).
+- ADR-0017 (schema extension) and ADR-0016 (SUT selection) are SEPARATE files, not bundled.
+
+## Out of scope
+
+- Implementation code for any of these ADRs. This task lands docs only.
+- Phase 1.5 items: the Stagehand adapter + benchmark, the paid API-key happy-path run, and the auditor offline harness with `refuted` status. These get their own ADR series when Phase 1.5 opens; do NOT propose ADRs for them now.
+- ADR-0010 (the Phase 1 verdict). It will be written by a separate task after the live run finishes. Do NOT pre-empt its conclusion in any ADR in this batch.
+- Any modification to sealed artifacts (see Constraints list).
+- Phase 3 items: governance/RBAC, hosted multi-tenant shared memory, dashboards, secret redaction beyond adapter regex, poisoning detection beyond diversity-or-seed, web UI, pricing/GTM. These are recorded as deferred inside ADR-0011, not proposed as separate ADRs.
+
+## Order suggestion
+
+Author in numeric order: 0011 (scope umbrella) -> 0012 (multi-writer, the load-bearing contract several later ADRs reference) -> 0013 (decay, follows multi-writer for the observed_app_version anchor question) -> 0014 (candidate persistence) -> 0015 (exploration reward, counts persisted candidates) -> 0016 (real-app SUT selection) -> 0017 (auth-state schema extension, separate from 0016 because PII-fragile). Each step only depends on prior ADRs in the batch plus the already-Accepted ADR-0001 through ADR-0009.
+
+## Applied critic feedback
+
+Dropped two proposed ADRs (auditor+refuted and Stagehand head-to-head) per blocker findings that placed them in Phase 1.5; ADR-0011 now explicitly defers them. Split the original bundled SUT-plus-schema ADR into ADR-0016 (selection) and ADR-0017 (schema) per should-fix. Hardened ADR-0012 with single-tenant-by-contract placeholder and a named day-one adversarial-harness decision; hardened ADR-0013 with diversity re-evaluation rule and full ownership of the multi-writer-decay collision; hardened ADR-0014 (candidate persistence) with explicit ADR-0008 source-independence under multi-writer; added observability-creates-pressure clause to ADR-0015.
