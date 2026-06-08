@@ -27,6 +27,7 @@ from typing import Callable, Iterable
 from ..adapters.spi import KnowledgeAdapter
 from ..merge.decay import DecayConfig, _parse_semver, is_observation_staled
 from ..model import KnowledgeFile, Signal, Status
+from ..model.predicate import _STOPWORDS
 from ..store import ObservedSignal
 from ._parallel import run_partitioned
 from .prompts import render_regression_prompt
@@ -157,10 +158,9 @@ Executor = Callable[[str], ExecutorResult]
 # rigorous). Both fall back to the LLM-judge for ambiguous cases.
 _PARAPHRASE_THRESHOLD = 0.5
 
-_STOPWORDS = frozenset({
-    "a", "an", "the", "is", "are", "and", "or", "of", "to", "in", "on",
-    "with", "for", "by", "at", "as", "be", "this", "that",
-})
+# `_STOPWORDS` is the shared tokenizer floor, defined canonically in
+# `model.predicate` (imported above) so the free-text Jaccard path here and the
+# structured predicate's invariant check use one set (ADR-0030 decision 6).
 
 
 def _tokens(s: str) -> set[str]:
