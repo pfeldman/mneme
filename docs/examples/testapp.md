@@ -105,6 +105,15 @@ That is the whole loop: teach a goal once with a human confirm, then regress as 
 you like and get a plain OK / REGRESSED / STALE verdict that tells you whether the app
 broke or the knowledge drifted.
 
+A signal whose value carries a per-run instance (an id, a hostname, a generated name) can
+optionally be taught as a CHECKABLE FACT with a `value_predicate` (ADR-0030): the durable
+text is matched exactly and a `{slot}` marks the per-run token the matcher tolerates on
+presence (or `{slot:numeric}` / `{slot:uuid}` shape) only. For example a network signal
+`value_predicate: POST /session returns 2xx and sets cookie {session_cookie}` matches an
+honest run that reports the real cookie value, while a `returns 500` run does NOT. This is
+stricter than the default word-overlap match, never looser; see
+[03 - Knowledge schema](../03-knowledge-schema.md).
+
 ## What this example shows and what it does not
 
 It shows the mechanics of the loop end to end on a controlled app: how teach produces
