@@ -183,7 +183,16 @@ def make_claude_brain(
         if model:
             argv += ["--model", model]
         if mcp_config_path:
-            argv += ["--mcp-config", mcp_config_path]
+            # `--strict-mcp-config` so the run uses ONLY our Playwright MCP, not
+            # whatever ambient MCP servers the user's global config defines: the
+            # console runner must be deterministic about which browser it drives.
+            argv += ["--mcp-config", mcp_config_path, "--strict-mcp-config"]
+        # Headless / non-interactive: there is no human to approve a tool call,
+        # so a permission prompt would hang the run (the Finding-A failure on the
+        # brain side; Pablo's constraint that the brain can never ask). Bypass
+        # permission checks for this subprocess; the blast radius is bounded by
+        # the low-privilege test account the run drives (ADR-0026 consequences).
+        argv += ["--permission-mode", "bypassPermissions"]
         if extra_args:
             argv += list(extra_args)
         # `headed` is plumbed to the browser the MCP launches; until the MCP

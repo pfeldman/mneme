@@ -138,6 +138,19 @@ def test_model_and_mcp_config_flags_are_forwarded(monkeypatch: Any) -> None:
     argv = seen["argv"]
     assert "--model" in argv and "claude-opus-4-8" in argv
     assert "--mcp-config" in argv and "/tmp/mcp.json" in argv
+    # An mcp-config is used strictly (only our Playwright MCP, not ambient ones).
+    assert "--strict-mcp-config" in argv
+
+
+def test_headless_brain_bypasses_permission_prompts(monkeypatch: Any) -> None:
+    """The headless brain runs non-interactive, so it must pre-grant tool
+    permissions: a permission prompt would hang a run with no human to answer
+    (ADR-0027 decision 8 / Pablo's "the brain can never ask")."""
+    seen = _patch_run(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    make_claude_brain()("p")
+    argv = seen["argv"]
+    assert "--permission-mode" in argv
+    assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
 
 
 def test_extract_observations_prefers_the_last_object(monkeypatch: Any) -> None:
