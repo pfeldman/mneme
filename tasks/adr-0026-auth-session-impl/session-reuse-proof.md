@@ -50,11 +50,34 @@ modules, before merging the implementation. Run 2026-06-08.
    real regression (an authenticated run whose failure signal fired) still
    classifies REGRESSED; the auth route only fires on `authenticated=False`.
 
+## Real-world run: Digioh prod with email 2FA (2026-06-08)
+
+The second pass, against an app we did not build, with a real second factor.
+
+- SUT: `account.digioh.com` (production), a low-privilege test account.
+- The login is real: email plus password, then a multi-factor code delivered
+  to an email inbox (the canonical email-2FA case ADR-0026 targets). I drove
+  the login; when the run hit the MFA wall, Pablo read the code from the inbox
+  and I entered it live (the credential prompt; the code was never persisted).
+  The login plus 2FA succeeded and landed on the authenticated campaigns area.
+- Captured the real session (16 cookies, including the httpOnly auth cookies a
+  real app uses) via the browser context. The session content was handled
+  entirely inside the Playwright process and never echoed into this session.
+- Reuse skips the 2FA: clearing the browser cookies (a fresh browser) made the
+  protected root redirect to `/Login` (logged out); re-injecting the saved
+  session cookies made the protected root load the authenticated campaigns area
+  again WITHOUT repeating the login or the 2FA. This is the payoff the whole
+  ADR exists for, confirmed on real prod with a real email second factor.
+- The logged-out redirect to `/Login` is the real auth-wall an expired session
+  hits, which the engine reports as `authenticated=False` and the classifier
+  turns into AUTH-EXPIRED (proven against a true server-side expiry on testapp
+  above). No `explore` was run against prod; the run was login-only and made no
+  state-changing request.
+
 ## Verdict
 
 The ADR-0026 implementation works end to end on a real browser with the real
-modules: the session is saved as a gitignored secret, reused to skip the login,
-and a stale session surfaces as a distinct, loud AUTH-EXPIRED rather than a
-false regression. This is the pre-merge proof. The next pass is the real-world
-run against Digioh (with a low-privilege test account and its email 2FA), which
-is where the 2FA-skip payoff is exercised against an app we did not build.
+modules, on the toy AND on Digioh production: the session is saved as a
+gitignored secret, reused to skip the entire login (including a real email 2FA
+on Digioh), and a stale or absent session surfaces as a distinct, loud
+AUTH-EXPIRED rather than a false regression. Both pre-merge proofs pass.
