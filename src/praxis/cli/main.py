@@ -250,8 +250,12 @@ def _scaffold_skills(repo_root: Path) -> int:
     data (ADR-0020) into the consuming project. The skill files come from
     `praxis.resources.iter_skill_files`, which resolves them both from an
     installed wheel and from the src tree. The package-relative subpath of each
-    skill (for example `praxis/teach/SKILL.md`) is preserved under
-    `.claude/skills/`. Returns the number of files written.
+    skill (for example `praxis-teach/SKILL.md`) is preserved under
+    `.claude/skills/`. The packaged tree is FLAT, one directory per skill named
+    by the skill's frontmatter name, because Claude Code discovers a project
+    skill only as `.claude/skills/<name>/SKILL.md`; a nested
+    `.claude/skills/praxis/<skill>/` layout is NOT discovered as a slash
+    command. Returns the number of files written.
     """
     dest_root = repo_root / SKILLS_INSTALL_DIR
     src_root = Path(str(skills_root()))
