@@ -15,6 +15,7 @@ Public API:
     Provenance, Signal, Target, Meta                     - the signal model
     HttpTrigger, SequenceTrigger, Trigger, Risk          - Phase-1 risks
     Uncertainty                                          - Phase-1 uncertainties
+    AuthState                                            - Phase-2 auth posture (ADR-0017)
     KnowledgeFile                                        - one goal entry
     load / dump / loads / dumps                          - YAML round-trip
     validate_against_json_schema                         - cross-check vs the JSON Schema
@@ -23,6 +24,7 @@ Public API:
 from __future__ import annotations
 
 from .knowledge import (
+    AuthState,
     HttpTrigger,
     KnowledgeFile,
     Meta,
@@ -45,6 +47,7 @@ from .knowledge import (
 )
 
 __all__ = [
+    "AuthState",
     "HttpTrigger",
     "KnowledgeFile",
     "Meta",

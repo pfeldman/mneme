@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA_VERSION: Literal["0"] = "0"
 
@@ -151,6 +151,125 @@ class Risk(_Base):
     status: Status
 
 
+# --- Phase-2 projected field: auth_state (ADR-0017) --------------------------
+
+# Forbidden substrings on `scope` and on observation values feeding auth_state.
+# Per ADR-0017 sec 2, auth_state MUST NOT carry: access/refresh tokens, API
+# keys, bearer strings, cookies, user/account/session identifiers, emails, JWT
+# contents, or any per-session/per-user data. The validator rejects loudly so
+# that a wrong write becomes a traceable event at the boundary, not a silent
+# leak (AGENTS.md non-negotiable + docs/06 leakage).
+_AUTH_STATE_FORBIDDEN_SCOPE_TOKENS: tuple[str, ...] = (
+    "token",
+    "bearer",
+    "cookie",
+    "session_id",
+    "sid",
+    "user_id",
+    "account_id",
+    "uid",
+    "jwt",
+    "@",  # any email-shaped scope
+    "api_key",
+    "apikey",
+    "tenant_id",  # ADR-0017 sec 5 forbidden alternatives
+    "org_id",
+    "workspace_id",
+)
+
+# Allowed canonical scope strings; an SUT may register additional role strings
+# in its knowledge file, but per-session identifiers are always rejected.
+_AUTH_STATE_RECOMMENDED_SCOPES: frozenset[str] = frozenset(
+    {"anonymous", "user", "admin"}
+)
+
+
+class AuthState(_Base):
+    """Projected authentication posture for a goal (ADR-0017).
+
+    Two subfields only:
+      * `authenticated` - whether the projection believes the current session
+        is authenticated, derived from observable behavioral or network
+        signals via the same diversity-or-seed rule as any other oracle
+        (ADR-0008). This is NOT a new oracle; promotion reuses
+        `oracle/trust.py` over the underlying signals.
+      * `scope` - abstract role the projection believes the session occupies
+        (`anonymous`, `user`, `admin`, or a SUT-specific role string the
+        knowledge file registers). `null` when `authenticated` is false or
+        when surviving evidence is too thin to claim a scope.
+
+    What `auth_state` MUST NOT carry (rejected at write time):
+
+    * access/refresh tokens, API keys, bearer strings;
+    * cookies (raw or parsed) and cookie names that double as session IDs;
+    * user identifiers (`user_id`, `account_id`, email, username);
+    * session identifiers (`session_id`, `sid`, JWT contents);
+    * any per-session or per-user generated value;
+    * tenant/org/workspace scoping (ADR-0012 owns tenant paths).
+
+    The adapter is the redaction point; the schema/model is the contract that
+    says what may cross. Rejection here is loud (pydantic ValidationError),
+    not silent.
+    """
+
+    authenticated: bool
+    # `scope` is REQUIRED on write but its value is nullable: a writer must
+    # decide whether the projection believes a scope or explicitly null
+    # (ADR-0017 sec 1: null when authenticated is false or surviving evidence
+    # is too thin). Pydantic `... = Field(...)` mirrors the schema's required
+    # list; the field still accepts `None`.
+    scope: str | None = Field(...)
+
+    @field_validator("scope")
+    @classmethod
+    def _scope_must_not_carry_secrets(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not v.strip():
+            raise ValueError(
+                "auth_state.scope must be a non-empty role string or null; "
+                "got an empty/whitespace value."
+            )
+        lowered = v.lower()
+        for forbidden in _AUTH_STATE_FORBIDDEN_SCOPE_TOKENS:
+            if forbidden in lowered:
+                raise ValueError(
+                    f"auth_state.scope rejected: contains forbidden token "
+                    f"{forbidden!r} (ADR-0017 sec 2). scope must be an "
+                    f"abstract role like 'anonymous', 'user', 'admin', or a "
+                    f"SUT-specific role string; tokens, cookies, user/session "
+                    f"ids, and PII are never durable knowledge."
+                )
+        # An obvious JWT shape (three dot-separated base64-url chunks) is
+        # rejected even if it slipped past the token-name filter.
+        parts = v.split(".")
+        if len(parts) == 3 and all(
+            len(p) >= 8 and all(c.isalnum() or c in "-_" for c in p) for p in parts
+        ):
+            raise ValueError(
+                "auth_state.scope rejected: value looks like a JWT (three "
+                "base64url segments separated by dots). scope is an abstract "
+                "role, never a credential (ADR-0017 sec 2)."
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _scope_null_when_unauthenticated(self) -> "AuthState":
+        if not self.authenticated and self.scope is not None:
+            raise ValueError(
+                "auth_state.scope must be null when authenticated is false "
+                "(ADR-0017 sec 1: an unauthenticated session has no scope)."
+            )
+        return self
+
+    @classmethod
+    def recommended_scopes(cls) -> frozenset[str]:
+        """Canonical scope strings. SUTs MAY register additional roles by
+        using them in seeded knowledge; the validator only rejects forbidden
+        tokens, not unseen role strings."""
+        return _AUTH_STATE_RECOMMENDED_SCOPES
+
+
 class Uncertainty(_Base):
     """An open question an agent could not resolve (docs/03).
 
@@ -186,6 +305,7 @@ class KnowledgeFile(_Base):
     failure_signals: list[Signal] | None = None
     risks: list[Risk] | None = None
     uncertainties: list[Uncertainty] | None = None
+    auth_state: AuthState | None = None
     meta: Meta
 
 

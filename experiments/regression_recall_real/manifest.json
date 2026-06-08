@@ -1,0 +1,105 @@
+{
+  "$schema_note": "Pre-registered ground-truth manifest for the Phase-2 real-app regression-recall experiment on Conduit (ADR-0016, ADR-0017). Sealed BEFORE any arm runs. Parallel-but-distinct from the Phase-1 manifest under experiments/regression_recall/manifest.json: the Phase 1 categories (tourist, knowledge_visible, stale_trap) are kept so cross-SUT recall is apples-to-apples, but the planted regressions are authored for Conduit's API surface, not testapp.py. Editing post-run invalidates the run.",
+  "schema_version": "1",
+  "release": "phase-2-r1-conduit",
+  "sut": {
+    "name": "conduit",
+    "source": "https://github.com/gothinkster/realworld",
+    "license": "MIT",
+    "backend_url": "http://localhost:3000/api",
+    "frontend_url": "http://localhost:4100",
+    "compose_file": "setup/docker-compose.yml",
+    "selection_adr": "0016"
+  },
+  "goal_slate_adr": "0016",
+  "schema_extension_adr": "0017",
+  "goals": [
+    {
+      "goal_id": "login",
+      "description": "Returning user can authenticate and reach a protected surface.",
+      "auth_state_after_success": { "authenticated": true, "scope": "user" }
+    },
+    {
+      "goal_id": "publish_article",
+      "description": "Authenticated user can publish an article and find it under their profile.",
+      "auth_state_after_success": { "authenticated": true, "scope": "user" }
+    },
+    {
+      "goal_id": "favorite_article",
+      "description": "Authenticated user can toggle the favorite on another user's article without double-applying.",
+      "auth_state_after_success": { "authenticated": true, "scope": "user" }
+    },
+    {
+      "goal_id": "follow_user",
+      "description": "Authenticated user can follow another user; their profile shows the relationship and feed reflects it.",
+      "auth_state_after_success": { "authenticated": true, "scope": "user" }
+    },
+    {
+      "goal_id": "edit_article",
+      "description": "Article owner can edit their own article; non-owners cannot (auth-scope parallel to Phase 1 admin_access).",
+      "auth_state_after_success": { "authenticated": true, "scope": "user" }
+    }
+  ],
+  "regressions": [
+    {
+      "slug": "t1_login_500",
+      "category": "tourist",
+      "description": "POST /api/users/login always returns 500.",
+      "goal_id": "login",
+      "plant_endpoint": "/_plant?set=t1_login_500",
+      "expected_observation": "POST /api/users/login returns 500 (server error on login)",
+      "expected_kind": "failure",
+      "expected_signal_type": "network"
+    },
+    {
+      "slug": "t2_articles_blank",
+      "category": "tourist",
+      "description": "GET /api/articles returns an empty list even when articles exist.",
+      "goal_id": "publish_article",
+      "plant_endpoint": "/_plant?set=t2_articles_blank",
+      "expected_observation": "GET /api/articles returns articles array empty when at least one article was just published",
+      "expected_kind": "failure",
+      "expected_signal_type": "behavioral"
+    },
+    {
+      "slug": "k1_favorite_double_count",
+      "category": "knowledge_visible",
+      "description": "POST /api/articles/{slug}/favorite called twice increments favoritesCount twice (idempotency violated).",
+      "goal_id": "favorite_article",
+      "plant_endpoint": "/_plant?set=k1_favorite_double_count",
+      "expected_observation": "POST /api/articles/{slug}/favorite called twice returns favoritesCount=2 for the same user",
+      "expected_kind": "failure",
+      "expected_signal_type": "network"
+    },
+    {
+      "slug": "k2_follow_self_allowed",
+      "category": "knowledge_visible",
+      "description": "POST /api/profiles/{me}/follow against the caller's own username returns 200 (self-follow should be rejected).",
+      "goal_id": "follow_user",
+      "plant_endpoint": "/_plant?set=k2_follow_self_allowed",
+      "expected_observation": "POST /api/profiles/{me}/follow with the caller's own username returns 200 following=true",
+      "expected_kind": "failure",
+      "expected_signal_type": "network"
+    },
+    {
+      "slug": "k3_edit_non_owner",
+      "category": "knowledge_visible",
+      "description": "PUT /api/articles/{slug} succeeds for a non-owner authenticated user (auth-scope check skipped).",
+      "goal_id": "edit_article",
+      "plant_endpoint": "/_plant?set=k3_edit_non_owner",
+      "expected_observation": "PUT /api/articles/{slug} returns 200 when authenticated as a user other than the article author",
+      "expected_kind": "failure",
+      "expected_signal_type": "network"
+    },
+    {
+      "slug": "s1_oracle_lies_login",
+      "category": "stale_trap",
+      "description": "POST /api/users/login returns 200 with a token, but GET /api/user with the just-issued token returns 401. An R-mode arm trusting the believed login success_signals blindly passes; catching the regression requires probing /api/user (the auth_state success signal) as a follow-up authenticated check.",
+      "goal_id": "login",
+      "plant_endpoint": "/_plant?set=s1_oracle_lies_login",
+      "expected_observation": "GET /api/user with the just-issued bearer token returns 401 unauthorized even though POST /api/users/login returned 200 with the token",
+      "expected_kind": "failure",
+      "expected_signal_type": "network"
+    }
+  ]
+}

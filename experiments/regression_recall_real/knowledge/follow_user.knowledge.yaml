@@ -1,0 +1,99 @@
+# Seeded knowledge for the Conduit `follow_user` goal.
+#
+# Parallels Phase-1 `admin_access` in shape: mutating flow gated by an
+# authentication precondition. Self-follow rejection is the canonical
+# knowledge-visible bug seed.
+schema_version: "0"
+goal_id: follow_user
+goal: An authenticated Conduit user can follow another user; their profile
+  shows the relationship, the global feed reflects it, and self-follow is
+  rejected.
+
+target:
+  app: conduit
+  environment: local
+  observed_app_versions: ["phase-2-r1-conduit"]
+
+success_signals:
+  - type: behavioral
+    value: the follow button on the target user's profile flips to "Unfollow"
+      after a click
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: POST /api/profiles/{username}/follow returns 200 with a profile
+      object whose following=true
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: GET /api/articles/feed returns articles authored by the just-followed
+      user in the articles array
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+failure_signals:
+  - type: network
+    value: POST /api/profiles/{me}/follow with the caller's own username returns
+      200 following=true (self-follow should be rejected, not accepted)
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+risks:
+  - id: self-follow-accepted
+    description: POST /api/profiles/{username}/follow may not reject the case
+      where {username} is the caller's own username. The believed success
+      signal "returns 200 following=true" cannot distinguish a legitimate
+      follow from a self-follow at the HTTP layer; only checking the target
+      username vs the caller's identity catches it.
+    trigger:
+      kind: http
+      method: POST
+      path: /api/profiles/{me}/follow
+      expect: returns 4xx (typically 422 unprocessable) rejecting the self-follow,
+        NOT 200 following=true
+    mitigation: include a self-follow probe in the follow_user verification step.
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+uncertainties:
+  - id: u-follow-pagination
+    question: When the followed user has more than the default page size of
+      articles, does GET /api/articles/feed paginate or truncate? The reference
+      backend does not document the cap.
+    raised_by: pablo-seed
+    raised_at: "2026-06-07T00:00:00Z"
+    resolved: false
+
+auth_state:
+  authenticated: true
+  scope: user
+
+meta:
+  created_at: "2026-06-07T00:00:00Z"
+  updated_at: "2026-06-07T00:00:00Z"
+  contributing_agents: []
