@@ -685,6 +685,143 @@ def test_cli_regress_exits_non_zero_when_an_auth_expired_goal_is_present(
     assert "RUN PASSED" not in report_text
 
 
+# --- ADR-0026 Step 5: the save / load seam round-trips through auth_session --
+
+
+def test_auth_session_seam_save_then_load_round_trips(tmp_path: Path) -> None:
+    """The teach SAVE seam and the regress / explore LOAD seam round-trip a
+    storageState through the Step 1 channel without duplicating resolution
+    (ADR-0026 decisions 1, 7). `role_for_auth_state` maps an authenticated,
+    non-anonymous goal to its abstract role; the save and load seams persist and
+    fetch the session keyed by that role."""
+    from praxis import auth_session
+
+    auth_dir = tmp_path / auth_session.AUTH_DIRNAME
+
+    # The role a session is keyed by is the abstract ADR-0017 scope, the same
+    # predicate the regress classifier applies (one session per role, decision 4).
+    authed = AuthState(authenticated=True, scope="admin")
+    role = auth_session.role_for_auth_state(authed)
+    assert role == "admin"
+    # An anonymous / unauthenticated goal needs no saved session.
+    assert auth_session.role_for_auth_state(AuthState(authenticated=False, scope=None)) is None
+    assert auth_session.role_for_auth_state(AuthState(authenticated=True, scope="anonymous")) is None
+    assert auth_session.role_for_auth_state(None) is None
+
+    storage_state = {
+        "cookies": [
+            {"name": "session", "value": "seam-cookie-9f3a", "domain": "app", "path": "/"}
+        ],
+        "origins": [],
+    }
+    # SAVE seam (teach bootstrap) then LOAD seam (regress / explore) round-trip.
+    path = auth_session.save_session_for_role(role, storage_state, auth_dir=auth_dir)
+    assert path == auth_dir / "admin.json"
+    loaded = auth_session.load_session_for_role(role, auth_dir=auth_dir, environ={})
+    assert loaded == storage_state
+    # The env / CI runner secret wins over the file (decision 3), proving the
+    # seam reuses the Step 1 env-wins resolution rather than re-implementing it.
+    env_state = {"cookies": [], "origins": [{"origin": "app", "localStorage": []}]}
+    got = auth_session.load_session_for_role(
+        role,
+        auth_dir=auth_dir,
+        environ={auth_session.env_var_name(role): json.dumps(env_state)},
+    )
+    assert got == env_state
+
+
+# --- ADR-0026 Step 5: ORGANIC AUTH-EXPIRED through the real read path --------
+
+
+def _authed_seed_yaml(goal_id: str, *, scope: str = "user") -> str:
+    """A minimal valid seed that records an AUTHENTICATED auth_state scope
+    (ADR-0017): `authenticated: true` with a non-anonymous role. A goal seeded
+    this way is AUTH-EXPIRED when the run reports authenticated=False, PROVIDED
+    the projection carries the seed's auth_state through to the read path
+    (ADR-0026 Step 5 item 1)."""
+    return _seed_yaml(goal_id) + (
+        f"auth_state:\n"
+        f"  authenticated: true\n"
+        f"  scope: {scope}\n"
+    )
+
+
+def test_organic_auth_expired_through_projection_when_logged_out(tmp_path: Path) -> None:
+    """END TO END through the REAL projection + classifier: a from-file aggregate
+    regress over a seed that records an authenticated auth_state scope, with the
+    executor reporting authenticated=False, classifies AUTH-EXPIRED.
+
+    This proves the Step 5 item 1 passthrough: the projected KnowledgeFile the
+    aggregate read path yields now carries the seed's `auth_state`, so the
+    classifier's `_expected_authenticated_scope` sees the expected authenticated
+    role ORGANICALLY (not via an injected GoalReport). Without the passthrough
+    the projection would lose the auth_state and the goal would misclassify as an
+    absent-success REGRESSED."""
+    root = tmp_path / "p"
+    root.mkdir()
+    old = Path.cwd()
+    os.chdir(root)
+    try:
+        assert cli_run(["init", "--app", "testapp", "--env", "local"]) == 0
+        seed = root / "dashboard.yaml"
+        seed.write_text(_authed_seed_yaml("dashboard", scope="admin"))
+        assert cli_run(["learn", "dashboard", "--from-file", str(seed)]) == 0
+    finally:
+        os.chdir(old)
+
+    # First, prove the passthrough directly: the read path yields a KnowledgeFile
+    # that carries the seed's auth_state (the organic input the classifier reads).
+    proj = discover_project(root)
+    kf = proj.adapter().read_knowledge("dashboard")
+    assert kf is not None
+    assert kf.auth_state is not None, (
+        "projection must carry the seed's auth_state through to the read path "
+        "(ADR-0026 Step 5 item 1); without it AUTH-EXPIRED cannot classify "
+        "organically"
+    )
+    assert kf.auth_state.authenticated is True
+    assert kf.auth_state.scope == "admin"
+
+    # A logged-out run for the authenticated-scope goal: authenticated=False with
+    # the post-login success control absent (a login wall). Through the real
+    # engine this is AUTH-EXPIRED, never a false REGRESSED.
+    logged_out = dict(_ABSENT_SUCCESS_OBS)
+    logged_out["authenticated"] = False
+    reports = regress_aggregate_via_skill(_const_brain(logged_out), project_start=root)
+    by_goal = {r.goal_id: r for r in reports}
+    assert by_goal["dashboard"].verdict == AggregateVerdict.AUTH_EXPIRED
+    assert by_goal["dashboard"].verdict != AggregateVerdict.REGRESSED
+    assert "admin" in by_goal["dashboard"].signals
+    assert by_goal["dashboard"].fails_run
+
+
+def test_organic_authenticated_run_does_not_auth_expire(tmp_path: Path) -> None:
+    """The matching control: the SAME authenticated-scope seed, with the executor
+    reporting authenticated=True and the believed success signal observed,
+    classifies OK (not AUTH-EXPIRED). The auth route only diverts a logged-out
+    run, never a healthy authenticated one, end to end through the real read
+    path."""
+    root = tmp_path / "p"
+    root.mkdir()
+    old = Path.cwd()
+    os.chdir(root)
+    try:
+        assert cli_run(["init", "--app", "testapp", "--env", "local"]) == 0
+        seed = root / "dashboard.yaml"
+        seed.write_text(_authed_seed_yaml("dashboard", scope="admin"))
+        assert cli_run(["learn", "dashboard", "--from-file", str(seed)]) == 0
+    finally:
+        os.chdir(old)
+
+    authed = dict(_PASS_OBS)
+    authed["authenticated"] = True
+    reports = regress_aggregate_via_skill(_const_brain(authed), project_start=root)
+    by_goal = {r.goal_id: r for r in reports}
+    assert by_goal["dashboard"].verdict == AggregateVerdict.OK
+    assert by_goal["dashboard"].verdict != AggregateVerdict.AUTH_EXPIRED
+    assert not by_goal["dashboard"].fails_run
+
+
 def test_cli_regress_exit_code_unchanged_for_ok_run(tmp_path: Path) -> None:
     """The AUTH-EXPIRED exit wiring does not regress the existing exit contract:
     an all-OK aggregate run still exits 0 (the fails-run set is unchanged for

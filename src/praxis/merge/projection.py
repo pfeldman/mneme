@@ -207,8 +207,8 @@ def project(
     )
 
 
-def _passthrough_risks_uncertainties(seed: KnowledgeFile, kf: KnowledgeFile) -> KnowledgeFile:
-    """Phase-1 passthrough: seeded risks + uncertainties survive projection.
+def _passthrough_seed_fields(seed: KnowledgeFile, kf: KnowledgeFile) -> KnowledgeFile:
+    """Phase-1 passthrough: seeded risks + uncertainties + auth_state survive projection.
 
     Phase 1 does not aggregate risks across events (that is Phase 2 when
     multi-writer corroboration matters); the seed is the source of truth for
@@ -216,10 +216,22 @@ def _passthrough_risks_uncertainties(seed: KnowledgeFile, kf: KnowledgeFile) -> 
     that `praxis review` promotes via the human-in-the-loop seam (docs/05).
     Until then, downstream consumers (E-mode prompt rendering) need the
     seeded risks/uncertainties to appear in the believed projection.
+
+    `auth_state` is carried through the same way (ADR-0026 decision 5 read path):
+    the seed records the ABSTRACT ADR-0017 `auth_state` (`authenticated` plus
+    `scope`); the projection must preserve it so the aggregate regress read path
+    yields a `KnowledgeFile` whose `auth_state` the classifier's
+    `_expected_authenticated_scope` can read ORGANICALLY. Without this, a goal
+    that teach seeded as authenticated would project to no auth_state and an
+    expired session could never classify as AUTH-EXPIRED through the real read
+    path. The session itself (cookies / tokens) is never knowledge and never
+    touched here; only the abstract posture rides through. A seed with no
+    `auth_state` still projects to no `auth_state` (additive and safe).
     """
     return kf.model_copy(update={
         "risks": list(seed.risks) if seed.risks else None,
         "uncertainties": list(seed.uncertainties) if seed.uncertainties else None,
+        "auth_state": seed.auth_state,
     })
 
 
@@ -262,7 +274,7 @@ def project_with_seed(
         current_version=current_version,
         config=config,
     )
-    return _passthrough_risks_uncertainties(seed, projected)
+    return _passthrough_seed_fields(seed, projected)
 
 
 def project_with_decay(

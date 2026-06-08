@@ -36,13 +36,23 @@ not load, read, or reference any auditor scenario while regressing.
    `.praxis/knowledge/`. If there are no seeds, tell the user to seed a goal
    with `/praxis:teach` first and stop.
 
-2. If a run must authenticate, read the app credential from the ADR-0021
-   secrets channel: an environment variable wins, else the gitignored
-   `.praxis.secrets` (`KEY=value`) at the repo root. The credential NEVER lives
-   in knowledge. If a needed credential is absent, ASK the user for it and
-   offer to append it (for example `echo "KEY=value" >> .praxis.secrets`); the
-   console and CI surfaces fail loudly instead of asking. Never echo a secret
-   value back to the user or into a log.
+2. If a run must authenticate, LOAD the saved session for the role BEFORE
+   driving the browser and inject it into the browser context (ADR-0026
+   decisions 1, 3), so the goal runs authenticated WITHOUT a fresh login, hence
+   without a fresh 2FA. The role is the abstract ADR-0017 scope the goal expects
+   (`auth_session.role_for_auth_state(kf.auth_state)`); load it through
+   `auth_session.load_session_for_role(role)`, which resolves an environment /
+   CI runner secret (`PRAXIS_AUTH_STATE_<ROLE>`) FIRST, else the gitignored
+   `.praxis.auth/<role>.json` local file. The session is a SECRET: never echo it
+   to the user or into a log, and it never lives in knowledge.
+
+   If a run also needs an app credential, read it from the ADR-0021 secrets
+   channel: an environment variable wins, else the gitignored `.praxis.secrets`
+   (`KEY=value`) at the repo root. The credential NEVER lives in knowledge. If a
+   needed credential is absent, ASK the user for it and offer to append it (for
+   example `echo "KEY=value" >> .praxis.secrets`); the console and CI surfaces
+   fail loudly instead of asking. Never echo a secret value back to the user or
+   into a log.
 
 3. Run the engine across the believed set. Default-all is the aggregate run:
 
@@ -56,9 +66,10 @@ not load, read, or reference any auditor scenario while regressing.
    surfaces as a loud ERROR for that goal, not a silent skip.
 
 4. Read the per-goal verdicts. Each goal gets exactly one of OK / REGRESSED /
-   STALE (or ERROR if it could not reach a verdict). The verdict ships with its
-   evidence (the signal that flipped, the ADR-0013 version anchor for STALE),
-   so the routing below is traceable, not a guess.
+   STALE / AUTH-EXPIRED (or ERROR if it could not reach a verdict). The verdict
+   ships with its evidence (the signal that flipped, the ADR-0013 version anchor
+   for STALE, the expired role for AUTH-EXPIRED), so the routing below is
+   traceable, not a guess.
 
 5. Triage every NON-OK goal and propose the next step for a human:
 
@@ -81,15 +92,34 @@ not load, read, or reference any auditor scenario while regressing.
      the goal, or review and merge a candidate. Do NOT edit the knowledge
      yourself; a STALE verdict NEVER auto-mutates committed knowledge.
 
+   - **AUTH-EXPIRED** (the goal expected an authenticated scope but the run hit
+     an auth wall / a logged-out browser because the saved session is expired or
+     invalid): this is NOT a regression (the app did not break) and NOT stale
+     knowledge. The run could not authenticate. On THIS skill surface a human is
+     present, so ASK the human to re-authenticate: they pass 2FA ONCE through the
+     `/praxis:teach` credential prompt, you EXPORT the refreshed storageState via
+     the Playwright MCP and RE-SAVE it for the role through
+     `auth_session.save_session_for_role(...)`, then re-run the goal with the
+     fresh session. On the console / CI surface (no human) the run instead fails
+     LOUDLY naming AUTH-EXPIRED and the expired role with a non-zero exit, never
+     a silent green and never a false REGRESSED; a human then refreshes the CI
+     secret (`PRAXIS_AUTH_STATE_<ROLE>`). Cost note: an email-delivered 2FA code
+     cannot be refreshed in CI (no inbox), so the refresh is a periodic MANUAL
+     human action; a TOTP authenticator-app second factor has a storable seed, so
+     CI can self-refresh (ADR-0026 decision 6).
+
    - **ERROR** (no verdict: app would not load, adapter threw, budget slice
      exhausted): surface it loudly with the goal name and the reason. It fails
      the run; it is never OK and never dropped.
 
 6. Report the roll-up honestly. State how many goals are OK, REGRESSED, STALE,
-   ERROR. If any goal is REGRESSED or ERROR, say the run FAILS and name those
-   goals; the console surface exits non-zero for exactly this reason. STALE
-   alone does not fail the run (the app changed on purpose; the fix is a human
-   re-seed, not an app fix), but it still needs a proposed re-seed.
+   AUTH-EXPIRED, ERROR. If any goal is REGRESSED, AUTH-EXPIRED, or ERROR, say the
+   run FAILS and name those goals; the console surface exits non-zero for exactly
+   this reason. STALE alone does not fail the run (the app changed on purpose;
+   the fix is a human re-seed, not an app fix), but it still needs a proposed
+   re-seed. AUTH-EXPIRED is counted distinctly from REGRESSED so the action
+   (re-authenticate / refresh the session) is never folded into the bug-filing
+   bucket.
 
 ## Surface parity
 

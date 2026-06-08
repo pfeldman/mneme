@@ -46,7 +46,10 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .model import AuthState
 
 __all__ = [
     "AUTH_DIRNAME",
@@ -56,6 +59,9 @@ __all__ = [
     "session_file_path",
     "load_session",
     "save_session",
+    "role_for_auth_state",
+    "save_session_for_role",
+    "load_session_for_role",
 ]
 
 # The local session directory name. It is a sibling of `.praxis/` and
@@ -226,3 +232,86 @@ def _parse_session(raw: str, role: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise MissingSession(role)
     return parsed
+
+
+# --- the skill seams (ADR-0026 decisions 1, 7) ----------------------------
+#
+# The skills (`/praxis:teach`, `/praxis:regress`, `/praxis:explore`) drive the
+# live browser through the brain + Playwright MCP; the library owns the session
+# STORE. These three thin seams are the entry points the skills call so the role
+# resolution (ADR-0026 decision 4: one session per ABSTRACT role, keyed by the
+# ADR-0017 `auth_state.scope`) lives in ONE place and reuses `save_session` /
+# `load_session` above without duplicating the env-wins-over-file resolution.
+#
+# What crosses each seam: only the session SECRET (the storageState dict) and
+# the ABSTRACT role name. A credential and the 2FA code NEVER cross any of these
+# seams (ADR-0022 decision 5); the skill passes 2FA live in the browser and the
+# resulting authenticated session is what `save_session_for_role` persists.
+
+
+def role_for_auth_state(auth_state: "AuthState | None") -> str | None:
+    """The abstract role a goal's session is keyed by, or None.
+
+    A session is keyed by the ADR-0017 `auth_state.scope` (ADR-0026 decision 4),
+    not by an individual goal: all goals targeting the same role reuse the same
+    saved session. Returns the scope string when the goal expects an
+    authenticated, non-anonymous role; returns None when there is no auth_state,
+    the goal is anonymous-scoped, or the auth_state does not claim an
+    authenticated session (those goals need no saved session). This is the same
+    predicate `runner.regression._expected_authenticated_scope` applies, kept in
+    sync so the role a session is SAVED under is the role the regress classifier
+    EXPECTS.
+    """
+    if auth_state is None or not auth_state.authenticated:
+        return None
+    scope = auth_state.scope
+    if scope is None or scope.strip().lower() == "anonymous":
+        return None
+    return scope
+
+
+def save_session_for_role(
+    role: str,
+    session: dict[str, Any],
+    *,
+    repo_root: Path | None = None,
+    auth_dir: Path | None = None,
+) -> Path:
+    """SAVE seam: persist a confirmed-login storageState for a role (the teach
+    bootstrap, ADR-0026 decision 7).
+
+    The teach flow calls this AFTER a human login that passed 2FA live (the code
+    drove the browser and was never persisted, ADR-0022 decision 5): the
+    resulting authenticated browser session is exported as a storageState dict
+    and saved to the secret channel for later reuse. It is a thin alias over
+    `save_session` so the resolution logic is not duplicated; the role is the
+    abstract ADR-0017 scope (`role_for_auth_state`). Returns the written path.
+    The session is written to the gitignored `.praxis.auth/<role>.json` file
+    only; no cookie or token is echoed.
+    """
+    return save_session(role, session, repo_root=repo_root, auth_dir=auth_dir)
+
+
+def load_session_for_role(
+    role: str,
+    *,
+    repo_root: Path | None = None,
+    auth_dir: Path | None = None,
+    environ: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """LOAD seam: fetch the saved storageState for a role before driving the
+    browser (regress / explore, ADR-0026 decisions 1, 3).
+
+    The regress / explore flow calls this before the brain drives the live app:
+    the returned storageState is injected into the browser context so a goal
+    runs authenticated WITHOUT a fresh login, hence without a fresh 2FA. It is a
+    thin alias over `load_session`, so the env-wins-over-file resolution
+    (ADR-0026 decision 3: a CI runner secret beats the local file) is shared,
+    not re-implemented. Raises `MissingSession(role)` (naming only the role,
+    never the session value) when no session exists; the skill then asks the
+    human to re-authenticate (the AUTH-EXPIRED re-seed), the console / CI surface
+    fails loudly.
+    """
+    return load_session(
+        role, repo_root=repo_root, auth_dir=auth_dir, environ=environ
+    )

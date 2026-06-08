@@ -112,6 +112,33 @@ crosses no persistence boundary.
   for a `CredentialLeak`, you baked a secret into knowledge - describe the
   behavior, not the secret value, and re-emit.
 
+## Save the authenticated session after login (ADR-0026 decisions 1, 7)
+
+A teach login that passes 2FA live is the legitimate SEED of a reusable
+authenticated session, the same way the human confirm is the legitimate seed of
+the oracle (ADR-0026 decision 7). After the human completes the login and passes
+2FA live (the one-time code drives the browser and is NEVER persisted, ADR-0022
+decision 5), EXPORT the browser storageState via the Playwright MCP and SAVE it
+for the abstract role, so every later regress / explore run reuses it WITHOUT a
+fresh login, hence without a fresh 2FA.
+
+- EXPORT the storageState (the cookies and local storage of the logged-in
+  browser) via the Playwright MCP once the login succeeded.
+- SAVE it through the library seam `auth_session.save_session_for_role(role,
+  storage_state)`, where `role` is the abstract ADR-0017 scope the goal targets
+  (`auth_session.role_for_auth_state(auth_state)`); a session is keyed by ROLE,
+  never by goal (ADR-0026 decision 4), so all goals targeting that role reuse it.
+- The saved session is a SECRET, exactly like a password (ADR-0026 decision 2).
+  It lives in the same channel split the credentials use (ADR-0026 decision 3):
+  locally it is the gitignored `.praxis.auth/<role>.json` file (a sibling of
+  `.praxis.secrets`, gitignored by `praxis init` before any write); in CI it is
+  a runner secret read from the environment (`PRAXIS_AUTH_STATE_<ROLE>`), and an
+  environment / CI secret WINS over the local file. The session is NEVER
+  committed, NEVER written into any file under `.praxis/`, and NEVER recorded
+  into knowledge: knowledge records only the abstract `auth_state`. The 2FA code
+  and the credential cross no persistence boundary; only the session secret and
+  the abstract `auth_state` are stored.
+
 ## The dual end condition with a backstop (ADR-0022 decision 3)
 
 A teach session ends SUCCESSFULLY only when BOTH hold:
@@ -190,10 +217,18 @@ does:
 
 3. Explore the live app through the Playwright adapter toward the happy path.
    When you hit an auth wall, resolve the credential from the secrets channel
-   or ask a credential-typed prompt (never persist it). When you cannot find an
-   affordance, ask a navigation-hint-typed prompt and record the reply as an
-   invariant via `record_navigation_hint`. When you need the scope, ask a
-   role-typed prompt. Ask exactly one typed question at a time.
+   or ask a credential-typed prompt (never persist it). The human passes 2FA
+   live; the one-time code drives the browser and is NEVER persisted. When you
+   cannot find an affordance, ask a navigation-hint-typed prompt and record the
+   reply as an invariant via `record_navigation_hint`. When you need the scope,
+   ask a role-typed prompt. Ask exactly one typed question at a time.
+
+   After a successful login, EXPORT the browser storageState via the Playwright
+   MCP and SAVE it for the role through `auth_session.save_session_for_role(...)`
+   (the save-after-login bootstrap above): this is the reusable session every
+   later regress / explore run loads so it never has to pass 2FA again. The
+   session is a secret (gitignored locally, a CI runner secret in CI, never
+   committed, never knowledge).
 
 4. When you believe you observed the happy path as a believed-grade success
    signal, mark `happy_path_observed` and ask a confirmation-typed prompt. Only
