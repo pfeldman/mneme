@@ -136,13 +136,23 @@ def write_markdown_report(results: list[RunResult], path: str | Path) -> Path:
 
 
 def _verdict_routing(verdict: AggregateVerdict) -> str:
-    """The one-line routing the break-vs-drift verdict implies (ADR-0023)."""
+    """The one-line routing the break-vs-drift verdict implies (ADR-0023,
+    ADR-0026 decision 5).
+
+    AUTH-EXPIRED is a DISTINCT outcome with its own routing: it is neither
+    "file a bug" (REGRESSED, the app broke) nor "re-seed the knowledge" (STALE,
+    the app changed on purpose). The saved session expired, so the action is to
+    re-authenticate and refresh the session (ADR-0026 decision 5). Collapsing it
+    into the REGRESSED or ERROR routing would lose the named, correct action.
+    """
     if verdict == AggregateVerdict.OK:
         return "no action"
     if verdict == AggregateVerdict.REGRESSED:
         return "the app broke: file a bug"
     if verdict == AggregateVerdict.STALE:
         return "the app changed on purpose: re-seed the knowledge"
+    if verdict == AggregateVerdict.AUTH_EXPIRED:
+        return "the saved session expired: re-authenticate / refresh the session"
     return "could not reach a verdict: investigate"
 
 
@@ -152,9 +162,15 @@ def to_aggregate_markdown(reports: list[GoalReport]) -> str:
     A non-engineer reads this without knowing the runner internals: a per-goal
     verdict line carrying its evidence, plus a single roll-up. The roll-up never
     hides a regression - it leads with the loud non-OK count and names every
-    REGRESSED / ERROR goal with the signal that flipped (decision 4). STALE
-    goals are listed too (they route to a re-seed), but they do not make the
-    run red.
+    REGRESSED / AUTH-EXPIRED / ERROR goal with the signal (or expired role) that
+    flipped (decision 4, ADR-0026 decision 5). STALE goals are listed too (they
+    route to a re-seed), but they do not make the run red.
+
+    AUTH-EXPIRED is counted DISTINCTLY from REGRESSED and STALE (ADR-0026
+    decision 5): an expired saved session is neither a broken app nor outdated
+    knowledge, so it gets its own count in the roll-up and its own line in the
+    failure summary naming the expired role. A run with an AUTH-EXPIRED goal is
+    never reported as green / "mostly green"; it leads with RUN FAILED.
     """
     if not reports:
         return "# praxis regress (aggregate)\n\n(no goals run)\n"
@@ -163,22 +179,27 @@ def to_aggregate_markdown(reports: list[GoalReport]) -> str:
     n_reg = sum(1 for r in reports if r.verdict == AggregateVerdict.REGRESSED)
     n_stale = sum(1 for r in reports if r.verdict == AggregateVerdict.STALE)
     n_err = sum(1 for r in reports if r.verdict == AggregateVerdict.ERROR)
+    n_auth = sum(1 for r in reports if r.verdict == AggregateVerdict.AUTH_EXPIRED)
     n_fail = sum(1 for r in reports if r.fails_run)
 
     lines: list[str] = ["# praxis regress (aggregate)", ""]
     if n_fail:
-        # Loud, named, leads the report: a single regression cannot hide behind
-        # a "mostly green" summary (ADR-0023 decision 4).
+        # Loud, named, leads the report: a single regression / expired session
+        # cannot hide behind a "mostly green" summary (ADR-0023 decision 4,
+        # ADR-0026 decision 5). AUTH-EXPIRED is named distinctly so the action
+        # (re-authenticate) is not collapsed into "file a bug".
+        breakdown = f"{n_reg} REGRESSED, {n_err} ERROR"
+        if n_auth:
+            breakdown = f"{n_reg} REGRESSED, {n_auth} AUTH-EXPIRED, {n_err} ERROR"
         lines.append(
-            f"**RUN FAILED: {n_fail} goal(s) need action "
-            f"({n_reg} REGRESSED, {n_err} ERROR).**"
+            f"**RUN FAILED: {n_fail} goal(s) need action ({breakdown}).**"
         )
     else:
         lines.append("**RUN PASSED: no regressions.**")
     lines.append("")
     lines.append(
-        f"{n_ok} OK / {n_reg} REGRESSED / {n_stale} STALE / {n_err} ERROR "
-        f"({len(reports)} goal(s))"
+        f"{n_ok} OK / {n_reg} REGRESSED / {n_stale} STALE / "
+        f"{n_auth} AUTH-EXPIRED / {n_err} ERROR ({len(reports)} goal(s))"
     )
     lines.append("")
 
@@ -191,18 +212,29 @@ def to_aggregate_markdown(reports: list[GoalReport]) -> str:
             f"{_verdict_routing(r.verdict)} | {evidence} |"
         )
 
-    # Spell out every goal that fails the run so the named signal is recoverable
-    # from the report itself, not only from the table cell.
+    # Spell out every goal that fails the run so the named signal (or the
+    # expired role for AUTH-EXPIRED) is recoverable from the report itself, not
+    # only from the table cell.
     failing = [r for r in reports if r.fails_run]
     if failing:
         lines.append("")
         lines.append("## Goals that fail the run")
         for r in failing:
-            named = ", ".join(r.signals) if r.signals else "(no specific signal named)"
-            lines.append(
-                f"- **{r.verdict.value}** `{r.goal_id}`: {html.escape(r.evidence)} "
-                f"[signal(s): {html.escape(named)}]"
-            )
+            if r.verdict == AggregateVerdict.AUTH_EXPIRED:
+                # AUTH-EXPIRED carries the expired ROLE in `signals` (ADR-0026
+                # decision 5), not a flipped app signal. Name it as a role so the
+                # human knows exactly which session to refresh.
+                role = ", ".join(r.signals) if r.signals else "(role not named)"
+                lines.append(
+                    f"- **{r.verdict.value}** `{r.goal_id}`: {html.escape(r.evidence)} "
+                    f"[expired role: {html.escape(role)}]"
+                )
+            else:
+                named = ", ".join(r.signals) if r.signals else "(no specific signal named)"
+                lines.append(
+                    f"- **{r.verdict.value}** `{r.goal_id}`: {html.escape(r.evidence)} "
+                    f"[signal(s): {html.escape(named)}]"
+                )
 
     stale = [r for r in reports if r.verdict == AggregateVerdict.STALE]
     if stale:
