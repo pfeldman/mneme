@@ -872,6 +872,32 @@ def test_cli_regress_exit_code_unchanged_for_ok_run(tmp_path: Path) -> None:
     assert rc == 0
 
 
+def test_cli_regress_prints_pytest_style_summary(
+    tmp_path: Path, capsys: Any,
+) -> None:
+    """The console aggregate run prints the pytest-style experience (ADR-0027
+    decision 6): a `running N goal(s)...` header before the run and a final
+    `RUN PASSED: N passed, ...` summary banner with the verdict tally. This is
+    presentation only; the exit code (0 here) is unchanged."""
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["a"])
+    obs_file = root / "pass.json"
+    obs_file.write_text(json.dumps(_PASS_OBS))
+    old = Path.cwd()
+    os.chdir(root)
+    try:
+        rc = cli_run(["regress", "--from-file", str(obs_file)])
+    finally:
+        os.chdir(old)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "running 1 goal(s)..." in out
+    assert "RUN PASSED" in out
+    assert "passed" in out
+    assert "1 OK /" in out
+
+
 # --- decision 2 + 4: default-all aggregate, loud single regression ---------
 
 

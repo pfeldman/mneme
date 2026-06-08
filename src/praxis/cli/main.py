@@ -31,6 +31,7 @@ from ..runner import (
     aggregate_run_failed,
     explore_aggregate_engine,
     explore_engine,
+    format_console_summary,
     group_candidates_by_trigger,
     regress_aggregate_engine,
     regress_engine,
@@ -439,6 +440,10 @@ def _cmd_regress(args: argparse.Namespace) -> int:
             print("no goals to regress (no seeds in .praxis/knowledge/). "
                   "Run `praxis learn ...` first.", file=sys.stderr)
             return 2
+        # Pytest-style: announce the run before driving the goals (ADR-0027
+        # decision 6). Live per-goal progress lands with the concurrency change;
+        # here we frame the run and emit the final summary below.
+        print(f"running {len(goals)} goal(s)...")
         # The console surface drives the SAME aggregate engine a skill driver
         # calls (ADR-0019 decision 4 + ADR-0023 decision 1). The brain seam
         # carries the paste/file executor here; the verdicts come back
@@ -463,14 +468,15 @@ def _cmd_regress(args: argparse.Namespace) -> int:
             if not r.verdict.is_ok:
                 line += f"  -> {r.evidence}"
             print(line)
-        print(f"\nreport: {report_md}")
+        # Pytest-style final summary: the loud PASSED / FAILED banner, the
+        # `N passed, N failed, N stale` tally, and every goal that needs action
+        # named with its evidence (ADR-0027 decision 6). Verdicts and exit code
+        # are unchanged; this is presentation only.
+        print(format_console_summary(reports))
+        print(f"report: {report_md}")
         # A REGRESSED or ERROR goal fails the run loudly; STALE alone does not
         # (the app changed on purpose, the fix is a human re-seed).
         failed = aggregate_run_failed(reports)
-        if failed:
-            named = [r.goal_id for r in reports if r.fails_run]
-            print(f"REGRESSION/ERROR: {', '.join(named)} fail the run.",
-                  file=sys.stderr)
         return 1 if failed else 0
 
     # Single-goal pass/fail path (unchanged contract).
