@@ -30,3 +30,4 @@ per decision; never edit a superseded one (mark it `Superseded by ADR-XXXX`).
 | 0023 | praxis regress and explore dual surface: console CLI plus skill, aggregate default, OK/REGRESSED/STALE break-vs-drift report, candidate dedup by trigger (Accepted) |
 | 0024 | CI integration by invoking the console commands: Praxis owns no CI machinery, the team owns push/PR/auth, promotion stays a human merge (Accepted) |
 | 0025 | Landing page and docs site: minimal non-engineer story, no analytics/signup/SaaS funnel, mkdocs from docs/, documented example CI workflow (Accepted) |
+| 0026 | Persistent authenticated-session reuse: reuse the saved browser session so 2FA is not needed every run, session is a secret (local file or CI secret, never knowledge), AUTH-EXPIRED is a third verdict (Proposed) |
