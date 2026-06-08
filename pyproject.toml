@@ -24,6 +24,11 @@ browser-use = ["browser-use"]
 # Optional - the core + tests run without it; only `experiments/regression_recall/
 # exec_anthropic.py` needs the SDK.
 live = ["anthropic>=0.40"]
+# Docs-only dev tool: the mkdocs-material static-site generator that renders the
+# `docs/` tree into the landing page and docs site (ADR-0025). It is NOT a core
+# dependency and NOT a runtime adapter; the base install stays pydantic + pyyaml
+# only (ADR-0020 decision 3). Install with `pip install -e ".[docs]"`.
+docs = ["mkdocs-material>=9"]
 # stagehand / playwright adapters declared as they are implemented.
 
 [project.scripts]
