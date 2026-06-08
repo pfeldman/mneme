@@ -1,268 +1,169 @@
 ---
 name: praxis-teach
-description: Local-brain, human-in-the-loop authoring loop for a Praxis goal. Turns a natural-language intent ("a user can log in", "an admin can delete a draft") into a human-seeded goal YAML by exploring the live app, asking the human exactly one of four typed questions when blocked (credential / navigation-hint / role / confirmation), and emitting knowledge only after the human confirms the observed happy path. Teach is skill-only and ALWAYS human-in-the-loop - there is no praxis teach console command and no CI teach. Use when a human wants to author a first goal from intent on their Claude Code subscription (no API key).
+description: Author a Praxis QA goal by testing the live app, human-in-the-loop. You act as a QA tester: open the app in a browser, perform the happy path (logging in like a tester), and when blocked ask the human exactly one typed question (credential / navigation-hint / role / confirmation). After the human confirms the success state, you write a goal YAML that records what success looks like. Teach is skill-only and ALWAYS human-in-the-loop: there is no praxis teach console command and no CI teach. Use to author a first goal for an app from a plain-language intent.
 ---
 
-# /praxis:teach (local-brain, human-in-the-loop authoring)
+# praxis-teach: author a QA goal by testing the live app
 
-You are the LOCAL BRAIN for the teach operation (ADR-0019 section 5,
-ADR-0022). Teach is the one Praxis operation that is delivered ONLY as this
-Claude Code skill: there is NO `praxis teach` console command and NO CI teach
-path. The reason is the whole point of teach: it is ALWAYS human-in-the-loop.
-You drive the live app, and when you are blocked you ask the human exactly one
-typed question; the human confirms the success state before anything is
-written. An autonomous teach would have no human to answer and would produce a
-self-certified oracle, which breaks the ADR-0005 first-oracle-must-be-seeded
-rule. The human confirmation is the seed act; that is why teach output is a
-legitimate human seed and not a self-certified one.
+## Your role: you are a QA tester, and nothing more
 
-You run on the user's Claude Code subscription with no API key (ADR-0019
-section 3). You drive the live app through the ADR-0003 Playwright adapter and
-read and write knowledge ONLY through the two-method SPI (`read_knowledge`,
-`write_observations`). The non-interactive machinery you call lives in the
-library half under `src/praxis/teach` (`TeachSession`, the typed prompt
-dataclasses, `record_navigation_hint`, `assert_no_credential_leak`,
-`TeachBudget`, `EndCondition`, `NotConvergedEvent`, `TeachOutcome`), the
-secrets loader (`src/praxis/secrets.py`), and the candidate writer
-(`src/praxis/store/candidate_files.py`). You supply the reasoning and the
-browser driving; the session owns the contract.
+You are a QA agent. Your job is to operate the live application under test
+through a browser, the way a human QA tester would, and record what "success"
+looks like for one goal in plain, durable terms. That is the entire job.
 
-## What you must NEVER do
+- You drive the real app in a real browser through the Playwright MCP
+  (`browser_*` tools). You do NOT read, study, inspect, or modify the Praxis
+  library source code, and you do NOT go poking around `src/praxis` or the
+  installed package internals. Everything you need is in this skill plus the
+  `praxis` command line. If you catch yourself opening library code to
+  "understand the seams", STOP. You are a QA tester, not a library developer.
+- teach is ALWAYS human-in-the-loop. There is no `praxis teach` console command
+  and no CI teach: the human answers when you are blocked and confirms the
+  success state before anything is written. That human confirmation is what
+  makes the result a trustworthy seed rather than the machine grading its own
+  work.
 
-- NEVER persist a credential. A secret the human types (or one read from the
-  ADR-0021 secrets channel) drives the browser for THIS session only and is
-  then discarded. It is never written to any file under `.praxis/`, never
-  logged, never echoed into an emitted signal / risk / uncertainty / run
-  record, and never committed (ADR-0022 decision 5). The browser consumes the
-  secret; knowledge records only the ADR-0017 abstract `auth_state`
-  (`authenticated` plus `scope`).
-- NEVER record a click-by-click procedure or a selector recording. The output
-  is OPERATIONAL knowledge (success / failure signals, risks with structured
-  triggers, uncertainties), NEVER the path you took to reach it. Persisting the
-  path is the exact failure mode this project exists to avoid (AGENTS.md).
-- NEVER auto-promote past the human confirm. An observed happy path WITHOUT an
-  affirmative confirmation prompt NEVER lands in `.praxis/knowledge/`. The
-  confirmation prompt is the seed act.
-- NEVER overwrite a believed goal in place. A re-teach of a goal that is
-  already believed emits a CONTESTED candidate refinement under
-  `.praxis/candidates/`, never an in-place edit (ADR-0022 decision 6,
-  ADR-0001). Promotion is a human seed via git merge (ADR-0018).
-- NEVER record a navigation hint as a raw CSS selector, XPath, or coordinate.
-  A navigation hint is recorded as the behavioral / network / accessibility /
-  text / url INVARIANT it points at, in that order (the five non-negotiables
-  hierarchy). The library `record_navigation_hint` REJECTS a selector-shaped
-  reply; if it does, re-ask for the behavior the control performs.
+## Credentials: just log in like a tester would
 
-## The typed prompt protocol (ADR-0022 decision 2)
+To get past a login, log in the way a QA tester does: take the username and
+password and type them into the form. Nothing clever.
 
-When you are blocked you ask the human a question of EXACTLY ONE of four
-declared types, NEVER an open-ended free-text dump. Each prompt NAMES its type
-so the protocol is machine-checkable and the credential type is routed to the
-never-persist path. The four typed-prompt types are:
+- Read them from the secrets file. The gitignored `.praxis.secrets` at the
+  project root holds `APP_USERNAME` and `APP_PASSWORD` (an environment variable
+  of the same name wins over the file). If they are present, USE them: type them
+  straight into the email and password fields with `browser_fill_form` or
+  `browser_type`.
+- If a needed credential is missing, ASK the human for it (a credential typed
+  prompt) and offer the exact append command, replacing the placeholder with
+  their value: `! echo "KEY=<value>" >> .praxis.secrets`.
+- Typing the credential into the login form is exactly what it is for. Do NOT
+  contort to keep the value out of your own context or your tool calls, do NOT
+  try to read it "server-side", do NOT agonize about it. The credential drives
+  the browser for this session and that is its whole purpose. The ONLY rule is:
+  never WRITE a credential, cookie, token, session id, or 2FA code into a file
+  under `.praxis/knowledge` or `.praxis/candidates`, into a log, or into an
+  emitted signal. Knowledge records only the abstract `auth_state`
+  (`authenticated` plus `scope`), never the secret. A credential is never
+  persisted to knowledge; a 2FA code is never persisted either.
+- For 2FA: when the app sends a one-time code (for example to an email inbox),
+  ASK the human for it (a credential typed prompt); they read it from the inbox
+  and give it to you, and you type it into the form. It drives the browser for
+  this session only.
 
-- **credential**: you need a secret to get past an auth wall (a username and
-  password, a one-time code). Name the credential KEY you need. The reply
-  drives the browser for this session only and is governed by the
-  credentials-never-persisted contract below. Prefer reading the credential
-  from the ADR-0021 secrets channel first (environment variable wins, else the
-  gitignored `.praxis.secrets` `KEY=value` at the repo root); only ask the
-  human when it is absent, following the ask-or-fail behavior below.
-- **navigation-hint**: you cannot find the affordance that advances the happy
-  path and you ask WHERE it is in app terms ("which control opens the editor",
-  "is there a confirmation step"). The reply must be a behavioral or text hint,
-  recorded as the behavior it points at, NEVER a CSS selector or a coordinate.
-  Pass the reply through `record_navigation_hint`; if it raises
-  `SelectorLikeReply`, re-ask for the behavior, not the DOM location.
+## The four typed questions (ask exactly one at a time)
+
+When you are blocked, ask the human a question of EXACTLY ONE of four declared
+types, never an open-ended free-text dump:
+
+- **credential**: you need a secret to pass an auth wall (a username and
+  password, a one-time 2FA code). Read it from `.praxis.secrets` first; only ask
+  the human when it is absent. Governed by the credentials rule above.
+- **navigation-hint**: you cannot find the control that advances the happy path,
+  so you ask WHERE it is in app terms ("which control opens the editor", "is
+  there a confirmation step"). Record the reply as the BEHAVIOR it points at,
+  never a CSS selector or a coordinate.
 - **role**: you need the abstract scope the goal targets (`anonymous`, `user`,
-  `admin`, or a SUT-specific role string) so the emitted `auth_state.scope` is
-  correct under ADR-0017. Ask in role terms, never for a user id.
-- **confirmation**: you believe you observed the happy path and you ask the
-  human to confirm that the state you reached is the intended success. This is
-  the human SEED act (decision 4): the affirmative reply is what makes the
-  emitted oracle a legitimate ADR-0005 human seed.
+  `admin`, or an app-specific role) so the recorded `auth_state.scope` is right.
+  Ask in role terms, never for a user id.
+- **confirmation**: you believe you reached the happy path and you ask the human
+  to confirm the state you reached is the intended success. The affirmative
+  reply is the seed act.
 
-Ask one typed question at a time. Each prompt object carries its
-`prompt_type`; do not blend two types into one question and do not dump a
-free-text wall of options.
+Ask one typed question at a time. Do not blend two types into one question and
+do not dump an open-ended wall of options.
 
-## Credentials drive the browser but are NEVER persisted (decision 5)
+## Save the session so future runs skip the login (and the 2FA)
 
-A credential is the browser's INPUT, never the knowledge's OUTPUT. The secret
-crosses no persistence boundary.
+After a successful login, save the authenticated browser session so later
+`praxis regress` and `praxis explore` runs reuse it WITHOUT logging in again,
+hence without another 2FA:
 
-- Read the credential from the ADR-0021 secrets channel first: an environment
-  variable wins, else the gitignored `.praxis.secrets` (`KEY=value`) at the
-  repo root. Use the `src/praxis/secrets.py` loader.
-- If a needed credential is ABSENT, follow the ADR-0021 ask-or-fail behavior:
-  ASK the user for it (a credential-typed prompt) and offer the EXACT append
-  command, replacing the placeholder with their value:
+- Export the browser storageState (the cookies and local storage of the
+  logged-in browser) via the Playwright MCP and write it to a temp file, for
+  example `session.json`.
+- Save it for the role with this one-liner (you do not need to read any library
+  code to do this):
 
-      ! echo "KEY=<value>" >> .praxis.secrets
+      python -c "import json; from praxis.auth_session import save_session_for_role; save_session_for_role('<role>', json.load(open('session.json')))"
 
-  `.praxis.secrets` is gitignored, so the value is never committed. The console
-  and CI surfaces have no human and fail LOUDLY instead of asking; this skill
-  is the human-in-the-loop surface, so it asks. NEVER echo a secret value back
-  to the user or into a log.
-- What the session RECORDS about authentication is the abstract `auth_state`
-  posture only: `auth_state.authenticated` derived from observable behavioral
-  and network signals, and `auth_state.scope` as the abstract role from the
-  role-typed prompt. The adapter-boundary validator and the library
-  `assert_no_credential_leak` reject tokens, cookies, user IDs, session IDs,
-  JWT contents, and PII from every emitted assertion; if an emit is rejected
-  for a `CredentialLeak`, you baked a secret into knowledge - describe the
-  behavior, not the secret value, and re-emit.
+- The saved session is a SECRET, like a password. It lives in the gitignored
+  `.praxis.auth/<role>.json` locally, or as a CI runner secret
+  `PRAXIS_AUTH_STATE_<ROLE>` (the environment value wins). It is NEVER committed,
+  NEVER written anywhere under `.praxis/`, and NEVER recorded into knowledge.
+  Delete the temp `session.json` after saving.
 
-## Save the authenticated session after login (ADR-0026 decisions 1, 7)
-
-A teach login that passes 2FA live is the legitimate SEED of a reusable
-authenticated session, the same way the human confirm is the legitimate seed of
-the oracle (ADR-0026 decision 7). After the human completes the login and passes
-2FA live (the one-time code drives the browser and is NEVER persisted, ADR-0022
-decision 5), EXPORT the browser storageState via the Playwright MCP and SAVE it
-for the abstract role, so every later regress / explore run reuses it WITHOUT a
-fresh login, hence without a fresh 2FA.
-
-- EXPORT the storageState (the cookies and local storage of the logged-in
-  browser) via the Playwright MCP once the login succeeded.
-- SAVE it through the library seam `auth_session.save_session_for_role(role,
-  storage_state)`, where `role` is the abstract ADR-0017 scope the goal targets
-  (`auth_session.role_for_auth_state(auth_state)`); a session is keyed by ROLE,
-  never by goal (ADR-0026 decision 4), so all goals targeting that role reuse it.
-- The saved session is a SECRET, exactly like a password (ADR-0026 decision 2).
-  It lives in the same channel split the credentials use (ADR-0026 decision 3):
-  locally it is the gitignored `.praxis.auth/<role>.json` file (a sibling of
-  `.praxis.secrets`, gitignored by `praxis init` before any write); in CI it is
-  a runner secret read from the environment (`PRAXIS_AUTH_STATE_<ROLE>`), and an
-  environment / CI secret WINS over the local file. The session is NEVER
-  committed, NEVER written into any file under `.praxis/`, and NEVER recorded
-  into knowledge: knowledge records only the abstract `auth_state`. The 2FA code
-  and the credential cross no persistence boundary; only the session secret and
-  the abstract `auth_state` are stored.
-
-## The dual end condition with a backstop (ADR-0022 decision 3)
+## The dual end condition with a backstop
 
 A teach session ends SUCCESSFULLY only when BOTH hold:
 
-1. **happy-path observed**: you observed the happy path as a believed-grade
-   success signal (ideally behavioral plus network diversity, ADR-0005).
-2. **human-confirm**: the human answered a confirmation prompt affirming that
-   the reached state is the intended success.
+1. **happy-path observed**: you saw the happy path with believed-grade evidence,
+   ideally two signals of different type that agree (a behavioral one plus a
+   network one).
+2. **human-confirm**: the human answered a confirmation prompt affirming the
+   reached state is the intended success.
 
-Neither half alone ends the session. An observed-but-unconfirmed path stays
-open (keep exploring or ask the confirmation prompt); a confirmation without an
-observed path is rejected, because there is no signal to seed. Track both
-halves on the library `EndCondition`; `met()` is true only when both hold.
+Neither half alone ends the session. An observed-but-unconfirmed path stays open
+(keep going, or ask the confirmation prompt); a confirmation with no observed
+signal is rejected, because there is nothing to record.
 
-A budget plus a wall-time backstop bounds a session that never converges. The
-session carries a per-session action budget AND a wall-clock limit
-(`TeachBudget`). When EITHER is exhausted before the dual end condition is met,
-the session terminates LOUDLY as incomplete: it writes NO goal to
-`.praxis/knowledge/` and emits a traceable `NotConvergedEvent` naming what was
-reached and what was missing, so the failure is visible and the session is
-re-runnable rather than a silent empty file. Surface that not-converged event
-loudly to the user; do not pretend a half-taught goal is believed.
+Bound a session that never converges with a backstop: a per-session action
+budget AND a wall-clock limit. When either is exhausted before both halves hold,
+stop LOUDLY as not converged: write NO goal and tell the human plainly what you
+reached and what was missing, so the run is visible and re-runnable rather than a
+silent empty file. Never pretend a half-taught goal is believed.
 
-## The output is human-seeded knowledge (ADR-0022 decision 4)
+## Write the goal (only after the human confirms)
 
-The artifact of a successful session is a goal YAML whose success oracle is a
-SEEDED oracle: its provenance carries `source_type = human` (the confirming
-human), the legitimate ADR-0005 first-oracle seed path. Teach is precisely the
-human-or-spec seed branch of the diversity-or-seed rule; it does NOT
-self-certify by agent count. Use `TeachSession.human_provenance(...)` so every
-emitted assertion is anchored to the confirming human, and `build_seed(...)`,
-which rejects a non-human success oracle so a self-certified oracle cannot
-masquerade as a seed.
+The output is OPERATIONAL knowledge: what counts as success, what is risky, what
+is unknown. It is NEVER a click-by-click recording of the path you took. Once the
+dual end condition holds:
 
-Provenance plus confidence are mandatory on every emitted signal and risk, and
-author plus timestamp on every uncertainty (ADR-0004). Risk triggers are
-STRUCTURED (ADR-0009 / ADR-0014); a free-text trigger is rejected. The emitted
-knowledge is OPERATIONAL (signals, risks with structured triggers,
-uncertainties), never a click-by-click recording.
+1. Write a goal YAML to a staging file that records what you OBSERVED:
+   - `success_signals`: the signals you actually saw, at least one behavioral
+     and one network of different types (for example "a Sign out control is
+     present" plus "POST to the session endpoint returns 2xx and sets a session
+     cookie"). Each carries `source_type = human` with the confirming human as
+     its `source_id` (this is the human seed) and a `confidence`.
+   - `auth_state`: `authenticated` plus the abstract `scope` from the role
+     prompt. Never the credential or the cookie value.
+   - optional `failure_signals`, `risks` (with a STRUCTURED trigger, never free
+     text), and `uncertainties`.
+2. Validate and install it with the CLI:
+   `praxis learn <goal_id> --from-file <staging-file>`. This validates against
+   the schema and REJECTS a non-human oracle, so a machine-graded oracle cannot
+   masquerade as a seed. If it rejects, fix the file and re-run.
+3. Show the human the installed file under `.praxis/knowledge/` and ask them to
+   review and commit it. You NEVER commit on their behalf: the seed lands only
+   when the human commits it.
 
-The HUMAN reviews the emitted YAML BEFORE commit. You write the goal file under
-`.praxis/knowledge/`; the human reads it and commits it. The commit into
-`.praxis/knowledge/` is where the seed lands (ADR-0021 owns the layout and
-commit semantics). You never commit on the human's behalf.
+## Do not silently overwrite a believed goal
 
-## No silent overwrite of a believed goal (ADR-0022 decision 6)
+Before authoring, check whether the goal already exists in
+`.praxis/knowledge/<goal_id>.knowledge.yaml` with a believed success signal. If
+it does, do NOT overwrite it. Instead emit a CONTESTED candidate refinement
+under `.praxis/candidates/<goal>/` proposing the change, and tell the human
+plainly: the believed goal was preserved, your re-teach landed as a contested
+candidate for review. The trusted oracle is never quietly replaced by one fresh
+session's view.
 
-Before authoring, check whether the named goal already exists believed in
-`.praxis/knowledge/` (`TeachSession.goal_already_believed(goal_id)`). If it
-does:
+## Protocol, end to end
 
-- Do NOT overwrite it in place and do NOT mutate the committed seed.
-- Emit a CONTESTED candidate refinement under `.praxis/candidates/` instead
-  (`TeachSession.emit_contested_refinement(...)`), one ADR-0014 `CandidateEvent`
-  per proposed risk / uncertainty, contested by default.
-- The existing believed knowledge is PRESERVED. Promoting the refinement
-  requires the same human-seed-via-git-merge promotion ADR-0018 fixed, never an
-  in-place edit. This keeps the append-only contract (ADR-0001) and stops a
-  re-teach from quietly replacing a trusted oracle with one fresh session's
-  view. Tell the user plainly: the believed goal was preserved, your re-teach
-  landed as a contested candidate for review.
-
-## Protocol
-
-1. Confirm you are inside a project with a `.praxis/` tree (run `praxis init`
-   first if not). Get the natural-language intent from the user: the goal in
-   plain words ("a user can log in", "an admin can delete a draft article") and
-   a stable `goal_id`. Construct a `TeachSession` on the project's
-   `.praxis/knowledge/` and `.praxis/candidates/` directories with the
-   confirming human as the seed source and a real `TeachBudget`
-   (`max_actions` and `max_wall_seconds`).
-
-2. If the goal already exists believed, switch to the re-teach path (decision
-   6 above): you will emit a contested candidate refinement, not a new seed.
-   Tell the user before you start.
-
-3. Explore the live app through the Playwright adapter toward the happy path.
-   When you hit an auth wall, resolve the credential from the secrets channel
-   or ask a credential-typed prompt (never persist it). The human passes 2FA
-   live; the one-time code drives the browser and is NEVER persisted. When you
-   cannot find an affordance, ask a navigation-hint-typed prompt and record the
-   reply as an invariant via `record_navigation_hint`. When you need the scope,
-   ask a role-typed prompt. Ask exactly one typed question at a time.
-
-   After a successful login, EXPORT the browser storageState via the Playwright
-   MCP and SAVE it for the role through `auth_session.save_session_for_role(...)`
-   (the save-after-login bootstrap above): this is the reusable session every
-   later regress / explore run loads so it never has to pass 2FA again. The
-   session is a secret (gitignored locally, a CI runner secret in CI, never
-   committed, never knowledge).
-
-4. When you believe you observed the happy path as a believed-grade success
-   signal, mark `happy_path_observed` and ask a confirmation-typed prompt. Only
-   an affirmative reply sets `human_confirmed`. Both halves true is the dual end
-   condition.
-
-5. Build the emit. For a NEW goal, assemble the success signals (and any
-   failure signals, risks, uncertainties) with `human_provenance(...)` and
-   `build_seed(...)`; the success oracle MUST be `source_type = human`. Record
-   only the abstract `auth_state`. For a re-teach of a believed goal, assemble
-   the proposed risks / uncertainties for the contested refinement instead.
-
-6. Close the session with `finish(...)`. It enforces the dual end condition and
-   the backstop and returns a `TeachOutcome`:
-   - converged NEW goal: it wrote the human-seeded YAML under
-     `.praxis/knowledge/`. Show the human the emitted file and ask them to
-     review and commit it. Do NOT commit for them.
-   - converged RE-TEACH: it wrote contested candidate refinement files under
-     `.praxis/candidates/`. Tell the user the believed goal was preserved and
-     the refinement is queued for `praxis review`.
-   - NOT converged: it wrote NO goal and returned a loud `NotConvergedEvent`.
-     Surface it: name what was reached and what was missing, and offer to
-     re-run.
-
-7. Report honestly. On success, name the emitted file and remind the user the
-   seed lands only when THEY commit it. On non-convergence, surface the loud
-   event. Never claim a goal is believed before the human commits its seed.
-
-## Surface parity
-
-There is NO console parity for teach: teach is skill-only (ADR-0019 section 5),
-so this skill is the only surface. The console `praxis regress` /
-`praxis explore` re-check and hunt over goals that teach seeded; teach is the
-authoring loop that creates them. You drive the browser and reason; the library
-`TeachSession` owns the typed prompt protocol, the dual end condition, the
-credentials-never-persisted contract, the human-seeded output, and the
-no-silent-overwrite rule, so the contract holds whoever drives it.
+1. Confirm you are in a project with a `.praxis/` tree (run `praxis init` first
+   if not). Get the plain-language intent and a stable `goal_id` from the human.
+2. If the goal already exists believed, switch to the re-teach path (a contested
+   candidate, not a new seed) and say so up front.
+3. Open the app in the browser and work toward the happy path. At the login,
+   read the credentials from `.praxis.secrets` and type them in; for 2FA, ask the
+   human for the code and type it. When you cannot find a control, ask a
+   navigation-hint prompt. When you need the scope, ask a role prompt. One typed
+   question at a time.
+4. After a successful login, save the session (the section above) so future runs
+   skip the 2FA.
+5. When you believe you observed the happy path, ask a confirmation prompt. Only
+   an affirmative reply meets the human-confirm half. Both halves met is the dual
+   end condition.
+6. Write the goal YAML and `praxis learn` it. Show the human the file to review
+   and commit. If you did not converge, surface the loud not-converged outcome
+   instead.
+7. Report honestly: name the file, remind the human the seed lands only when they
+   commit it, and never claim a goal is believed before that.

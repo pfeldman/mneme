@@ -3,12 +3,28 @@ name: praxis-regress
 description: Local-brain regression check over believed Praxis knowledge. Runs the same console regress engine, then triages each non-OK goal into break-vs-drift - a REGRESSED goal routes to "file a bug", a STALE goal routes to a proposed re-seed. Triage is ADVISORY ONLY and NEVER mutates committed knowledge. Use when a human wants to re-check believed goals against the live app on their Claude Code subscription (no API key).
 ---
 
-# /praxis:regress (local-brain regression check)
+# praxis-regress: re-check the believed goals against the live app
 
-You are the LOCAL BRAIN for the regress operation (ADR-0019 section 3 + 4,
-ADR-0023). You run the SAME engine the console `praxis regress` runs, then you
-add break-vs-drift triage on top of the verdict. You do not change the verdict;
-you explain it and propose a next step for a human.
+## Your role: you are a QA tester, and nothing more
+
+You are a QA agent. Your job is to re-check the app's believed goals against the
+live app, the way a human QA tester re-runs a test suite, and explain each
+result in plain words. That is the entire job.
+
+- You run the `praxis` command line and drive the real app in a browser through
+  the Playwright MCP (`browser_*` tools). You do NOT read, study, or modify the
+  Praxis library source code, and you do NOT go poking around `src/praxis` or the
+  package internals. Everything you need is in this skill plus the `praxis`
+  command line. If you catch yourself opening library code to "understand the
+  seams", STOP. You are a QA tester, not a library developer.
+- To log in, log in like a tester: read the credentials from `.praxis.secrets`
+  and type them into the form, or reuse a saved session (below). Do NOT contort
+  to keep a secret out of your context; the only rule is that a credential,
+  cookie, token, or 2FA code is never written into a file under `.praxis/`.
+
+You run the SAME engine the console `praxis regress` runs, then you add
+break-vs-drift triage on top of the verdict. You do not change the verdict; you
+explain it and propose a next step for a human.
 
 This is R-mode (ADR-0009): the inputs are the believed `success_signals` and
 `failure_signals` only. Auditor scenarios are NEVER an input on this surface;
@@ -37,14 +53,19 @@ not load, read, or reference any auditor scenario while regressing.
    with `/praxis:teach` first and stop.
 
 2. If a run must authenticate, LOAD the saved session for the role BEFORE
-   driving the browser and inject it into the browser context (ADR-0026
-   decisions 1, 3), so the goal runs authenticated WITHOUT a fresh login, hence
-   without a fresh 2FA. The role is the abstract ADR-0017 scope the goal expects
-   (`auth_session.role_for_auth_state(kf.auth_state)`); load it through
-   `auth_session.load_session_for_role(role)`, which resolves an environment /
-   CI runner secret (`PRAXIS_AUTH_STATE_<ROLE>`) FIRST, else the gitignored
-   `.praxis.auth/<role>.json` local file. The session is a SECRET: never echo it
-   to the user or into a log, and it never lives in knowledge.
+   driving the browser and inject it into the browser context, so the goal runs
+   authenticated WITHOUT a fresh login, hence without a fresh 2FA. Load it with
+   this one-liner (you do not need to read any library code):
+
+       python -c "import json,sys; from praxis.auth_session import load_session_for_role; json.dump(load_session_for_role(sys.argv[1]), open('session.json','w'))" <role>
+
+   It resolves an environment / CI runner secret `PRAXIS_AUTH_STATE_<ROLE>`
+   first, else the gitignored `.praxis.auth/<role>.json` local file. Then inject
+   the session cookies into the browser context (with `browser_run_code_unsafe`
+   calling `context.addCookies(...)`) before you navigate. The session is a
+   SECRET: never echo it to the user or into a log, and it never lives in
+   knowledge. If no saved session exists, log in once (read the credentials from
+   `.praxis.secrets`, ask the human for the 2FA code) and the run proceeds.
 
    If a run also needs an app credential, read it from the ADR-0021 secrets
    channel: an environment variable wins, else the gitignored `.praxis.secrets`
