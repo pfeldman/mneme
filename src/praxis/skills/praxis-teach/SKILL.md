@@ -124,6 +124,16 @@ dual end condition holds:
      present" plus "POST to the session endpoint returns 2xx and sets a session
      cookie"). Each carries `source_type = human` with the confirming human as
      its `source_id` (this is the human seed) and a `confidence`.
+     Pick a `type` per signal that a later regress run can REPRODUCE in that same
+     type (ADR-0028): a regress agent driving the browser will be asked to
+     confirm each signal IN its declared type, so do NOT type a fact `network`
+     unless a run can actually observe it at the network level. If the only way
+     to confirm a fact in a later run is by looking at the page, seed it
+     `behavioral` / `text` / `url`, not `network`. A type no regress agent can
+     reproduce makes a genuinely-passing goal come back inconclusive (and then a
+     false regression). This constrains WHICH types you choose; it does not relax
+     the rule above that a believed oracle needs at least two DIFFERENT types
+     (ADR-0005).
    - `auth_state`: `authenticated` plus the abstract `scope` from the role
      prompt. Never the credential or the cookie value.
    - optional `failure_signals`, `risks` (with a STRUCTURED trigger, never free
