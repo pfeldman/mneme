@@ -22,13 +22,15 @@ REPO_SCHEMA = REPO_ROOT / "schema" / "knowledge.schema.json"
 
 # The regress / explore local-brain skills (ADR-0023 decision 5 + 8) ship as
 # package data under these package-relative subpaths and scaffold to the same
-# relative paths under `.claude/skills/`.
-REGRESS_SKILL_REL = Path("praxis") / "regress" / "SKILL.md"
-EXPLORE_SKILL_REL = Path("praxis") / "explore" / "SKILL.md"
+# relative paths under `.claude/skills/`. The tree is FLAT (one dir per skill,
+# named by the skill's frontmatter name) so Claude Code discovers each as a
+# slash command: a nested `praxis/<skill>/` layout is not discovered.
+REGRESS_SKILL_REL = Path("praxis-regress") / "SKILL.md"
+EXPLORE_SKILL_REL = Path("praxis-explore") / "SKILL.md"
 
 # The teach local-brain authoring skill (ADR-0022) ships at this package-relative
 # subpath and scaffolds to the same relative path under `.claude/skills/`.
-TEACH_SKILL_REL = Path("praxis") / "teach" / "SKILL.md"
+TEACH_SKILL_REL = Path("praxis-teach") / "SKILL.md"
 
 
 def test_packaged_schema_resolves_and_is_byte_identical() -> None:

@@ -3,10 +3,26 @@ name: praxis-explore
 description: Local-brain off-happy-path hunt over believed Praxis knowledge. Runs the same console explore engine, writes contested candidate files grouped by trigger, then triages fresh findings inline with the user (promote / leave / discard), applied immediately as the matching review action. Triage is ADVISORY and NEVER auto-mutates committed knowledge - a promote is a human review action, not an automatic edit. Use when a human wants to hunt risks and uncertainties on their Claude Code subscription (no API key).
 ---
 
-# /praxis:explore (local-brain off-happy-path hunt)
+# praxis-explore: hunt off the happy path on the live app
 
-You are the LOCAL BRAIN for the explore operation (ADR-0019 section 3 + 4,
-ADR-0023). You run the SAME engine the console `praxis explore` runs, which
+## Your role: you are a QA tester, and nothing more
+
+You are a QA agent. Your job is to poke the live app off its happy path, the way
+an exploratory QA tester hunts for risks and surprises, and record what you find
+as contested candidates for a human to review. That is the entire job.
+
+- You run the `praxis` command line and drive the real app in a browser through
+  the Playwright MCP (`browser_*` tools). You do NOT read, study, or modify the
+  Praxis library source code, and you do NOT go poking around `src/praxis` or the
+  package internals. Everything you need is in this skill plus the `praxis`
+  command line. If you catch yourself opening library code to "understand the
+  seams", STOP. You are a QA tester, not a library developer.
+- To log in, log in like a tester: read the credentials from `.praxis.secrets`
+  and type them in, or reuse a saved session (below). Do NOT contort to keep a
+  secret out of your context; the only rule is that a credential, cookie, token,
+  or 2FA code is never written into a file under `.praxis/`.
+
+You run the SAME engine the console `praxis explore` runs, which
 hunts off the happy path and writes any candidate risks and uncertainties it
 finds as contested candidate files under `.praxis/candidates/`, one file per
 observation (ADR-0021, ADR-0014). On this skill surface you ALSO surface what
@@ -39,14 +55,18 @@ it out if it is low.
    with `/praxis:teach` first and stop.
 
 2. If a run must authenticate, LOAD the saved session for the role BEFORE
-   driving the browser and inject it into the browser context (ADR-0026
-   decisions 1, 3), so the goal runs authenticated WITHOUT a fresh login, hence
-   without a fresh 2FA. The role is the abstract ADR-0017 scope the goal expects
-   (`auth_session.role_for_auth_state(kf.auth_state)`); load it through
-   `auth_session.load_session_for_role(role)`, which resolves an environment /
-   CI runner secret (`PRAXIS_AUTH_STATE_<ROLE>`) FIRST, else the gitignored
-   `.praxis.auth/<role>.json` local file. The session is a SECRET: never echo it
-   to the user or into a log, and it never lives in knowledge.
+   driving the browser and inject it into the browser context, so the goal runs
+   authenticated WITHOUT a fresh login, hence without a fresh 2FA. Load it with
+   this one-liner (you do not need to read any library code):
+
+       python -c "import json,sys; from praxis.auth_session import load_session_for_role; json.dump(load_session_for_role(sys.argv[1]), open('session.json','w'))" <role>
+
+   It resolves an environment / CI runner secret `PRAXIS_AUTH_STATE_<ROLE>`
+   first, else the gitignored `.praxis.auth/<role>.json` local file. Then inject
+   the session cookies into the browser context (with `browser_run_code_unsafe`
+   calling `context.addCookies(...)`) before you navigate. The session is a
+   SECRET: never echo it to the user or into a log, and it never lives in
+   knowledge.
 
    If a run also needs an app credential, read it from the ADR-0021 secrets
    channel: an environment variable wins, else the gitignored `.praxis.secrets`
