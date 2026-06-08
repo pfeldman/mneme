@@ -27,9 +27,12 @@ from ..merge import contested_candidates, project_candidates
 from ..model import KnowledgeFile, Target, dump, load
 from ..resources import iter_skill_files, skills_root
 from ..runner import (
+    aggregate_run_failed,
     explore_engine,
+    regress_aggregate_engine,
     regress_engine,
     regress_failed,
+    write_aggregate_markdown,
     write_junit_xml,
     write_markdown_report,
 )
@@ -399,20 +402,58 @@ def _executor_from_file(path: Path):
 def _cmd_regress(args: argparse.Namespace) -> int:
     proj = discover_project()
     adapter = proj.adapter()
-    goals = (
-        [args.goal] if args.goal
-        else sorted(proj.seeds().keys())
-    )
-    if not goals:
-        print("no goals to regress (no seeds in .praxis/knowledge/). "
-              "Run `praxis learn ...` first.", file=sys.stderr)
-        return 2
 
     if args.from_file:
         brain = _executor_from_file(Path(args.from_file))
     else:
         brain = _executor_from_paste
 
+    # Default-all aggregate (ADR-0023 decision 2): no `--goal` runs EVERY
+    # believed goal under .praxis/knowledge/ and emits ONE aggregate
+    # break-vs-drift report. `praxis regress --goal <name>` keeps the
+    # single-goal pass/fail path below.
+    if not args.goal:
+        goals = sorted(proj.seeds().keys())
+        if not goals:
+            print("no goals to regress (no seeds in .praxis/knowledge/). "
+                  "Run `praxis learn ...` first.", file=sys.stderr)
+            return 2
+        # The console surface drives the SAME aggregate engine a skill driver
+        # calls (ADR-0019 decision 4 + ADR-0023 decision 1). The brain seam
+        # carries the paste/file executor here; the verdicts come back
+        # identical for the same store + brain output. The per-goal budget
+        # slice (ADR-0023 decision 7) is applied per goal, not as one shared
+        # pool: an exhausted slice is a loud ERROR for that goal.
+        reports = regress_aggregate_engine(
+            adapter, brain, goals,
+            agent_id=proj.agent_id,
+            observed_app_version=proj.observed_app_version,
+            budget_tokens_per_goal=args.budget_tokens,
+            budget_actions_per_goal=args.budget_actions,
+            budget_wall_seconds_per_goal=args.budget_wall_seconds,
+        )
+        run_dir = proj.run_dir()
+        report_md = run_dir / "regress-aggregate.md"
+        write_aggregate_markdown(reports, report_md)
+        # Print every goal's verdict line so the named goal + signal is on the
+        # console too, not only in the markdown (ADR-0023 decision 4).
+        for r in reports:
+            line = f"  {r.verdict.value:<10} {r.goal_id}"
+            if not r.verdict.is_ok:
+                line += f"  -> {r.evidence}"
+            print(line)
+        print(f"\nreport: {report_md}")
+        # A REGRESSED or ERROR goal fails the run loudly; STALE alone does not
+        # (the app changed on purpose, the fix is a human re-seed).
+        failed = aggregate_run_failed(reports)
+        if failed:
+            named = [r.goal_id for r in reports if r.fails_run]
+            print(f"REGRESSION/ERROR: {', '.join(named)} fail the run.",
+                  file=sys.stderr)
+        return 1 if failed else 0
+
+    # Single-goal pass/fail path (unchanged contract).
+    goals = [args.goal]
     # The console surface drives the SAME engine a skill driver calls
     # (ADR-0019 decision 4); the only difference is which brain the seam
     # carries (here: the paste/file executor; in a skill: the local Claude
@@ -660,9 +701,15 @@ def _build_parser() -> argparse.ArgumentParser:
     regress = sub.add_parser(
         "regress", help="Run R-mode across known goals (pre-deploy check).",
     )
-    regress.add_argument("--goal", help="Run only this goal (default: all seeds).")
-    regress.add_argument("--budget-tokens", type=int, default=None)
+    regress.add_argument("--goal", help="Run only this goal (default: aggregate "
+                                        "over all seeds).")
+    regress.add_argument("--budget-tokens", type=int, default=None,
+                          help="Per-goal token slice in aggregate mode "
+                               "(ADR-0023 decision 7).")
     regress.add_argument("--budget-actions", type=int, default=None)
+    regress.add_argument("--budget-wall-seconds", type=float, default=None,
+                          help="Per-goal wall-time slice (s) in aggregate mode; "
+                               "a goal that exceeds it is a loud ERROR.")
     regress.add_argument("--stop-on-fail", action="store_true")
     regress.add_argument("--from-file",
                           help="Read agent observations from this JSON file "

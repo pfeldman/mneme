@@ -25,6 +25,7 @@ from enum import Enum
 from typing import Callable, Iterable
 
 from ..adapters.spi import KnowledgeAdapter
+from ..merge.decay import DecayConfig, _parse_semver, is_observation_staled
 from ..model import KnowledgeFile, Signal, Status
 from ..store import ObservedSignal
 from .prompts import render_regression_prompt
@@ -34,6 +35,47 @@ class RegressionVerdict(str, Enum):
     PASS = "pass"
     FAIL = "fail"
     UNCERTAIN = "uncertain"
+
+
+class AggregateVerdict(str, Enum):
+    """The break-vs-drift verdict an aggregate (or single-goal) regress run
+    ships PER GOAL (ADR-0023 decision 3).
+
+    - OK:        believed success signals observed, no failure signal fired.
+    - REGRESSED: a believed success signal is now absent OR a failure signal
+                 fired. The APP broke; a real bug. File it against the app.
+    - STALE:     live behavior diverges in a way consistent with an INTENTIONAL
+                 app change (a healthy equivalent observed, or the goal's
+                 anchored observed_app_version is behind the live app per the
+                 ADR-0013 decay anchor). The KNOWLEDGE is outdated, not the app.
+    - ERROR:     the run could not reach a verdict for the goal (the adapter
+                 threw, the goal exhausted its per-goal budget slice). NOT
+                 silently skipped and NOT counted OK; it fails the run loudly
+                 (ADR-0023 decision 4 + decision 7).
+
+    REGRESSED and ERROR are the non-OK verdicts that fail the whole run. STALE
+    is non-OK in the routing sense (it needs a human re-seed) but it is NOT a
+    regression: the app did not break, so STALE alone does not fail the run.
+    OK is the only verdict that needs no follow-up.
+    """
+
+    OK = "OK"
+    REGRESSED = "REGRESSED"
+    STALE = "STALE"
+    ERROR = "ERROR"
+
+    @property
+    def is_ok(self) -> bool:
+        return self is AggregateVerdict.OK
+
+    @property
+    def fails_run(self) -> bool:
+        """A REGRESSED or ERROR goal fails the run loudly (ADR-0023 decision 4).
+
+        STALE does not fail the run: the app changed on purpose, the knowledge
+        is outdated, and the fix is a human re-seed, never a red CI gate.
+        """
+        return self in (AggregateVerdict.REGRESSED, AggregateVerdict.ERROR)
 
 
 @dataclass
@@ -49,6 +91,13 @@ class RunResult:
     matched_success: list[str] = field(default_factory=list)
     matched_failure: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # The brain may report that, although the literal believed success signals
+    # were not all matched, it observed a HEALTHY EQUIVALENT of the success path
+    # (the app changed on purpose; ADR-0023 decision 3, the STALE drift case).
+    # This is execution provenance the brain emits, never a stored field; the
+    # aggregate classifier reads it to route a non-PASS run to STALE vs
+    # REGRESSED. Defaults False so an absent flag is treated as "no equivalent".
+    healthy_equivalent_observed: bool = False
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     ended_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -160,6 +209,7 @@ class _RunContext:
     actions: int
     tokens: int | None
     notes: list[str]
+    healthy_equivalent_observed: bool
 
 
 def _parse_executor_result(raw: ExecutorResult) -> _RunContext:
@@ -175,6 +225,7 @@ def _parse_executor_result(raw: ExecutorResult) -> _RunContext:
         actions=int(raw.get("actions", 0)),
         tokens=raw.get("tokens"),
         notes=list(raw.get("notes", [])),
+        healthy_equivalent_observed=bool(raw.get("healthy_equivalent_observed", False)),
     )
 
 
@@ -240,6 +291,7 @@ class RegressionRunner:
             matched_success=matched_success,
             matched_failure=matched_failure,
             notes=ctx.notes,
+            healthy_equivalent_observed=ctx.healthy_equivalent_observed,
             started_at=started_at,
             ended_at=ended_at,
         )
@@ -258,3 +310,324 @@ class RegressionRunner:
             if stop_on_fail and r.verdict == RegressionVerdict.FAIL:
                 break
         return results
+
+
+# --- the aggregate (default-all) break-vs-drift run (ADR-0023) --------------
+
+
+@dataclass(frozen=True)
+class BudgetSlice:
+    """The per-goal budget slice for an aggregate run (ADR-0023 decision 7).
+
+    Each goal gets its OWN slice, not a shared pool the goals race for, so one
+    expensive or pathological goal cannot starve the rest. A goal that exhausts
+    its slice without reaching a verdict is a loud ERROR for that goal (decision
+    4), never a silent skip. `tokens` and `wall_seconds` are None when that
+    dimension is unbounded.
+    """
+
+    tokens: int | None = None
+    wall_seconds: float | None = None
+
+
+@dataclass
+class GoalReport:
+    """The per-goal line in an aggregate report: the break-vs-drift verdict plus
+    the evidence that produced it (ADR-0023 decision 3).
+
+    `evidence` is the named, traceable reason the verdict was chosen:
+      - REGRESSED -> the believed signal(s) that flipped (absent success or
+        fired failure), named so the routing to "file a bug" is concrete.
+      - STALE     -> the ADR-0013 version anchor (goal version behind the live
+        app) or the healthy-equivalent note that routes to "re-seed".
+      - ERROR     -> the reason a verdict could not be reached (exception text,
+        budget exhaustion), named so the goal is never silently dropped.
+      - OK        -> empty (no follow-up needed).
+
+    `signals` is the machine-readable list of flipped/anchoring signal values
+    (a superset of what `evidence` renders), so a consumer can route without
+    re-parsing prose. `result` is the underlying RunResult when one was reached
+    (None for an ERROR that never produced a run, e.g. the adapter threw).
+    """
+
+    goal_id: str
+    verdict: AggregateVerdict
+    evidence: str
+    signals: list[str] = field(default_factory=list)
+    result: RunResult | None = None
+    budget: BudgetSlice | None = None
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def fails_run(self) -> bool:
+        return self.verdict.fails_run
+
+
+def _goal_version_anchor(kf: KnowledgeFile) -> str | None:
+    """The believed knowledge's anchored observed_app_version, if any.
+
+    The projection stamps each believed success signal's
+    `provenance.observed_app_version` with the version it was last verified at
+    (ADR-0013). The goal's anchor is the LOWEST such version present across its
+    believed success signals: that is the version the knowledge is pinned to,
+    and it is the one that decays first as the live app moves ahead. Returns
+    None when no believed success signal carries a version (non-semver or
+    unset; the caller then has no version-anchor STALE input and falls back to
+    the healthy-equivalent path).
+    """
+    versions = [
+        s.provenance.observed_app_version
+        for s in kf.success_signals
+        if s.status == Status.BELIEVED and s.provenance.observed_app_version
+    ]
+    if not versions:
+        return None
+    # Keep it deterministic and conservative: the smallest (oldest) anchor is
+    # the one the decay model stales against the live current_version. Order by
+    # SEMVER, not raw string: lexicographic `min` would rank "1.10.0" before
+    # "1.9.0" and pick the newer anchor, making the goal look less behind and
+    # letting the ADR-0013 version-anchor STALE path under-fire. Reuse the same
+    # `_parse_semver` the decay projection keys on so the anchor and the store
+    # stay one rule. Non-semver tags sort first (they have no version-decay
+    # input anyway; the caller falls back to the healthy-equivalent path).
+    return min(versions, key=lambda v: _parse_semver(v) or (0, 0, 0))
+
+
+def _version_anchor_is_behind(
+    kf: KnowledgeFile,
+    current_version: str | None,
+    *,
+    config: DecayConfig | None = None,
+) -> tuple[bool, str | None]:
+    """True when the goal's anchored version is behind the live app per the
+    ADR-0013 decay anchor (more than N minors back, or a major bump).
+
+    Returns `(behind, anchor)` where `anchor` is the goal version that was
+    compared (None when there was no version anchor to compare). Reuses the
+    SAME per-observation decay predicate the projection uses
+    (`merge.decay.is_observation_staled`) so the STALE classification and the
+    store's decay stay one rule, not two drifting copies. The wall-clock arm is
+    neutralized here (now == last_verified) so this is a pure version-anchor
+    check; wall-clock decay remains the projection's job.
+    """
+    anchor = _goal_version_anchor(kf)
+    if anchor is None or current_version is None:
+        return False, anchor
+    cfg = config or DecayConfig()
+    # Neutralize wall-clock: pass now == obs_ts so only the version arm can fire.
+    fixed = datetime.now(timezone.utc)
+    staled, rule = is_observation_staled(
+        obs_version=anchor,
+        obs_ts=fixed,
+        current_version=current_version,
+        now=fixed,
+        config=cfg,
+    )
+    behind = staled and rule == "version"
+    return behind, anchor
+
+
+def classify_goal(
+    kf: KnowledgeFile,
+    result: RunResult,
+    *,
+    current_version: str | None = None,
+    decay_config: DecayConfig | None = None,
+) -> GoalReport:
+    """Map one goal's RunResult into the OK / REGRESSED / STALE aggregate
+    verdict, carrying the evidence (ADR-0023 decision 3).
+
+    Rules, in order:
+      1. The run FAILED (a failure signal fired) -> REGRESSED, naming the
+         fired signal(s). The app broke (decision 3).
+      2. The run PASSED (all believed success signals observed, no failure)
+         -> OK.
+      3. The run was UNCERTAIN (a believed success signal is absent and no
+         failure fired). This is the drift-vs-break fork:
+           a. The brain reported a healthy equivalent of the success path
+              (`healthy_equivalent_observed`) -> STALE: the app changed on
+              purpose, re-seed the knowledge.
+           b. The goal's anchored version is behind the live app per the
+              ADR-0013 decay anchor -> STALE: the knowledge is pinned to an
+              older app version.
+           c. Otherwise -> REGRESSED, naming the believed success signal(s)
+              that are now absent. A missing success path with no benign
+              explanation is treated as a break, not silently excused as
+              drift (docs/06: loud over convenient).
+
+    A goal that ERRORS never reaches here; the orchestrator builds its
+    GoalReport directly so a thrown adapter or an exhausted budget is a loud
+    ERROR, not a misclassified verdict.
+    """
+    if result.verdict == RegressionVerdict.FAIL:
+        flipped = list(result.matched_failure) or ["(unspecified failure signal)"]
+        return GoalReport(
+            goal_id=result.goal_id,
+            verdict=AggregateVerdict.REGRESSED,
+            evidence="failure signal fired: " + "; ".join(flipped),
+            signals=flipped,
+            result=result,
+        )
+
+    if result.verdict == RegressionVerdict.PASS:
+        return GoalReport(
+            goal_id=result.goal_id,
+            verdict=AggregateVerdict.OK,
+            evidence=f"all {len(result.matched_success)} believed success signals observed",
+            signals=[],
+            result=result,
+        )
+
+    # UNCERTAIN: a believed success signal is absent and no failure fired.
+    believed_success = [
+        s.value for s in kf.success_signals if s.status == Status.BELIEVED
+    ]
+    absent = [v for v in believed_success if v not in set(result.matched_success)]
+
+    if result.healthy_equivalent_observed:
+        return GoalReport(
+            goal_id=result.goal_id,
+            verdict=AggregateVerdict.STALE,
+            evidence=(
+                "healthy equivalent of the success path observed; the believed "
+                "knowledge is outdated (re-seed). Absent literal signal(s): "
+                + "; ".join(absent or ["(none named)"])
+            ),
+            signals=absent,
+            result=result,
+        )
+
+    behind, anchor = _version_anchor_is_behind(
+        kf, current_version, config=decay_config,
+    )
+    if behind:
+        return GoalReport(
+            goal_id=result.goal_id,
+            verdict=AggregateVerdict.STALE,
+            evidence=(
+                f"goal anchored at app version {anchor!r} is behind the live "
+                f"app {current_version!r} (ADR-0013 decay anchor); the "
+                f"knowledge is outdated (re-seed)"
+            ),
+            signals=absent,
+            result=result,
+        )
+
+    return GoalReport(
+        goal_id=result.goal_id,
+        verdict=AggregateVerdict.REGRESSED,
+        evidence=(
+            "believed success signal(s) now absent: "
+            + "; ".join(absent or ["(no believed success signal matched)"])
+        ),
+        signals=absent or believed_success,
+        result=result,
+    )
+
+
+def run_aggregate(
+    runner: "RegressionRunner",
+    goal_ids: list[str],
+    executor: Executor,
+    *,
+    current_version: str | None = None,
+    budget_tokens_per_goal: int | None = None,
+    budget_actions_per_goal: int | None = None,
+    budget_wall_seconds_per_goal: float | None = None,
+    decay_config: DecayConfig | None = None,
+) -> list[GoalReport]:
+    """Run R-mode across every goal with a PER-GOAL budget slice and emit one
+    GoalReport per goal (ADR-0023 decisions 2, 3, 4, 7).
+
+    Every goal is attempted within its OWN budget slice (decision 7); a goal
+    that throws or exhausts its slice without a verdict becomes a loud ERROR for
+    that goal (decision 4), never silently skipped and never counted OK. The
+    order of `goal_ids` is preserved so the report is stable across runs.
+
+    The wall-time slice is enforced as a post-hoc cap: the executor is a single
+    opaque call the runner cannot interrupt mid-flight, so a goal whose run
+    exceeds its wall slice is reported as an ERROR (budget exhausted) rather
+    than its verdict being trusted. The token slice is passed into the prompt
+    budget; the same post-hoc cap turns an over-token run into an ERROR.
+    """
+    reports: list[GoalReport] = []
+    slice_ = BudgetSlice(
+        tokens=budget_tokens_per_goal,
+        wall_seconds=budget_wall_seconds_per_goal,
+    )
+    for gid in goal_ids:
+        kf = runner.adapter.read_knowledge(gid)
+        if kf is None:
+            reports.append(GoalReport(
+                goal_id=gid,
+                verdict=AggregateVerdict.ERROR,
+                evidence=(
+                    "no believed knowledge for this goal (seed it with "
+                    "`praxis learn`); cannot reach a verdict"
+                ),
+                signals=[],
+                budget=slice_,
+            ))
+            continue
+        try:
+            result = runner.run_one(
+                gid, executor,
+                budget_tokens=budget_tokens_per_goal,
+                budget_actions=budget_actions_per_goal,
+            )
+        except Exception as exc:  # noqa: BLE001 - a thrown goal must be a loud ERROR
+            reports.append(GoalReport(
+                goal_id=gid,
+                verdict=AggregateVerdict.ERROR,
+                evidence=f"could not reach a verdict: {type(exc).__name__}: {exc}",
+                signals=[],
+                budget=slice_,
+            ))
+            continue
+
+        # Per-goal budget enforcement (decision 7): a goal that exhausted its
+        # token or wall-time slice is a loud ERROR, not a trusted verdict.
+        exhausted: list[str] = []
+        if (budget_tokens_per_goal is not None and result.tokens is not None
+                and result.tokens > budget_tokens_per_goal):
+            exhausted.append(
+                f"tokens {result.tokens} > slice {budget_tokens_per_goal}"
+            )
+        if (budget_wall_seconds_per_goal is not None
+                and result.wall_seconds > budget_wall_seconds_per_goal):
+            exhausted.append(
+                f"wall {result.wall_seconds:.2f}s > slice "
+                f"{budget_wall_seconds_per_goal:.2f}s"
+            )
+        if exhausted:
+            reports.append(GoalReport(
+                goal_id=gid,
+                verdict=AggregateVerdict.ERROR,
+                evidence="per-goal budget exhausted: " + "; ".join(exhausted),
+                signals=[],
+                result=result,
+                budget=slice_,
+                notes=result.notes,
+            ))
+            continue
+
+        report = classify_goal(
+            kf, result,
+            current_version=current_version,
+            decay_config=decay_config,
+        )
+        report.budget = slice_
+        report.notes = result.notes
+        reports.append(report)
+    return reports
+
+
+def aggregate_failed(reports: list[GoalReport]) -> bool:
+    """True when any goal REGRESSED or ERRORED (ADR-0023 decision 4).
+
+    One non-OK goal fails the whole run; a "mostly green" roll-up never buries a
+    single regression. STALE does NOT fail the run (the app changed on purpose;
+    the fix is a human re-seed, not a red gate). Used by both surfaces to
+    compute the exit code / skill triage decision in one place.
+    """
+    return any(r.fails_run for r in reports)

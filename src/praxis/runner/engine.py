@@ -41,7 +41,14 @@ from typing import Any, Callable
 
 from ..adapters.spi import KnowledgeAdapter
 from .exploration import ExplorationResult, ExplorationRunner
-from .regression import RegressionRunner, RegressionVerdict, RunResult
+from .regression import (
+    GoalReport,
+    RegressionRunner,
+    RegressionVerdict,
+    RunResult,
+    aggregate_failed,
+    run_aggregate,
+)
 
 # --- the brain seam -------------------------------------------------------
 
@@ -117,6 +124,54 @@ def regress_failed(results: list[RunResult]) -> bool:
     use this so the red/green decision is computed in one place across the two
     surfaces (ADR-0019 decision 4)."""
     return any(r.verdict == RegressionVerdict.FAIL for r in results)
+
+
+def regress_aggregate_engine(
+    adapter: KnowledgeAdapter,
+    brain: Brain,
+    goals: list[str],
+    *,
+    agent_id: str = "praxis-regress",
+    observed_app_version: str | None = None,
+    budget_tokens_per_goal: int | None = None,
+    budget_actions_per_goal: int | None = None,
+    budget_wall_seconds_per_goal: float | None = None,
+) -> list[GoalReport]:
+    """Run the default-all break-vs-drift aggregate (ADR-0023 decisions 2-4, 7).
+
+    The single engine the console `praxis regress` (no `--goal`) and a
+    direct-call skill driver both call. It runs EVERY believed goal with a
+    PER-GOAL budget slice, classifies each into OK / REGRESSED / STALE / ERROR
+    with its evidence, and never lets one REGRESSED hide nor silently skips an
+    ERROR. Both surfaces get the same GoalReport list for the same store + brain
+    output; the skill adds triage ON TOP, it does not change the verdict.
+
+    R-mode keeps the ADR-0009 closure: the only inputs are the believed
+    success / failure signals the runner reads from the store; auditor scenarios
+    are NOT passed in here or anywhere on this path.
+
+    `observed_app_version` is the live app version the STALE classification
+    compares the goal's anchored version against (ADR-0013 decay anchor): a goal
+    pinned more than N minors behind the live app reads as drift, not a break.
+    """
+    runner = RegressionRunner(
+        adapter, agent_id=agent_id, observed_app_version=observed_app_version,
+    )
+    return run_aggregate(
+        runner, goals, brain,
+        current_version=observed_app_version,
+        budget_tokens_per_goal=budget_tokens_per_goal,
+        budget_actions_per_goal=budget_actions_per_goal,
+        budget_wall_seconds_per_goal=budget_wall_seconds_per_goal,
+    )
+
+
+def aggregate_run_failed(reports: list[GoalReport]) -> bool:
+    """True when any goal REGRESSED or ERRORED. The CLI exit code and a skill
+    triage both use this so the loud-failure decision (ADR-0023 decision 4) is
+    computed in one place across the two surfaces. Re-exported from the runner's
+    `aggregate_failed` so the engine is the single import surface."""
+    return aggregate_failed(reports)
 
 
 @dataclass

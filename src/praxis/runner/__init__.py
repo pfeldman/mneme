@@ -17,8 +17,10 @@ from .engine import (
     DETERMINISTIC_OPERATIONS,
     Brain,
     ExploreOutcome,
+    aggregate_run_failed,
     explore_engine,
     is_agentic,
+    regress_aggregate_engine,
     regress_engine,
     regress_failed,
 )
@@ -28,29 +30,50 @@ from .exploration import (
     compute_off_path_fraction,
 )
 from .regression import (
+    AggregateVerdict,
+    BudgetSlice,
+    GoalReport,
     RegressionRunner,
     RegressionVerdict,
     RunResult,
+    aggregate_failed,
+    classify_goal,
+    run_aggregate,
     verdict_from_observations,
 )
-from .report import write_junit_xml, write_markdown_report
+from .report import (
+    to_aggregate_markdown,
+    write_aggregate_markdown,
+    write_junit_xml,
+    write_markdown_report,
+)
 
 __all__ = [
     "AGENTIC_OPERATIONS",
     "DETERMINISTIC_OPERATIONS",
+    "AggregateVerdict",
     "Brain",
+    "BudgetSlice",
     "ExplorationResult",
     "ExplorationRunner",
     "ExploreOutcome",
+    "GoalReport",
     "RegressionRunner",
     "RegressionVerdict",
     "RunResult",
+    "aggregate_failed",
+    "aggregate_run_failed",
+    "classify_goal",
     "compute_off_path_fraction",
     "explore_engine",
     "is_agentic",
+    "regress_aggregate_engine",
     "regress_engine",
     "regress_failed",
+    "run_aggregate",
+    "to_aggregate_markdown",
     "verdict_from_observations",
+    "write_aggregate_markdown",
     "write_junit_xml",
     "write_markdown_report",
 ]

@@ -24,13 +24,16 @@ from pathlib import Path
 from .runner import (
     Brain,
     ExploreOutcome,
+    GoalReport,
     RunResult,
     explore_engine,
+    regress_aggregate_engine,
     regress_engine,
 )
 
 __all__ = [
     "regress_via_skill",
+    "regress_aggregate_via_skill",
     "explore_via_skill",
 ]
 
@@ -71,6 +74,46 @@ def regress_via_skill(
         budget_tokens=budget_tokens,
         budget_actions=budget_actions,
         stop_on_fail=stop_on_fail,
+    )
+
+
+def regress_aggregate_via_skill(
+    brain: Brain,
+    *,
+    project_start: Path | None = None,
+    goals: list[str] | None = None,
+    budget_tokens_per_goal: int | None = None,
+    budget_actions_per_goal: int | None = None,
+    budget_wall_seconds_per_goal: float | None = None,
+) -> list[GoalReport]:
+    """Run the default-all break-vs-drift aggregate from the skill surface
+    (ADR-0023 decision 2). Same engine the console `praxis regress` (no
+    `--goal`) calls, so both surfaces return the same GoalReport list for the
+    same store + brain output; the skill triages each non-OK goal ON TOP
+    (decision 5) without changing the verdict.
+
+    With `goals=None` it regresses EVERY seeded goal (the believed set). The
+    per-goal budget slice is applied per goal (decision 7); an exhausted slice
+    is a loud ERROR for that goal, not a silent skip. The brain choice is never
+    written into knowledge.
+    """
+    from .cli.main import discover_project
+
+    proj = discover_project(project_start)
+    adapter = proj.adapter()
+    goal_ids = goals if goals else sorted(proj.seeds().keys())
+    if not goal_ids:
+        raise ValueError(
+            "no goals to regress (no seeds in .praxis/knowledge/); "
+            "seed one with `praxis learn` first"
+        )
+    return regress_aggregate_engine(
+        adapter, brain, goal_ids,
+        agent_id=proj.agent_id,
+        observed_app_version=proj.observed_app_version,
+        budget_tokens_per_goal=budget_tokens_per_goal,
+        budget_actions_per_goal=budget_actions_per_goal,
+        budget_wall_seconds_per_goal=budget_wall_seconds_per_goal,
     )
 
 
