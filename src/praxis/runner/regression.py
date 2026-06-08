@@ -285,7 +285,9 @@ class RegressionRunner:
 
     The runner is a coordinator: it asks the adapter for believed knowledge,
     renders the prompt, calls the executor (which is where the agent actually
-    runs), persists observations, computes the verdict, and emits a RunResult.
+    runs), computes the verdict, and emits a RunResult. It does NOT persist agent
+    observations as promotable evidence by default (ADR-0029 defect A): regress
+    reads the believed oracle and writes a verdict, never grows the believed set.
 
     The executor protocol is deliberately small (one function, one dict in,
     one dict out) so the LOCAL_RUN.md subscription path and an API-key path
@@ -301,7 +303,7 @@ class RegressionRunner:
     def run_one(self, goal_id: str, executor: Executor, *,
                 budget_actions: int | None = None,
                 budget_tokens: int | None = None,
-                persist_observations: bool = True) -> RunResult:
+                persist_observations: bool = False) -> RunResult:
         kf = self.adapter.read_knowledge(goal_id)
         if kf is None:
             raise ValueError(
@@ -320,6 +322,18 @@ class RegressionRunner:
 
         ctx = _parse_executor_result(raw, agent_id=self.agent_id)
 
+        # R-mode regress is a READ of the believed oracle (ADR-0009): it confirms
+        # the seeded success signals and reports a verdict; it must NOT GROW the
+        # believed set. `write_observations` appends promotable ObservationEvents
+        # (unlike write_candidates, which routes to the non-promotable
+        # CandidateEvent stream, ADR-0014), so persisting a confirmation run makes
+        # each single-agent confirmation promotable evidence. Combined with the
+        # goal-level promotion flag that defect B exploited, that self-certified
+        # the oracle (the create-welcome-popup inflation from 4 seeded signals to
+        # 26 agent-sourced ones). The verdict is computed in-memory from
+        # ctx.observations below, so persistence is not needed to reach it.
+        # Default OFF for R-mode regress (ADR-0029 defect A); the verdict and the
+        # RunResult still carry what the run observed.
         if persist_observations and ctx.observations:
             self.adapter.write_observations(
                 goal_id=goal_id,

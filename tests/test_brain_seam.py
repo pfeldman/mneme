@@ -287,55 +287,47 @@ def test_brain_is_a_plain_callable_not_an_llm_type() -> None:
 # --- 3. no brain identifier is persisted into knowledge -------------------
 
 
-def test_no_brain_identifier_persisted_into_knowledge(tmp_path: Path) -> None:
-    """After a regress run, the stored event carries the agent_identity
-    provenance only (`agent_id` / `source_id`) and NO brain identifier
-    (ADR-0019 forbidden alternative: never persist the brain choice).
-
-    We run the same goal twice through two DIFFERENT brains that emit identical
-    observations, then assert the persisted events are indistinguishable on
-    brain: the serialized event names no brain, and the two runs' events match
-    on every field except the per-event id and timestamp.
+def test_regress_persists_no_promotable_evidence_so_no_brain_id_can_leak(
+    tmp_path: Path,
+) -> None:
+    """R-mode regress is a READ of the believed oracle, not a writer of promotable
+    evidence (ADR-0029 defect A). After regress runs through two DIFFERENT brains,
+    the per-machine store holds NO observation events for the goal, so a fortiori
+    no brain identifier (ADR-0019 forbidden alternative: never persist the brain
+    choice) and no single-agent confirmation can reach the promotable history. The
+    believed success set stays exactly what the seed defined; regress never grows
+    the oracle, no matter which brain ran or how many times.
     """
     _init_project_with_login(tmp_path)
 
-    # Two brains, same observation. The only thing that differs is the closure
-    # that produced it; that difference must NOT reach the store.
+    proj0 = discover_project(tmp_path)
+    believed_before = {
+        s.value for s in proj0.adapter().read_knowledge("login").success_signals  # type: ignore[union-attr]
+        if s.status.value == "believed"
+    }
+
+    # Two brains, same observation. Neither leaves a promotable event behind.
     def brain_a(prompt: str) -> dict[str, Any]:
         return json.loads(json.dumps(_PASS_OBS))
 
     def brain_b(prompt: str) -> dict[str, Any]:
         return json.loads(json.dumps(_PASS_OBS))
 
-    regress_via_skill(brain_a, goal="login", project_start=tmp_path)
-    regress_via_skill(brain_b, goal="login", project_start=tmp_path)
+    r_a = regress_via_skill(brain_a, goal="login", project_start=tmp_path)
+    r_b = regress_via_skill(brain_b, goal="login", project_start=tmp_path)
+    assert r_a[0].verdict == RegressionVerdict.PASS
+    assert r_b[0].verdict == RegressionVerdict.PASS
 
     proj = discover_project(tmp_path)
     events = list(proj.store().read("login"))
-    assert len(events) == 2, "both runs should have appended one event each"
+    # Nothing promotable was persisted: regress does not grow the believed set.
+    assert events == [], "regress must not append promotable observation events"
 
-    forbidden_tokens = ("brain", "llm", "anthropic", "claude", "openai", "model")
-    for ev in events:
-        dumped = ev.model_dump(mode="json")
-        # The only provenance on a stored observation is the agent_identity.
-        assert ev.agent_id == "praxis-cli"
-        for sig in ev.signals:
-            assert sig.source_id == "praxis-cli"
-        # No field anywhere in the serialized event names a brain.
-        blob = json.dumps(dumped).lower()
-        for tok in forbidden_tokens:
-            assert tok not in blob, (
-                f"a brain identifier {tok!r} leaked into the stored event: {blob}"
-            )
-
-    # Brain-independence of the store: the two events agree on every field
-    # except the content-addressable id and the timestamp.
-    a = events[0].model_dump(mode="json")
-    b = events[1].model_dump(mode="json")
-    for ignore in ("event_id", "ts"):
-        a.pop(ignore, None)
-        b.pop(ignore, None)
-    assert a == b, "two brains, same observation -> store records the same knowledge"
+    believed_after = {
+        s.value for s in proj.adapter().read_knowledge("login").success_signals  # type: ignore[union-attr]
+        if s.status.value == "believed"
+    }
+    assert believed_after == believed_before
 
 
 def test_explore_candidate_carries_agent_identity_only(tmp_path: Path) -> None:

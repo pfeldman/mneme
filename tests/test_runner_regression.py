@@ -263,37 +263,98 @@ def _seeded_adapter(kf: KnowledgeFile, dirpath: Path) -> BrowserUseAdapter:
     return BrowserUseAdapter(store, target=kf.target, seeds={kf.goal_id: kf})
 
 
-def test_runner_run_one_persists_observations_and_computes_verdict() -> None:
+def _confirming_executor(prompt: str) -> dict:
+    assert "GOAL (login)" in prompt
+    return {
+        "observations": [
+            ObservedSignal(kind="success", type=SignalType.BEHAVIORAL,
+                           value="sign-out action becomes available",
+                           source_type=SourceType.AGENT,
+                           source_id="praxis-regress"),
+            ObservedSignal(kind="success", type=SignalType.NETWORK,
+                           value="POST /session returns 2xx and sets a session cookie",
+                           source_type=SourceType.AGENT,
+                           source_id="praxis-regress"),
+        ],
+        "actions": 5,
+        "tokens": 1234,
+        "notes": ["ran the happy path cleanly"],
+    }
+
+
+def test_runner_run_one_computes_verdict_without_growing_the_oracle() -> None:
+    """ADR-0029 defect A: regress is a READ of the believed oracle, not a writer of
+    promotable evidence. run_one computes the verdict in-memory from the agent's
+    observations but, by default, does NOT persist them as promotable
+    ObservationEvents, so a confirmation run cannot self-certify the oracle. The
+    store stays empty (only the seed supplies the oracle) and the believed success
+    set is unchanged after the run."""
     kf = _login_kf()
     with tempfile.TemporaryDirectory() as td:
         adapter = _seeded_adapter(kf, Path(td))
 
-        def executor(prompt: str) -> dict:
-            assert "GOAL (login)" in prompt
-            return {
-                "observations": [
-                    ObservedSignal(kind="success", type=SignalType.BEHAVIORAL,
-                                   value="sign-out action becomes available",
-                                   source_type=SourceType.AGENT,
-                                   source_id="praxis-regress"),
-                    ObservedSignal(kind="success", type=SignalType.NETWORK,
-                                   value="POST /session returns 2xx and sets a session cookie",
-                                   source_type=SourceType.AGENT,
-                                   source_id="praxis-regress"),
-                ],
-                "actions": 5,
-                "tokens": 1234,
-                "notes": ["ran the happy path cleanly"],
-            }
+        believed_before = {
+            s.value for s in adapter.read_knowledge("login").success_signals  # type: ignore[union-attr]
+            if s.status == Status.BELIEVED
+        }
 
         runner = RegressionRunner(adapter)
-        result = runner.run_one("login", executor, budget_tokens=5000)
+        result = runner.run_one("login", _confirming_executor, budget_tokens=5000)
 
         assert result.verdict == RegressionVerdict.PASS
         assert result.actions == 5
         assert result.tokens == 1234
         assert result.notes == ["ran the happy path cleanly"]
-        # Observations made it into the store (next read sees them).
+        # The verdict was reached, but NO promotable observation landed in the store.
+        events = list(adapter.store.read("login"))
+        assert events == []
+        # The believed success set is exactly what the seed defined - regress did
+        # not grow it.
+        believed_after = {
+            s.value for s in adapter.read_knowledge("login").success_signals  # type: ignore[union-attr]
+            if s.status == Status.BELIEVED
+        }
+        assert believed_after == believed_before
+
+
+def test_n_regress_runs_leave_the_believed_success_set_unchanged() -> None:
+    """ADR-0029 defect A, the inflation guard: N regress runs over a seeded goal must
+    leave the believed success set IDENTICAL to the seed's. This is the
+    create-welcome-popup failure mode (4 seeded signals growing to 26 agent-sourced
+    ones); after the fix the believed set never grows, no matter how many runs."""
+    kf = _login_kf()
+    with tempfile.TemporaryDirectory() as td:
+        adapter = _seeded_adapter(kf, Path(td))
+        seed_believed = {
+            s.value for s in adapter.read_knowledge("login").success_signals  # type: ignore[union-attr]
+            if s.status == Status.BELIEVED
+        }
+
+        runner = RegressionRunner(adapter)
+        for _ in range(26):
+            r = runner.run_one("login", _confirming_executor, budget_tokens=5000)
+            assert r.verdict == RegressionVerdict.PASS
+
+        # No events accumulated and the believed set is unchanged after 26 runs.
+        assert list(adapter.store.read("login")) == []
+        believed_after = {
+            s.value for s in adapter.read_knowledge("login").success_signals  # type: ignore[union-attr]
+            if s.status == Status.BELIEVED
+        }
+        assert believed_after == seed_believed
+
+
+def test_runner_persist_observations_opt_in_still_writes() -> None:
+    """The persist path is not removed, only defaulted OFF for regress: an explicit
+    opt-in (a non-regress caller that genuinely wants to seed the store) still
+    appends the event. This pins that the flag, not a deleted code path, is what
+    changed."""
+    kf = _login_kf()
+    with tempfile.TemporaryDirectory() as td:
+        adapter = _seeded_adapter(kf, Path(td))
+        runner = RegressionRunner(adapter)
+        runner.run_one("login", _confirming_executor, budget_tokens=5000,
+                       persist_observations=True)
         events = list(adapter.store.read("login"))
         assert len(events) == 1
         assert events[0].agent_id == "praxis-regress"
