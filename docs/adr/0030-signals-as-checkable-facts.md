@@ -103,6 +103,16 @@ carries a structured predicate:
   variable slot is FILLED by some non-empty instance token in the observation.
   The slot's literal value is NOT compared between seed and run; only its
   PRESENCE (and, with decision 5, its declared shape) is checked.
+  Refinement (2026-06-08): the invariant is matched by CONTAINMENT, not
+  whole-string equality. The invariant (with its slots) must APPEAR in the
+  observation; surrounding agent narration is tolerated ("after saving, the
+  route matches /box/editor/329419 ok" holds). The first implementation used a
+  whole-string `fullmatch`, which a live run showed was too brittle against an
+  LLM agent's run-to-run phrasing variance (a genuine pass dropped to 2/4 only
+  because of extra framing words). Containment keeps the invariant literal and
+  the slot shapes intact, so a wrong invariant (a 500 where 2xx is required, a
+  wrong route, a non-numeric id) still does NOT match: it is strictly harder
+  than the legacy Jaccard floor, only the whole-string requirement is relaxed.
 - Jaccard is NOT computed for a structured signal. The `_PARAPHRASE_THRESHOLD`
   floor applies ONLY to legacy free-text signals (decision 4).
 

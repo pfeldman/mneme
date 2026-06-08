@@ -109,7 +109,16 @@ class Predicate:
         is no Jaccard and no fuzzy comparison anywhere.
         """
         normalized = _normalize(observed_value)
-        m = self._match_re.fullmatch(normalized)
+        # Containment, not whole-string equality: the invariant (with its slots)
+        # must APPEAR somewhere in the observed value, so an agent that wraps the
+        # fact in narration ("after saving, the route matches /box/editor/329419
+        # ok") still matches. The invariant text itself is still matched
+        # literally and the slots still shape-checked, so a wrong invariant (a
+        # 500 where 2xx is required, a wrong route) still does NOT match. This
+        # replaced an earlier whole-string `fullmatch`, which was too brittle
+        # against an LLM agent's run-to-run phrasing variance (a live run dropped
+        # to 2/4 only because of surrounding words).
+        m = self._match_re.search(normalized)
         if m is None:
             return False
         # Every slot must be filled by a non-empty token; a declared shape
@@ -201,7 +210,11 @@ def parse(template: str) -> Predicate:
     # `\s+` (the observed value is also whitespace-normalized in `evaluate`), so
     # spacing differences between the seed and the run never break a match while
     # the non-space invariant text is still matched EXACTLY.
-    regex_parts: list[str] = ["^"]
+    # No leading/trailing anchors: the matcher is `search` (containment), so the
+    # invariant can appear surrounded by an agent's narration. The literal
+    # invariant text is still matched verbatim; only whole-string equality is
+    # relaxed.
+    regex_parts: list[str] = []
     literal_segments: list[str] = []
     pos = 0
     for m in _SLOT_RE.finditer(template):
@@ -227,7 +240,6 @@ def parse(template: str) -> Predicate:
     trailing = template[pos:]
     literal_segments.append(trailing)
     regex_parts.append(_literal_to_regex(trailing))
-    regex_parts.append("$")
 
     # No-invariant guard (decision 3 + 6): the literal text must carry at least
     # one durable (non-stopword) token. A predicate that is only a slot, or
