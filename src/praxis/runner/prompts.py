@@ -76,17 +76,31 @@ def render_regression_prompt(kf: KnowledgeFile, *, budget_actions: int | None = 
         if failures else ""
     )
     budget_line = _format_budget(budget_actions, budget_tokens)
+    # The emit contract is aligned with the matcher (ADR-0028): the agent must
+    # confirm EVERY success signal listed above and emit each observation IN that
+    # signal's DECLARED type (the [type] shown), because the verdict matches a
+    # believed success signal only when the observation's type equals the
+    # signal's type (regression._value_matches, exact-type equality). The old
+    # "type the observation by what you actually checked" instruction fought that
+    # rule and made a genuinely-passing goal read UNCERTAIN. The grounding
+    # guardrail LEADS the completeness instruction: confirm all is never tick
+    # all; an unconfirmable signal is left unconfirmed, never fabricated, because
+    # a false confirmation is the worst outcome (docs/06, ADR-0005).
     return (
         f"GOAL ({kf.goal_id}): {kf.goal}\n"
         f"App: {kf.target.app}"
         f"{(' (env=' + kf.target.environment + ')') if kf.target.environment else ''}\n"
-        f"\nSuccess signals (the oracle - check each):\n{success}"
+        f"\nSuccess signals (the oracle - confirm EACH one listed):\n{success}"
         f"{failure_block}\n"
         f"\nMode: REGRESSION. Regenerate your own steps to achieve the goal. Do NOT replay\n"
-        f"recorded steps. Observe each signal type and emit one observation per signal back\n"
-        f"through write_observations. Match a failure signal -> regression; signal type the\n"
-        f"observation by what you actually checked (behavioral / network / accessibility /\n"
-        f"text / url / visual)."
+        f"recorded steps. Confirm every success signal listed above: emit exactly one\n"
+        f"observation per signal, and emit each observation IN that signal's declared type\n"
+        f"(the [type] shown on its line: behavioral / network / accessibility / text / url /\n"
+        f"visual), through write_observations. Each observation must be grounded in evidence\n"
+        f"you actually saw; NEVER assert a signal just to complete the list. If you cannot\n"
+        f"ground a signal in its declared type, leave it unconfirmed - do NOT fabricate one,\n"
+        f"because a false confirmation is the worst possible outcome. Match a failure signal\n"
+        f"-> regression."
         f"\n{budget_line}"
     )
 
