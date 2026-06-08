@@ -184,6 +184,35 @@ def test_regression_prompt_includes_signals_and_no_steps() -> None:
         assert f not in p.lower(), f"prompt leaked imperative artifact: {f!r}"
 
 
+def test_parse_executor_result_stamps_missing_provenance() -> None:
+    """The agent emits what it SAW (kind / type / value / present); the SYSTEM
+    stamps provenance. An observation without source_type / source_id is accepted
+    and attributed to the run's agent identity (ADR-0008: source_id =
+    agent_identity; AGENTS.md: the agent does not invent a generated id). This is
+    what lets the claude -p brain return minimal observations without a pydantic
+    ValidationError. An explicit provenance still wins."""
+    from praxis.runner.regression import _parse_executor_result
+
+    raw = {
+        "observations": [{
+            "kind": "success", "type": "behavioral",
+            "value": "dashboard renders", "present": True,
+        }],
+        "actions": 2,
+    }
+    ctx = _parse_executor_result(raw, agent_id="praxis-cli")
+    assert len(ctx.observations) == 1
+    assert ctx.observations[0].source_type.value == "agent"
+    assert ctx.observations[0].source_id == "praxis-cli"
+
+    explicit = {"observations": [{
+        "kind": "success", "type": "behavioral", "value": "x", "present": True,
+        "source_type": "human", "source_id": "pablo",
+    }]}
+    ctx2 = _parse_executor_result(explicit, agent_id="praxis-cli")
+    assert ctx2.observations[0].source_id == "pablo"
+
+
 def test_exploration_prompt_includes_risks_with_structured_triggers() -> None:
     kf = _login_kf()
     p = render_exploration_prompt(kf, budget_tokens=5000)
