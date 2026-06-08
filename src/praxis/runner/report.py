@@ -82,6 +82,61 @@ def write_junit_xml(results: list[RunResult], path: str | Path, *,
     return p
 
 
+_RUN_TAG = {
+    RegressionVerdict.PASS: "[ PASS ]",
+    RegressionVerdict.FAIL: "[ FAIL ]",
+    RegressionVerdict.UNCERTAIN: "[UNCERT]",
+    RegressionVerdict.AUTH_EXPIRED: "[ AUTH ]",
+}
+_RUN_WORD = {
+    RegressionVerdict.PASS: "passed",
+    RegressionVerdict.FAIL: "failed",
+    RegressionVerdict.UNCERTAIN: "uncertain",
+    RegressionVerdict.AUTH_EXPIRED: "auth-expired",
+}
+
+
+# ANSI color (ASCII escape sequences only, never unicode glyphs - prohibited
+# characters rule). Applied only when the caller says the stream is a TTY, so
+# piped / captured output (CI, tests) stays plain and greppable.
+_ANSI = {
+    RegressionVerdict.PASS: "\x1b[32m",        # green
+    RegressionVerdict.FAIL: "\x1b[31m",        # red
+    RegressionVerdict.UNCERTAIN: "\x1b[33m",   # yellow
+    RegressionVerdict.AUTH_EXPIRED: "\x1b[33m",  # yellow
+}
+_ANSI_RESET = "\x1b[0m"
+
+
+def format_single_console_summary(
+    result: RunResult, *, believed_total: int, color: bool = False,
+) -> str:
+    """The console verdict block for a single-goal `praxis regress --goal X`
+    (ADR-0027 decision 6). The verdict is shown ON THE CONSOLE so a human does
+    not have to open the markdown report: a tagged result line (PASS / FAIL /
+    UNCERTAIN / AUTH) with the matched count and wall time, then a pytest-style
+    one-line tally. `color` wraps the tag and tally in an ANSI color when the
+    stream is a TTY (green pass, red fail, yellow uncertain / auth)."""
+    matched = len(result.matched_success)
+    tag = _RUN_TAG.get(result.verdict, "[  ??  ]")
+    if result.verdict == RegressionVerdict.FAIL:
+        detail = "regression: " + (", ".join(result.matched_failure) or "(unspecified)")
+    elif result.verdict == RegressionVerdict.PASS:
+        detail = f"{matched}/{believed_total} success signals matched"
+    else:
+        detail = f"{matched}/{believed_total} success signals matched (need more)"
+    word = _RUN_WORD.get(result.verdict, result.verdict.value)
+    tally = f"==== 1 {word} in {result.wall_seconds:.0f}s ===="
+    if color and result.verdict in _ANSI:
+        c = _ANSI[result.verdict]
+        tag = f"{c}{tag}{_ANSI_RESET}"
+        tally = f"{c}{tally}{_ANSI_RESET}"
+    return (
+        f"\n  {tag} {result.goal_id}   {detail}   ({result.wall_seconds:.0f}s)\n"
+        f"\n{tally}\n"
+    )
+
+
 def to_markdown(results: list[RunResult]) -> str:
     """Render a human-readable markdown report."""
     if not results:
