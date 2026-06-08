@@ -117,6 +117,25 @@ def test_seed_makes_oracle_believed_from_cold_start() -> None:
     assert any(s.status.value == "believed" for s in kf.success_signals)
 
 
+def test_value_predicate_survives_the_projection() -> None:
+    """ADR-0030 read-path: a seed-authored `value_predicate` must survive the
+    observation->believed rebuild, or the matcher silently falls back to Jaccard
+    and the structured fact path is dead end to end (the live-proof gap). The
+    projection restores it from the seed by (type, value)."""
+    seed = _seed()
+    seed.success_signals[0] = Signal(
+        type="behavioral", value="authenticated home reachable (AC)",
+        value_predicate="authenticated home reachable for {user}",
+        provenance=Provenance(source_type="spec", source_id="AC-1",
+                              observed_app_version="1", last_verified=NOW,
+                              observation_count=1),
+        confidence=1.0, status="believed")
+    kf = project_with_seed(seed, [], now=NOW, current_version="1")
+    match = [s for s in kf.success_signals
+             if s.value == "authenticated home reachable (AC)"]
+    assert match and match[0].value_predicate == "authenticated home reachable for {user}"
+
+
 def test_seed_plus_agent_observation_merges() -> None:
     kf = project_with_seed(
         _seed(), [ev("POST /session 2xx", "network")], now=NOW, current_version="1")
