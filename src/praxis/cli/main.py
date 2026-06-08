@@ -35,6 +35,7 @@ from ..runner import (
     explore_aggregate_engine,
     explore_engine,
     format_console_summary,
+    format_single_console_summary,
     group_candidates_by_trigger,
     regress_aggregate_engine,
     regress_engine,
@@ -503,11 +504,12 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         failed = aggregate_run_failed(reports)
         return 1 if failed else 0
 
-    # Single-goal pass/fail path (unchanged contract).
+    # Single-goal pass/fail path (unchanged verdict contract).
     goals = [args.goal]
+    print(f"running 1 goal: {args.goal}...")
     # The console surface drives the SAME engine a skill driver calls
     # (ADR-0019 decision 4); the only difference is which brain the seam
-    # carries (here: the paste/file executor; in a skill: the local Claude
+    # carries (here: the file/claude-p executor; in a skill: the local Claude
     # session). The verdict comes back identical for the same store + brain
     # output.
     results = regress_engine(
@@ -524,8 +526,19 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     last_xml = run_dir / "last-regress.xml"
     write_markdown_report(results, last_md)
     write_junit_xml(results, last_xml)
-    print(f"\nreport: {last_md}")
-    print(f"junit:  {last_xml}")
+    # Show the verdict ON THE CONSOLE (ADR-0027 decision 6): a human should see
+    # whether the goal passed without opening the markdown report. believed_total
+    # is the count the verdict needed all of (ADR-0009); read it from the
+    # projection so the line reads "M/N success signals matched".
+    kf = adapter.read_knowledge(args.goal)
+    believed_total = sum(
+        1 for s in (kf.success_signals if kf else [])
+        if s.status.value == "believed"
+    )
+    if results:
+        print(format_single_console_summary(
+            results[0], believed_total=believed_total))
+    print(f"report: {last_md}")
     return 1 if regress_failed(results) else 0
 
 

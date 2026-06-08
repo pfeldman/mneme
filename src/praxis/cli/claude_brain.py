@@ -237,16 +237,17 @@ def make_claude_brain(
             interval = _SPINNER_INTERVAL if is_tty else 1.0
             while not stop.wait(interval):
                 elapsed = int(time.monotonic() - start)
+                clock = f"{elapsed // 60}:{elapsed % 60:02d}"
                 if is_tty:
                     frame = _SPINNER_FRAMES[i % len(_SPINNER_FRAMES)]
                     i += 1
                     # Carriage return rewrites the same line; trailing spaces
                     # clear any leftover from a longer previous render.
-                    print(f"\r  [claude -p] {frame} working... ~{elapsed}s   ",
+                    print(f"\r  {frame} driving the browser ({mode})   {clock}   ",
                           end="", file=sys.stderr, flush=True)
                 elif elapsed - last_beat >= _HEARTBEAT_SECONDS:
                     last_beat = float(elapsed)
-                    print(f"  [claude -p] still working... ~{elapsed}s",
+                    print(f"  still driving the browser... {clock}",
                           file=sys.stderr, flush=True)
             if is_tty:
                 # Wipe the spinner line so the verdict output starts clean.

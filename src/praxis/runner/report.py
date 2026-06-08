@@ -82,6 +82,43 @@ def write_junit_xml(results: list[RunResult], path: str | Path, *,
     return p
 
 
+_RUN_TAG = {
+    RegressionVerdict.PASS: "[ PASS ]",
+    RegressionVerdict.FAIL: "[ FAIL ]",
+    RegressionVerdict.UNCERTAIN: "[UNCERT]",
+    RegressionVerdict.AUTH_EXPIRED: "[ AUTH ]",
+}
+_RUN_WORD = {
+    RegressionVerdict.PASS: "passed",
+    RegressionVerdict.FAIL: "failed",
+    RegressionVerdict.UNCERTAIN: "uncertain",
+    RegressionVerdict.AUTH_EXPIRED: "auth-expired",
+}
+
+
+def format_single_console_summary(
+    result: RunResult, *, believed_total: int,
+) -> str:
+    """The console verdict block for a single-goal `praxis regress --goal X`
+    (ADR-0027 decision 6). The verdict is shown ON THE CONSOLE so a human does
+    not have to open the markdown report: a tagged result line (PASS / FAIL /
+    UNCERTAIN / AUTH) with the matched count and wall time, then a pytest-style
+    one-line tally."""
+    matched = len(result.matched_success)
+    tag = _RUN_TAG.get(result.verdict, "[  ??  ]")
+    if result.verdict == RegressionVerdict.FAIL:
+        detail = "regression: " + (", ".join(result.matched_failure) or "(unspecified)")
+    elif result.verdict == RegressionVerdict.PASS:
+        detail = f"{matched}/{believed_total} success signals matched"
+    else:
+        detail = f"{matched}/{believed_total} success signals matched (need more)"
+    word = _RUN_WORD.get(result.verdict, result.verdict.value)
+    return (
+        f"\n  {tag} {result.goal_id}   {detail}   ({result.wall_seconds:.0f}s)\n"
+        f"\n==== 1 {word} in {result.wall_seconds:.0f}s ====\n"
+    )
+
+
 def to_markdown(results: list[RunResult]) -> str:
     """Render a human-readable markdown report."""
     if not results:

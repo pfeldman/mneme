@@ -168,6 +168,35 @@ def test_regress_pass_path(tmp_path: Path) -> None:
     assert "**pass**" in md_files[-1].read_text()
 
 
+def test_single_goal_regress_prints_verdict_on_console(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ADR-0027 decision 6: a single-goal `praxis regress --goal X` shows the
+    verdict ON THE CONSOLE (a tagged result line + a pytest-style tally), so a
+    human does not have to open the markdown report."""
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+    obs_file = tmp_path / "agent.json"
+    obs_file.write_text(json.dumps({
+        "observations": [{
+            "kind": "success", "type": "behavioral",
+            "value": "a Sign out control is present after submitting valid credentials",
+            "source_type": "agent", "source_id": "praxis-cli",
+        }],
+        "actions": 5, "tokens": 1000,
+    }))
+    capsys.readouterr()
+    rc = _run(["regress", "--goal", "login", "--from-file", str(obs_file)], tmp_path)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "running 1 goal: login" in out
+    assert "[ PASS ] login" in out
+    assert "1/1 success signals matched" in out
+    assert "1 passed" in out
+
+
 def test_regress_fail_path_exits_nonzero(tmp_path: Path) -> None:
     _run(["init"], tmp_path)
     seed = tmp_path / "login.yaml"
