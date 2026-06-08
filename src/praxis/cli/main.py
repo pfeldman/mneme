@@ -309,7 +309,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
         # (ADR-0027). Set this to a JSON file path (relative to the project root)
         # so `praxis regress` / `praxis explore` need no --mcp-config flag; the
         # flag overrides it. None until the project wires its browser MCP.
-        "mcp_config": args.mcp_config,
+        "mcp_config": getattr(args, "mcp_config", None),
     }
     (pdir / CONFIG_NAME).write_text(
         yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
