@@ -114,6 +114,40 @@ def s_single_source_two_types() -> int:
     return len(_believed_values(events) & {POISON, POISON2})
 
 
+def s_seed_plus_paraphrase_stream(k: int = 26) -> int:
+    """ADR-0029: a correct seed of ONE type plus a STREAM of k DISTINCT single-agent
+    paraphrases of the SAME type as the seed. This is the `create-welcome-popup`
+    self-pollution: regress kept minting single-agent confirmations and each one rode
+    the GOAL-LEVEL independence flag (the seed sets it) to `believed`, inflating the
+    believed set from the seed to k+1 entries. After the per-signal fix, no paraphrase
+    has a different-type partner from a different source, so NONE is corroborated; the
+    believed set stays the SEED ONLY. Returns the count of believed agent paraphrases
+    (must be 0). The seed itself stays believed (verified separately below)."""
+    seed = [ObservedSignal(kind="success", type="behavioral",
+                           value="real: welcome popup is shown on first visit (AC)",
+                           present=True, source_type="spec", source_id="AC-1",
+                           observed_app_version=CUR, confidence=1.0)]
+    # Each paraphrase is a DISTINCT value of the SAME (behavioral) type from a DISTINCT
+    # agent: a stream of single-agent self-restatements, exactly what regress emitted.
+    paraphrases = [f"FAKE paraphrase #{i}: the welcome popup appears" for i in range(k)]
+    events = [_ev(f"a{i}", "behavioral", paraphrases[i]) for i in range(k)]
+    believed = _believed_values(events, seeded=seed)
+    return len(believed & set(paraphrases))
+
+
+def s_seed_survives_paraphrase_stream() -> int:
+    """Companion to the above: the SEED must stay believed under the paraphrase stream
+    (the fix must not over-correct into refusing the seed). Returns 1 when the seed is
+    still the believed oracle, 0 if the fix wrongly demoted it."""
+    seed_value = "real: welcome popup is shown on first visit (AC)"
+    seed = [ObservedSignal(kind="success", type="behavioral", value=seed_value,
+                           present=True, source_type="spec", source_id="AC-1",
+                           observed_app_version=CUR, confidence=1.0)]
+    events = [_ev(f"a{i}", "behavioral", f"FAKE paraphrase #{i}: the welcome popup appears")
+              for i in range(26)]
+    return 1 if seed_value in _believed_values(events, seeded=seed) else 0
+
+
 # --------------------------------------------------------------------------- INHERENT
 
 def s_seed_rides_single_agent() -> int:
@@ -138,11 +172,13 @@ def run() -> dict:
         ("contradiction", s_contradiction()),
         ("oscillation", s_oscillation()),
         ("stale_demotion", s_stale()),
+        ("seed_plus_paraphrase_stream", s_seed_plus_paraphrase_stream()),
     ]
     for k in (2, 5, 20, 100):
         resist.append((f"correlated_same_type x{k}", s_correlated_same_type(k)))
 
     control_believed = s_positive_control()
+    seed_survives = s_seed_survives_paraphrase_stream()
     inherent = [("seed_rides_single_agent", s_seed_rides_single_agent())]
 
     resist_breaches = [name for name, fb in resist if fb > 0]
@@ -150,9 +186,12 @@ def run() -> dict:
         "resist": resist,
         "resist_breaches": resist_breaches,
         "positive_control_believed": control_believed,
+        "seed_survives_paraphrase_stream": seed_survives,
         "inherent": inherent,
-        # All poisoning attacks resisted AND genuine evidence still accepted.
-        "PASSED": (not resist_breaches) and control_believed >= 1,
+        # All poisoning attacks resisted AND genuine evidence still accepted AND the
+        # seed survives the paraphrase stream (the fix must not over-correct).
+        "PASSED": (not resist_breaches) and control_believed >= 1
+        and seed_survives == 1,
     }
 
 
@@ -165,6 +204,8 @@ def main() -> None:
     for name, fb in r["resist"]:
         print(f"    {'OK ' if fb == 0 else 'XX '} {name:28} false_beliefs={fb}")
     print(f"Positive control (must be >=1 believed): {r['positive_control_believed']}")
+    print(f"Seed survives paraphrase stream (must be 1): "
+          f"{r['seed_survives_paraphrase_stream']}")
     print("-" * 72)
     print("INHERENT (seed + single different-type agent → believed; = legitimate")
     print("cold-start corroboration, indistinguishable from honest; mitigated over time):")

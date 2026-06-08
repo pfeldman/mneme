@@ -123,3 +123,35 @@ def test_seed_plus_agent_observation_merges() -> None:
     values = {s.value for s in kf.success_signals}
     assert "POST /session 2xx" in values
     assert "authenticated home reachable (AC)" in values
+
+
+def test_seed_plus_same_type_paraphrase_stream_believes_only_the_seed() -> None:
+    """ADR-0029 defect B at the projection level: a SEED (behavioral) plus a STREAM
+    of distinct single-agent paraphrases of the SAME type must NOT inflate the
+    believed set. Each paraphrase rode the goal-level independence flag under the
+    bug; with the per-signal rule none has a different-type partner from a different
+    source, so the only believed success signal is the SEED."""
+    seed_value = "authenticated home reachable (AC)"  # behavioral, from _seed()
+    stream = [
+        ev(f"a behavioral paraphrase #{i} of the success", "behavioral", src_id=f"a{i}")
+        for i in range(26)
+    ]
+    kf = project_with_seed(_seed(), stream, now=NOW, current_version="1")
+    believed = {s.value for s in kf.success_signals if s.status.value == "believed"}
+    assert believed == {seed_value}
+    # The paraphrases are present in the projection (nothing dropped) but contested,
+    # so they are loud and traceable, never silently promoted.
+    contested = {s.value for s in kf.success_signals if s.status.value == "contested"}
+    assert len(contested) == 26
+
+
+def test_seed_plus_single_different_type_agent_promotes_the_agent() -> None:
+    """ADR-0029 must preserve the ADR-0008 INHERENT boundary at the projection
+    level: a behavioral SEED plus a SINGLE network agent observation promotes the
+    network signal to believed (genuine different-type, different-source
+    corroboration), so the believed set is BOTH."""
+    kf = project_with_seed(
+        _seed(), [ev("POST /session 2xx", "network", src_id="a1")],
+        now=NOW, current_version="1")
+    believed = {s.value for s in kf.success_signals if s.status.value == "believed"}
+    assert believed == {"authenticated home reachable (AC)", "POST /session 2xx"}
