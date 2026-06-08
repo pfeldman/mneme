@@ -184,6 +184,29 @@ def test_regression_prompt_includes_signals_and_no_steps() -> None:
         assert f not in p.lower(), f"prompt leaked imperative artifact: {f!r}"
 
 
+def test_regression_prompt_demands_each_signal_in_its_declared_type() -> None:
+    """ADR-0028: the regress prompt must ask the agent to confirm EVERY success
+    signal, one observation per signal, IN that signal's DECLARED type, with the
+    grounding guardrail leading. The old "type the observation by what you
+    actually checked" instruction must be GONE, because it fought the exact-type
+    matcher and produced a false UNCERTAIN. The negative assertion catches a
+    future regression of the wording."""
+    kf = _login_kf()
+    p = render_regression_prompt(kf, budget_actions=10)
+    low = p.lower()
+    # Confirm ALL signals, one observation per signal, each in its declared type.
+    assert "confirm every success signal" in low
+    assert "one\nobservation per signal" in low or "one observation per signal" in low
+    assert "declared type" in low
+    # Grounding guardrail present: never assert a signal just to complete the list.
+    assert "grounded in evidence" in low
+    assert "never assert a signal just to complete" in low
+    assert "leave it unconfirmed" in low
+    assert "do not fabricate" in low
+    # The conflicting free-typing instruction is gone (ADR-0028 decision 1).
+    assert "by what you actually checked" not in low
+
+
 def test_exploration_prompt_includes_risks_with_structured_triggers() -> None:
     kf = _login_kf()
     p = render_exploration_prompt(kf, budget_tokens=5000)
