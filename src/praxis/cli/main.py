@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from .claude_brain import make_claude_brain
 
 import yaml
 
@@ -368,46 +371,34 @@ def _cmd_learn(args: argparse.Namespace) -> int:
     return 0
 
 
-def _executor_from_paste(prompt: str) -> dict[str, Any]:
-    """Default interactive executor: print the prompt, read agent JSON
-    back from stdin. The user runs the agent externally (subscription
-    path with Claude Code + Playwright MCP) and pastes the resulting
-    JSON when prompted.
+def _select_console_brain(args: argparse.Namespace) -> Any:
+    """Pick the brain that drives a console regress / explore run (ADR-0027
+    decision 7).
 
-    Refuses to proceed on empty stdin: a careless Ctrl-D used to silently
-    produce an empty observation list, an UNCERTAIN verdict, and a green
-    `praxis regress` exit when the agent had not actually run. The CI
-    gate has to remain trustworthy; "I forgot to paste" is loud, not
-    silent.
+    Precedence: an explicit `--from-file` wins (deterministic; what the tests
+    and the regression-recall harness drive). Otherwise the local `claude -p`
+    brain drives the run headless on the user's subscription with NO API key
+    (ADR-0027 decisions 3, 5), which is the new DEFAULT replacing the retired
+    paste-on-stdin prompt (Finding A). When neither a `--from-file` nor a
+    `claude` binary is available, FAIL LOUDLY with an actionable message instead
+    of hanging on stdin: a console run with no brain is an error, not a wait.
+    The CI API-key brain (ADR-0019, ADR-0024) is unchanged and is wired by CI
+    through its own path, not here.
     """
-    print("\n" + "=" * 78)
-    print("PROMPT TO PASTE INTO YOUR AGENT SESSION (run it, collect output):")
-    print("=" * 78)
-    print(prompt)
-    print("=" * 78)
-    print(
-        "\nPaste the agent's JSON output. End with a blank line then Ctrl-D. "
-        "If the agent emitted nothing, pass an explicit "
-        "`{\"observations\": [], \"actions\": 0, \"tokens\": null, "
-        "\"visited_urls\": []}` so the empty case is intentional."
-    )
-    chunks: list[str] = []
-    try:
-        for line in sys.stdin:
-            chunks.append(line)
-    except EOFError:
-        pass
-    text = "".join(chunks).strip()
-    if not text:
+    if args.from_file:
+        return _executor_from_file(Path(args.from_file))
+    if shutil.which("claude") is None:
         raise SystemExit(
-            "no agent output received on stdin. Refusing to record an empty "
-            "observation list silently. Re-run after pasting the agent's "
-            "JSON, or pass --from-file PATH."
+            "no brain available: `claude` is not on PATH and no --from-file was "
+            "given. Install Claude Code (the local console brain runs headless on "
+            "your subscription, no API key), or pass --from-file PATH with agent "
+            "observations."
         )
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        raise SystemExit(f"could not parse agent JSON: {e}")
+    return make_claude_brain(
+        headed=getattr(args, "headed", False),
+        timeout_seconds=args.budget_wall_seconds,
+        mcp_config_path=getattr(args, "mcp_config", None),
+    )
 
 
 def _executor_from_file(path: Path):
@@ -425,10 +416,7 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     proj = discover_project()
     adapter = proj.adapter()
 
-    if args.from_file:
-        brain = _executor_from_file(Path(args.from_file))
-    else:
-        brain = _executor_from_paste
+    brain = _select_console_brain(args)
 
     # Default-all aggregate (ADR-0023 decision 2): no `--goal` runs EVERY
     # believed goal under .praxis/knowledge/ and emits ONE aggregate
@@ -632,10 +620,7 @@ def _explore_aggregate(
 def _cmd_explore(args: argparse.Namespace) -> int:
     proj = discover_project()
     adapter = proj.adapter()
-    if args.from_file:
-        brain = _executor_from_file(Path(args.from_file))
-    else:
-        brain = _executor_from_paste
+    brain = _select_console_brain(args)
 
     # Default-all aggregate (ADR-0023 decision 2): no `--goal` hunts off-happy-
     # path across EVERY believed goal under .praxis/knowledge/, writes candidate
@@ -874,6 +859,12 @@ def _build_parser() -> argparse.ArgumentParser:
                           help="How many goals to run concurrently in aggregate "
                                "mode (ADR-0027 decision 4; default 1 = "
                                "sequential). Auth-subject goals run serially.")
+    regress.add_argument("--headed", action="store_true",
+                          help="Show the browser the claude -p brain drives "
+                               "(default headless, ADR-0027 decision 5).")
+    regress.add_argument("--mcp-config",
+                          help="Path to the Playwright MCP config the claude -p "
+                               "brain uses to drive the browser (ADR-0027).")
     regress.add_argument("--stop-on-fail", action="store_true")
     regress.add_argument("--from-file",
                           help="Read agent observations from this JSON file "
@@ -897,6 +888,12 @@ def _build_parser() -> argparse.ArgumentParser:
                           help="How many goals to run concurrently in aggregate "
                                "mode (ADR-0027 decision 4; default 1 = "
                                "sequential). Auth-subject goals run serially.")
+    explore.add_argument("--headed", action="store_true",
+                          help="Show the browser the claude -p brain drives "
+                               "(default headless, ADR-0027 decision 5).")
+    explore.add_argument("--mcp-config",
+                          help="Path to the Playwright MCP config the claude -p "
+                               "brain uses to drive the browser (ADR-0027).")
     explore.add_argument("--happy-path", nargs="*", default=None,
                           help="URLs the happy path visits "
                                "(for off_path_fraction).")
