@@ -730,6 +730,38 @@ def test_auth_session_seam_save_then_load_round_trips(tmp_path: Path) -> None:
     assert got == env_state
 
 
+# --- ADR-0027 decision 2: session reuse is gated on auth_state.being_tested ---
+
+
+def test_session_reuse_gate_precondition_reuses_subject_forces_login() -> None:
+    """A PRECONDITION auth goal (being_tested false) may reuse the saved session
+    for its role; an auth-SUBJECT goal (being_tested true) must NOT, so the run
+    performs a real login and exercises the flow under test (ADR-0027 decision
+    2). `role_for_session_reuse` is distinct from `role_for_auth_state`: the
+    subject goal still authenticates as its scope, it just may not reuse a
+    session."""
+    from praxis import auth_session
+
+    precondition = AuthState(authenticated=True, scope="user")
+    subject = AuthState(authenticated=True, scope="user", being_tested=True)
+
+    # Precondition: reuse the role's session (login is setup, not the test).
+    assert auth_session.role_for_session_reuse(precondition) == "user"
+    # Subject: no reuse -> force a real login (the login IS the test).
+    assert auth_session.role_for_session_reuse(subject) is None
+    # The role a session is SAVED under / the classifier expects is unchanged:
+    # the subject goal still authenticates as "user".
+    assert auth_session.role_for_auth_state(subject) == "user"
+    # Anonymous / unauthenticated / no auth_state: nothing to reuse either way.
+    assert auth_session.role_for_session_reuse(
+        AuthState(authenticated=True, scope="anonymous")
+    ) is None
+    assert auth_session.role_for_session_reuse(
+        AuthState(authenticated=False, scope=None)
+    ) is None
+    assert auth_session.role_for_session_reuse(None) is None
+
+
 # --- ADR-0026 Step 5: ORGANIC AUTH-EXPIRED through the real read path --------
 
 

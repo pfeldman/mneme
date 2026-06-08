@@ -60,6 +60,7 @@ __all__ = [
     "load_session",
     "save_session",
     "role_for_auth_state",
+    "role_for_session_reuse",
     "save_session_for_role",
     "load_session_for_role",
 ]
@@ -268,6 +269,29 @@ def role_for_auth_state(auth_state: "AuthState | None") -> str | None:
     if scope is None or scope.strip().lower() == "anonymous":
         return None
     return scope
+
+
+def role_for_session_reuse(auth_state: "AuthState | None") -> str | None:
+    """The role a run may REUSE a saved session for, or None to force a login.
+
+    Session reuse is for goals where authentication is a PRECONDITION: the login
+    is setup, not the test, so reusing the saved session to skip the per-run 2FA
+    is correct (ADR-0026). It is FORBIDDEN for a goal where authentication is the
+    SUBJECT under test (`auth_state.being_tested`, ADR-0027 decision 2): reusing
+    a session would skip the very login flow the goal verifies and make it pass
+    without exercising it.
+
+    Returns the reuse role (the `role_for_auth_state` scope) only when the goal
+    is a precondition goal; returns None when `being_tested` is true (the run
+    must perform a real login and must NOT load a saved session) or when there is
+    no authenticated role to key a session by. This is deliberately distinct from
+    `role_for_auth_state`, which stays the role a session is SAVED under and the
+    role the regress classifier EXPECTS: an auth-subject goal still authenticates
+    as that scope, it just may not short-circuit the login by reusing a session.
+    """
+    if auth_state is not None and auth_state.being_tested:
+        return None
+    return role_for_auth_state(auth_state)
 
 
 def save_session_for_role(
