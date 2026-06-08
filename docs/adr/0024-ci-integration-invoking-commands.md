@@ -74,7 +74,10 @@ team's CI secret, read from the runner environment by the `live` agent;
 Praxis consumes it from the environment and never echoes it. Which brain ran
 is execution provenance at most (`source_id = agent_identity`, ADR-0009 /
 ADR-0014), never a stored field, so a green CI regress and a green local
-regress mean the same thing about the knowledge.
+regress mean the same thing about the knowledge. Any app login credential a
+run needs is supplied the same way, as a runner secret or environment
+variable (the ADR-0021 secrets channel), read at runtime and never written
+into the repo or the logs.
 
 ### 4. Explore in CI writes contested candidate files; what happens next is the team's CI.
 

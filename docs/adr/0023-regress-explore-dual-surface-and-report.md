@@ -62,7 +62,11 @@ Same body, same store reads and writes, same operation semantics. The only
 differences are which brain drives the run and whether the output is a
 process exit code or an interactive triage. Both surfaces produce the same
 verdict for the same goal and live app; the skill adds triage ON TOP of the
-verdict, it does not change the verdict.
+verdict, it does not change the verdict. When a run must authenticate, it
+reads the app credential from the ADR-0021 secrets channel (`.praxis.secrets`
+or an environment variable, never from knowledge); a missing credential
+follows the ADR-0021 ask-or-fail behavior (the skill asks the user, the
+console and CI fail loudly).
 
 ### 2. With no `--goal`, the operation runs every believed goal and emits one aggregate report.
 

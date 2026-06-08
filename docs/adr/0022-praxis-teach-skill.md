@@ -132,7 +132,11 @@ signals, and `auth_state.scope` as the abstract role, with the
 adapter-boundary validator rejecting tokens, cookies, user IDs, session
 IDs, JWT contents, and PII exactly as ADR-0017 section 2 specifies. The
 credential the human types is the input to the browser, not an output of
-the knowledge; the secret crosses no persistence boundary.
+the knowledge; the secret crosses no persistence boundary. The credential
+may be typed live in the session or read from the ADR-0021 secrets channel
+(`.praxis.secrets` or an environment variable, never committed); either way
+it drives the browser and is never persisted, and a missing credential
+follows the ADR-0021 ask-or-fail behavior.
 
 ### 6. A teach session refuses to silently overwrite a believed goal.
 

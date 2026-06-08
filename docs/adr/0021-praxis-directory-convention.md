@@ -88,6 +88,9 @@ config; the gitignored set is the raw per-machine log and run artifacts:
   Committing them would bloat history with machine-local transcripts and risk
   leaking unredacted run output. The init operation writes the `runs/` ignore
   line (decision 5).
+- **Outside the tree, never committed:** `.praxis.secrets`, the root-level
+  credentials file (decision 6), is not part of the `.praxis/` tree at all
+  and is gitignored; secrets are a separate channel, not knowledge.
 
 The committed knowledge and candidate files are the projection a teammate needs
 to pull; the local `runs/` log is the evidence trail behind that projection on
@@ -160,9 +163,10 @@ materializes the convention in a fresh repo:
 
 - It creates the `.praxis/` tree (`config.yaml`, `knowledge/`, `candidates/`,
   `runs/`, `.praxisignore`) with empty knowledge and candidate directories.
-- It adds the `runs/` gitignore line (writing or appending the repo's
-  `.gitignore` so `.praxis/runs/` is excluded by default), so the raw logs stay
-  local without the user having to remember.
+- It adds the gitignore lines for `.praxis/runs/` and `.praxis.secrets`
+  (writing or appending the repo's `.gitignore`), so the raw logs and the
+  local secrets file stay local without the user having to remember, and the
+  secrets file can never be committed by accident (decision 6).
 - It scaffolds the Praxis Claude Code skills into the project's
   `.claude/skills/` from the package data shipped in the wheel. The
   skill-distribution mechanism and the package-data packaging are owned by
@@ -171,6 +175,33 @@ materializes the convention in a fresh repo:
 
 The init operation reads and writes the filesystem and reports; it does not
 reason and needs no brain (ADR-0019 deterministic class).
+
+### 6. Credentials and secrets live outside committed knowledge.
+
+The credentials a teach, regress, or explore run needs to authenticate
+against the live app are NOT knowledge and never enter `.praxis/`. They live
+in a separate secrets channel, read at runtime to drive the browser and
+never written into any committed file, candidate, knowledge file, or log:
+
+- A gitignored `.praxis.secrets` file at the repo root (a `KEY=value` file,
+  a sibling of `.praxis/`, never inside the committed tree), and / or
+  environment variables (a CI secret in automation). An environment variable
+  takes precedence over the file, so CI supplies credentials as runner
+  secrets with no file and local use supplies them through the file.
+- `praxis init` adds `.praxis.secrets` to the repo `.gitignore` (decision 5)
+  so the file can never be committed by accident.
+
+When a needed credential is absent, the behavior splits by surface
+(ADR-0019). On the Claude Code skill surface the operation asks the user for
+the missing key and offers the exact append command to add it, for example
+`! echo "APP_USERNAME=<your-username>" >> .praxis.secrets`. On the console
+surface (and in CI) the operation fails LOUDLY, naming the missing key and
+how to set it (an environment variable or the secrets file), with a non-zero
+exit and no interactive prompt, because there is no human to answer. A
+secret value is never echoed back into the chat, stdout, or a log after it
+is set. What knowledge records about authentication is only the ADR-0017
+abstract `auth_state` posture (`authenticated` plus `scope`), never the
+secret that produced it.
 
 ### Forbidden alternatives
 
@@ -243,7 +274,10 @@ Invariants respected:
 - `no-secrets-tokens-pii-in-knowledge`: every committed file under `.praxis/` is
   subject to the adapter-boundary redaction rule (ADR-0009, ADR-0017); raw run
   logs that might carry unredacted output are gitignored and never committed by
-  default.
+  default. Credentials live in a separate gitignored secrets channel
+  (`.praxis.secrets` or environment variables, decision 6), read at runtime
+  and never written into any committed file; knowledge records only the
+  ADR-0017 `auth_state` posture.
 - `tenant-scoping-prevents-leakage`: one repo per project is the tenant boundary
   (ADR-0018, refining the ADR-0012 single-tenant-by-contract placeholder); there
   is no cross-tenant store, so the `.praxis/` tree of one project never mixes
