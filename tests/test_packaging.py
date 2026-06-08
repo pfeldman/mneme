@@ -240,3 +240,60 @@ def test_teach_skill_encodes_skill_only_and_credentials_never_persisted() -> Non
     assert "contested candidate" in text
     # Navigation hints are invariants, never selectors (decision 2).
     assert "never a" in text and ("selector" in text or "coordinate" in text)
+
+
+# --- the ADR-0026 session-reuse protocol in the three skills ---------------
+
+
+def test_teach_skill_saves_the_session_after_login() -> None:
+    # ADR-0026 decisions 1 + 7: after the human login (2FA passed live, the code
+    # never persisted), teach EXPORTS the browser storageState via the Playwright
+    # MCP and SAVES it for the role through the seam. The skill text must encode
+    # the save-after-login bootstrap and that the session is a secret (gitignored,
+    # never committed, never knowledge).
+    text = _skills_by_rel()[TEACH_SKILL_REL].read_text(encoding="utf-8").lower()
+    assert "storagestate" in text, "teach skill must export the storageState"
+    assert "playwright mcp" in text, "teach skill must name the Playwright MCP export"
+    assert "save_session_for_role" in text, "teach skill must call the save seam"
+    # The session is a secret: gitignored, never committed, never knowledge.
+    assert ".praxis.auth" in text or "praxis_auth_state" in text
+    assert "never committed" in text
+    assert "never knowledge" in text or "never recorded into knowledge" in text
+    # The 2FA code is never persisted (ADR-0022 decision 5 carries to the code).
+    assert "2fa" in text and ("never persisted" in text or "never persist" in text)
+
+
+def _assert_load_before_run_and_reauth(rel: Path) -> None:
+    """Both regress and explore must LOAD the session before driving the browser
+    and, on AUTH-EXPIRED, ASK the human to re-authenticate (pass 2FA once) and
+    re-save, while console / CI fails loud naming AUTH-EXPIRED + the role, and the
+    email-2FA-vs-TOTP refresh cost is referenced (ADR-0026 decisions 5, 7)."""
+    # Collapse whitespace so a line-wrapped phrase still matches as one span.
+    text = " ".join(_skills_by_rel()[rel].read_text(encoding="utf-8").lower().split())
+    # LOAD the saved session BEFORE driving the browser (decisions 1, 3).
+    assert "load_session_for_role" in text, f"{rel} must call the load seam"
+    assert "before driving the browser" in text, (
+        f"{rel} must load the session before driving the browser"
+    )
+    assert "inject it into the browser context" in text
+    # On AUTH-EXPIRED the skill asks the human to re-authenticate and re-saves.
+    assert "auth-expired" in text, f"{rel} must name the AUTH-EXPIRED outcome"
+    assert "re-authenticate" in text
+    assert "save_session_for_role" in text, (
+        f"{rel} must re-save the refreshed session on AUTH-EXPIRED"
+    )
+    # The console / CI surface fails loud naming AUTH-EXPIRED + the role.
+    assert "fails loudly" in text or "fail loudly" in text or "fails loud" in text
+    assert "non-zero exit" in text
+    assert "never a silent green" in text
+    # The email-2FA (manual refresh) vs TOTP (CI self-refresh) cost reference.
+    assert "totp" in text
+    assert "email" in text
+
+
+def test_regress_skill_loads_session_before_run_and_reauths_on_auth_expired() -> None:
+    _assert_load_before_run_and_reauth(REGRESS_SKILL_REL)
+
+
+def test_explore_skill_loads_session_before_run_and_reauths_on_auth_expired() -> None:
+    _assert_load_before_run_and_reauth(EXPLORE_SKILL_REL)

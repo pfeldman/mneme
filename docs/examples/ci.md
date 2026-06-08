@@ -55,6 +55,14 @@ channel). An environment variable wins over any `.praxis.secrets` file, so in CI
 them purely as secrets with no file on disk. Praxis reads them at runtime and never writes
 them into the repo or the logs.
 
+If the app's login needs two-factor, the run also reads a saved authenticated session as a
+runner secret (`PRAXIS_AUTH_STATE_USER` in the example,
+[ADR-0026](../adr/0026-persistent-auth-session-reuse.md)). A human passes two-factor once
+locally and saves the session, and CI reuses it so it never has to pass two-factor itself.
+That session is a secret, never committed and never echoed. When it expires, a run reports
+the distinct **AUTH-EXPIRED** outcome (not REGRESSED, not green) and a human refreshes the
+secret. See [Login with two-factor](auth-and-2fa.md) for the full walkthrough.
+
 ## Optional: scheduled exploration
 
 If you want autonomous exploration, run `praxis explore` on a schedule. It hunts off the

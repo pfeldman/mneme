@@ -23,6 +23,7 @@ from typing import Any
 import yaml
 
 from ..adapters import BrowserUseAdapter
+from ..auth_session import AUTH_DIRNAME
 from ..merge import contested_candidates, project_candidates
 from ..model import KnowledgeFile, Target, dump, load
 from ..resources import iter_skill_files, skills_root
@@ -57,12 +58,16 @@ SECRETS_FILE = ".praxis.secrets"
 PRAXISIGNORE_NAME = ".praxisignore"
 SKILLS_INSTALL_DIR = Path(".claude") / "skills"
 
-# The two ignore lines `praxis init` appends to the repo root `.gitignore`
-# (ADR-0021 decisions 5 and 6). `runs/` is the gitignored, regenerable
-# per-machine log; `.praxis.secrets` is the credentials channel that must never
-# be committed. Both are appended idempotently (never duplicated on re-init).
+# The ignore lines `praxis init` appends to the repo root `.gitignore`
+# (ADR-0021 decisions 5 and 6; ADR-0026 decisions 2 and 3). `runs/` is the
+# gitignored, regenerable per-machine log; `.praxis.secrets` is the credentials
+# channel that must never be committed; `.praxis.auth/` is the authenticated-
+# session secret channel (a sibling of `.praxis.secrets`) that holds the saved
+# Playwright storageState and must never be committed either. All are appended
+# idempotently (never duplicated on re-init).
 GITIGNORE_RUNS_LINE = f"{PROJECT_DIR}/{RUNS_SUBDIR}/"
 GITIGNORE_SECRETS_LINE = SECRETS_FILE
+GITIGNORE_AUTH_LINE = f"{AUTH_DIRNAME}/"
 
 
 class ProjectContext:
@@ -213,7 +218,10 @@ def _append_gitignore_lines(repo_root: Path, lines: list[str]) -> list[str]:
     whitespace) is never duplicated, so re-running `praxis init` is idempotent.
     Returns the lines that were actually added (empty on a no-op re-init). The
     secrets ignore line is written here so `.praxis.secrets` is gitignored
-    BEFORE any secret could be written (ADR-0021 decisions 5 and 6).
+    BEFORE any secret could be written (ADR-0021 decisions 5 and 6); the
+    `.praxis.auth/` ignore line is written the same way so the saved
+    authenticated session is gitignored BEFORE any session could be written
+    (ADR-0026 decisions 2 and 3, the gitignore-before-write guarantee).
     """
     gitignore = repo_root / ".gitignore"
     existing: list[str] = []
@@ -286,11 +294,13 @@ def _cmd_init(args: argparse.Namespace) -> int:
     if not praxisignore.exists():
         praxisignore.write_text(_PRAXISIGNORE_TEMPLATE, encoding="utf-8")
 
-    # Gitignore the per-machine run logs and the secrets file. This runs on
-    # every init (idempotent), so a re-init never duplicates the lines and
-    # `.praxis.secrets` is gitignored before any secret could be written.
+    # Gitignore the per-machine run logs, the secrets file, and the auth-session
+    # directory. This runs on every init (idempotent), so a re-init never
+    # duplicates the lines and both `.praxis.secrets` and `.praxis.auth/` are
+    # gitignored BEFORE any secret or saved session could be written (ADR-0021
+    # decisions 5 and 6; ADR-0026 decisions 2 and 3).
     added = _append_gitignore_lines(
-        root, [GITIGNORE_RUNS_LINE, GITIGNORE_SECRETS_LINE]
+        root, [GITIGNORE_RUNS_LINE, GITIGNORE_SECRETS_LINE, GITIGNORE_AUTH_LINE]
     )
 
     # Scaffold the local-brain Claude Code skills from package data.
@@ -305,11 +315,15 @@ def _cmd_init(args: argparse.Namespace) -> int:
     if added:
         print(f"  .gitignore: added {', '.join(added)}")
     else:
-        print("  .gitignore: already covers runs/ + secrets (no change)")
+        print("  .gitignore: already covers runs/ + secrets + auth session "
+              "(no change)")
     print(f"  skills:     {root / SKILLS_INSTALL_DIR}/  ({n_skills} file(s) scaffolded)")
     print()
     print("Credentials go in a gitignored .praxis.secrets at the repo root "
           "(KEY=value), never inside .praxis/ (ADR-0021 decision 6).")
+    print(f"Saved auth sessions go in a gitignored {AUTH_DIRNAME}/ at the repo "
+          "root (one storageState JSON per role), never inside .praxis/ "
+          "(ADR-0026 decisions 2 and 3).")
     print("Next: drop a *.knowledge.yaml seed file under "
           f"{pdir / 'knowledge'}/ (one per goal, source_type=human or spec), "
           "or import one with `praxis learn <goal-id> --from-file PATH`.")

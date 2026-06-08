@@ -6,10 +6,11 @@ load-bearing safety properties of the init operation:
     - the committed tree is config + knowledge + candidates + .praxisignore, and
       the per-machine event log lives under the gitignored runs/<timestamp>/
       (ADR-0021 decision 1 and 2);
-    - the repo-root .gitignore carries BOTH `.praxis/runs/` and `.praxis.secrets`
-      exactly once, even after a second init (ADR-0021 decisions 5 and 6), so
-      the secrets file can never be committed by accident and is gitignored
-      BEFORE any secret could be written;
+    - the repo-root .gitignore carries `.praxis/runs/`, `.praxis.secrets`, and
+      `.praxis.auth/` exactly once, even after a second init (ADR-0021 decisions
+      5 and 6; ADR-0026 decisions 2 and 3), so neither the secrets file nor the
+      saved auth session can ever be committed by accident and both are
+      gitignored BEFORE any secret or session could be written;
     - the Claude Code skills ship as package data and `praxis init` scaffolds
       them into `.claude/skills/` (the novel skill-in-wheel round trip).
 """
@@ -69,11 +70,14 @@ def _gitignore_lines(repo_root: Path) -> list[str]:
     return [ln.strip() for ln in text.splitlines() if ln.strip()]
 
 
-def test_gitignore_contains_both_lines_once(tmp_path: Path) -> None:
+def test_gitignore_contains_all_lines_once(tmp_path: Path) -> None:
     _run(["init"], tmp_path)
     lines = _gitignore_lines(tmp_path)
     assert lines.count(".praxis/runs/") == 1
     assert lines.count(".praxis.secrets") == 1
+    # ADR-0026 decisions 2 and 3: the saved auth-session directory is gitignored
+    # too, so the session secret can never be committed by accident.
+    assert lines.count(".praxis.auth/") == 1
 
 
 def test_second_init_does_not_duplicate_ignore_lines(tmp_path: Path) -> None:
@@ -83,6 +87,8 @@ def test_second_init_does_not_duplicate_ignore_lines(tmp_path: Path) -> None:
     lines = _gitignore_lines(tmp_path)
     assert lines.count(".praxis/runs/") == 1
     assert lines.count(".praxis.secrets") == 1
+    # A second init must not duplicate the auth-session line either.
+    assert lines.count(".praxis.auth/") == 1
 
 
 def test_init_appends_to_a_preexisting_gitignore(tmp_path: Path) -> None:
@@ -94,6 +100,7 @@ def test_init_appends_to_a_preexisting_gitignore(tmp_path: Path) -> None:
     assert "*.log" in lines
     assert lines.count(".praxis/runs/") == 1
     assert lines.count(".praxis.secrets") == 1
+    assert lines.count(".praxis.auth/") == 1
 
 
 def test_init_creates_gitignore_when_absent(tmp_path: Path) -> None:
@@ -103,6 +110,7 @@ def test_init_creates_gitignore_when_absent(tmp_path: Path) -> None:
     lines = _gitignore_lines(tmp_path)
     assert ".praxis/runs/" in lines
     assert ".praxis.secrets" in lines
+    assert ".praxis.auth/" in lines
 
 
 def test_secrets_gitignored_before_any_secret_written(tmp_path: Path) -> None:
@@ -113,6 +121,29 @@ def test_secrets_gitignored_before_any_secret_written(tmp_path: Path) -> None:
     _run(["init"], tmp_path)
     assert ".praxis.secrets" in _gitignore_lines(tmp_path)
     assert not (tmp_path / ".praxis.secrets").exists()
+
+
+def test_auth_session_gitignored_before_any_session_written(tmp_path: Path) -> None:
+    # ADR-0026 decision 2 (the gitignore-before-write guarantee): the saved
+    # authenticated session is a secret of the same class as a password, so the
+    # `.praxis.auth/` directory must be gitignored from the moment init runs.
+    # init writes the ignore line as part of the tree creation, NOT lazily on the
+    # first session write, so a session saved in next can never be committed.
+    # After init the ignore line exists and the auth dir does NOT yet (no session
+    # has been written), proving the line is present BEFORE any session file.
+    _run(["init"], tmp_path)
+    assert ".praxis.auth/" in _gitignore_lines(tmp_path)
+    assert not (tmp_path / ".praxis.auth").exists()
+
+
+def test_auth_session_gitignore_line_matches_module_constant(tmp_path: Path) -> None:
+    # The init gitignore line uses the exact directory constant the auth-session
+    # channel exports, so the ignored path and the path the channel writes to can
+    # never drift apart.
+    from praxis.auth_session import AUTH_DIRNAME
+
+    _run(["init"], tmp_path)
+    assert f"{AUTH_DIRNAME}/" in _gitignore_lines(tmp_path)
 
 
 # --- skills scaffolded into .claude/skills/ -------------------------------

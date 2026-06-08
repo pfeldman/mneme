@@ -35,6 +35,12 @@ class RegressionVerdict(str, Enum):
     PASS = "pass"
     FAIL = "fail"
     UNCERTAIN = "uncertain"
+    # The run could not authenticate: the goal expected an authenticated scope
+    # (ADR-0017 auth_state) but the run observed a login wall / logged-out
+    # browser (the saved session expired; ADR-0026 decision 5). This is NOT a
+    # failure of the app (FAIL/REGRESSED) and NOT thin oracle evidence
+    # (UNCERTAIN); it is a distinct condition routed ahead of all three.
+    AUTH_EXPIRED = "auth_expired"
 
 
 class AggregateVerdict(str, Enum):
@@ -52,17 +58,26 @@ class AggregateVerdict(str, Enum):
                  threw, the goal exhausted its per-goal budget slice). NOT
                  silently skipped and NOT counted OK; it fails the run loudly
                  (ADR-0023 decision 4 + decision 7).
+    - AUTH_EXPIRED: the goal expected an authenticated scope (ADR-0017
+                 auth_state) but the run hit a login wall / logged-out browser
+                 (the saved session expired; ADR-0026 decision 5). It is NOT a
+                 regression (the app did not break) and NOT stale knowledge; it
+                 is "the run could not authenticate". A distinct non-OK outcome
+                 that fails the run loudly, naming the goal and the expired
+                 role, never collapsed into a green OK and never a false
+                 REGRESSED.
 
-    REGRESSED and ERROR are the non-OK verdicts that fail the whole run. STALE
-    is non-OK in the routing sense (it needs a human re-seed) but it is NOT a
-    regression: the app did not break, so STALE alone does not fail the run.
-    OK is the only verdict that needs no follow-up.
+    REGRESSED, ERROR, and AUTH_EXPIRED are the non-OK verdicts that fail the
+    whole run. STALE is non-OK in the routing sense (it needs a human re-seed)
+    but it is NOT a regression: the app did not break, so STALE alone does not
+    fail the run. OK is the only verdict that needs no follow-up.
     """
 
     OK = "OK"
     REGRESSED = "REGRESSED"
     STALE = "STALE"
     ERROR = "ERROR"
+    AUTH_EXPIRED = "AUTH-EXPIRED"
 
     @property
     def is_ok(self) -> bool:
@@ -70,12 +85,20 @@ class AggregateVerdict(str, Enum):
 
     @property
     def fails_run(self) -> bool:
-        """A REGRESSED or ERROR goal fails the run loudly (ADR-0023 decision 4).
+        """A REGRESSED, ERROR, or AUTH_EXPIRED goal fails the run loudly
+        (ADR-0023 decision 4, ADR-0026 decision 5).
 
         STALE does not fail the run: the app changed on purpose, the knowledge
         is outdated, and the fix is a human re-seed, never a red CI gate.
+        AUTH_EXPIRED DOES fail the run: a run that could not authenticate is a
+        loud non-OK outcome (the saved session must be refreshed), never a
+        silent green and never mislabeled REGRESSED.
         """
-        return self in (AggregateVerdict.REGRESSED, AggregateVerdict.ERROR)
+        return self in (
+            AggregateVerdict.REGRESSED,
+            AggregateVerdict.ERROR,
+            AggregateVerdict.AUTH_EXPIRED,
+        )
 
 
 @dataclass
@@ -98,6 +121,15 @@ class RunResult:
     # aggregate classifier reads it to route a non-PASS run to STALE vs
     # REGRESSED. Defaults False so an absent flag is treated as "no equivalent".
     healthy_equivalent_observed: bool = False
+    # Whether the run drove the browser as an authenticated session (ADR-0026
+    # decision 5, Open decision 2 resolved): the brain reports `authenticated`
+    # in its observation payload (True = ran authenticated, False = hit a login
+    # wall / logged out). The aggregate classifier reads it to route a goal that
+    # expected an authenticated scope but observed authenticated=False to
+    # AUTH-EXPIRED, ahead of FAIL/REGRESSED/PASS/UNCERTAIN. Defaults True so an
+    # absent flag (and the anonymous-scope path) is treated as "no auth wall",
+    # leaving existing runs and tests unaffected.
+    authenticated: bool = True
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     ended_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -210,6 +242,7 @@ class _RunContext:
     tokens: int | None
     notes: list[str]
     healthy_equivalent_observed: bool
+    authenticated: bool
 
 
 def _parse_executor_result(raw: ExecutorResult) -> _RunContext:
@@ -226,6 +259,10 @@ def _parse_executor_result(raw: ExecutorResult) -> _RunContext:
         tokens=raw.get("tokens"),
         notes=list(raw.get("notes", [])),
         healthy_equivalent_observed=bool(raw.get("healthy_equivalent_observed", False)),
+        # Minimal, additive: default True so an absent flag is "ran
+        # authenticated / unknown", leaving the anonymous-scope path and every
+        # existing payload unaffected (ADR-0026 Open decision 2).
+        authenticated=bool(raw.get("authenticated", True)),
     )
 
 
@@ -292,6 +329,7 @@ class RegressionRunner:
             matched_failure=matched_failure,
             notes=ctx.notes,
             healthy_equivalent_observed=ctx.healthy_equivalent_observed,
+            authenticated=ctx.authenticated,
             started_at=started_at,
             ended_at=ended_at,
         )
@@ -427,6 +465,26 @@ def _version_anchor_is_behind(
     return behind, anchor
 
 
+def _expected_authenticated_scope(kf: KnowledgeFile) -> str | None:
+    """The authenticated role the goal expects, or None.
+
+    A goal "expects an authenticated scope" when its ADR-0017 `auth_state` is
+    present, believes the session is `authenticated`, and carries a `scope`
+    that is an authenticated role (anything that is NOT `anonymous`). Returns
+    that role string so the AUTH-EXPIRED evidence can name it. Returns None when
+    there is no auth_state, the goal is anonymous-scoped, or auth_state does not
+    claim an authenticated session: those goals are never AUTH-EXPIRED (ADR-0026
+    decision 5; the anonymous-scope path is unaffected).
+    """
+    auth = kf.auth_state
+    if auth is None or not auth.authenticated:
+        return None
+    scope = auth.scope
+    if scope is None or scope.strip().lower() == "anonymous":
+        return None
+    return scope
+
+
 def classify_goal(
     kf: KnowledgeFile,
     result: RunResult,
@@ -434,10 +492,20 @@ def classify_goal(
     current_version: str | None = None,
     decay_config: DecayConfig | None = None,
 ) -> GoalReport:
-    """Map one goal's RunResult into the OK / REGRESSED / STALE aggregate
-    verdict, carrying the evidence (ADR-0023 decision 3).
+    """Map one goal's RunResult into the OK / REGRESSED / STALE / AUTH-EXPIRED
+    aggregate verdict, carrying the evidence (ADR-0023 decision 3, ADR-0026
+    decision 5).
 
     Rules, in order:
+      0. The goal expected an authenticated scope (ADR-0017 auth_state with an
+         authenticated, non-anonymous role) but the run observed
+         `authenticated == False` (a login wall / logged-out browser) ->
+         AUTH-EXPIRED, naming the goal and the expired role. The saved session
+         expired; this is NOT a regression (the app did not break) and NOT
+         stale knowledge. Routed BEFORE FAIL/REGRESSED, PASS, and
+         UNCERTAIN/STALE so an expired session is never mislabeled as a
+         regression and never collapsed into a green OK (ADR-0026 decision 5,
+         AGENTS.md loud-over-silent).
       1. The run FAILED (a failure signal fired) -> REGRESSED, naming the
          fired signal(s). The app broke (decision 3).
       2. The run PASSED (all believed success signals observed, no failure)
@@ -459,6 +527,23 @@ def classify_goal(
     GoalReport directly so a thrown adapter or an exhausted budget is a loud
     ERROR, not a misclassified verdict.
     """
+    expected_role = _expected_authenticated_scope(kf)
+    if expected_role is not None and not result.authenticated:
+        return GoalReport(
+            goal_id=result.goal_id,
+            verdict=AggregateVerdict.AUTH_EXPIRED,
+            evidence=(
+                f"the run could not authenticate as role {expected_role!r}: "
+                f"a login wall / logged-out browser was observed where an "
+                f"authenticated session was expected. The saved session is "
+                f"expired or invalid (ADR-0026 decision 5); refresh it. This "
+                f"is not a regression (the app did not break) and not stale "
+                f"knowledge."
+            ),
+            signals=[expected_role],
+            result=result,
+        )
+
     if result.verdict == RegressionVerdict.FAIL:
         flipped = list(result.matched_failure) or ["(unspecified failure signal)"]
         return GoalReport(

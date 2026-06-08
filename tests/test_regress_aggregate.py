@@ -34,6 +34,7 @@ from typing import Any
 from praxis.cli.main import discover_project
 from praxis.cli.main import main as cli_run
 from praxis.model import (
+    AuthState,
     KnowledgeFile,
     Meta,
     Provenance,
@@ -223,7 +224,27 @@ def _run_result(goal_id: str, verdict: RegressionVerdict, **kw: Any) -> RunResul
         matched_success=kw.get("matched_success", []),
         matched_failure=kw.get("matched_failure", []),
         healthy_equivalent_observed=kw.get("healthy_equivalent_observed", False),
+        authenticated=kw.get("authenticated", True),
     )
+
+
+def _authed_kf(goal_id: str, *, scope: str = "user") -> KnowledgeFile:
+    """A believed goal that expects an AUTHENTICATED scope (ADR-0017
+    auth_state): authenticated=True with a non-anonymous role. Such a goal is
+    AUTH-EXPIRED when the run reports authenticated=False (ADR-0026 decision
+    5)."""
+    kf = _believed_kf(goal_id)
+    kf.auth_state = AuthState(authenticated=True, scope=scope)
+    return kf
+
+
+def _anon_kf(goal_id: str) -> KnowledgeFile:
+    """A believed goal whose auth_state is anonymous (no authenticated scope
+    expected). It is NEVER AUTH-EXPIRED regardless of the run's authenticated
+    flag (the anonymous-scope path is unaffected by ADR-0026)."""
+    kf = _believed_kf(goal_id)
+    kf.auth_state = AuthState(authenticated=False, scope=None)
+    return kf
 
 
 def test_classify_ok() -> None:
@@ -370,6 +391,453 @@ def test_version_anchor_stale_routing_uses_semver_oldest_across_9_10_boundary() 
     # "1.10.0"; and the live version is named.
     assert "1.9.0" in report.evidence
     assert "1.12.0" in report.evidence
+
+
+# --- ADR-0026 decision 5: AUTH-EXPIRED verdict + classification ------------
+
+
+def test_classify_auth_expired_when_authed_scope_expected_and_logged_out() -> None:
+    """A goal that expects an authenticated scope (auth_state authenticated +
+    non-anonymous role) but reports authenticated=False (a login wall) is
+    AUTH-EXPIRED, NOT FAIL/REGRESSED and NOT STALE. The saved session expired;
+    the app did not break and the knowledge is not stale (ADR-0026 decision
+    5). The expired role is named, and it is a loud non-OK outcome that fails
+    the run."""
+    kf = _authed_kf("dashboard", scope="admin")
+    # The literal success signal is absent (logged out, so the post-login
+    # control never appears): without the auth route this would look like an
+    # absent-success REGRESSED. The auth route wins.
+    result = _run_result(
+        "dashboard", RegressionVerdict.UNCERTAIN,
+        matched_success=[], authenticated=False,
+    )
+    report = classify_goal(kf, result)
+    assert report.verdict == AggregateVerdict.AUTH_EXPIRED
+    assert report.verdict != AggregateVerdict.REGRESSED
+    assert report.verdict != AggregateVerdict.STALE
+    assert not report.verdict.is_ok
+    # Loud non-OK: fails the run, names the expired role.
+    assert report.fails_run
+    assert "admin" in report.signals
+    assert "admin" in report.evidence
+    assert "could not authenticate" in report.evidence
+
+
+def test_classify_auth_expired_routes_ahead_of_fired_failure_signal() -> None:
+    """AUTH-EXPIRED is decided BEFORE FAIL/REGRESSED: a logged-out run for an
+    authenticated-scope goal is AUTH-EXPIRED even if a failure signal also
+    fired, because the run could not authenticate in the first place (ADR-0026
+    decision 5: routed ahead of the break verdict)."""
+    kf = _authed_kf("dashboard", scope="user")
+    result = _run_result(
+        "dashboard", RegressionVerdict.FAIL,
+        matched_failure=["an invalid credentials banner appears"],
+        authenticated=False,
+    )
+    report = classify_goal(kf, result)
+    assert report.verdict == AggregateVerdict.AUTH_EXPIRED
+
+
+def test_authenticated_run_with_fired_failure_signal_is_still_regressed() -> None:
+    """An AUTHENTICATED run (the session is valid) whose failure signal fired is
+    a real REGRESSED, not AUTH-EXPIRED: the run authenticated fine and the app
+    broke. AUTH-EXPIRED only fires on authenticated=False."""
+    kf = _authed_kf("dashboard", scope="user")
+    result = _run_result(
+        "dashboard", RegressionVerdict.FAIL,
+        matched_failure=["an invalid credentials banner appears"],
+        authenticated=True,
+    )
+    report = classify_goal(kf, result)
+    assert report.verdict == AggregateVerdict.REGRESSED
+    assert report.fails_run
+
+
+def test_anonymous_scope_goal_is_never_auth_expired() -> None:
+    """An anonymous-scope goal (no authenticated scope expected) is NEVER
+    AUTH-EXPIRED, even when the run reports authenticated=False: an anonymous
+    flow has no session to expire. An absent success signal with no benign
+    explanation stays REGRESSED (the anonymous-scope path is unaffected by
+    ADR-0026)."""
+    kf = _anon_kf("public-page")
+    result = _run_result(
+        "public-page", RegressionVerdict.UNCERTAIN,
+        matched_success=[], authenticated=False,
+    )
+    report = classify_goal(kf, result)
+    assert report.verdict != AggregateVerdict.AUTH_EXPIRED
+    assert report.verdict == AggregateVerdict.REGRESSED
+
+
+def test_goal_with_no_auth_state_is_never_auth_expired() -> None:
+    """A goal with no auth_state at all (the default for every existing seed) is
+    never AUTH-EXPIRED, even with authenticated=False, so existing goals and
+    tests are unaffected by the additive flag."""
+    kf = _believed_kf("login")  # no auth_state
+    result = _run_result("login", RegressionVerdict.UNCERTAIN,
+                         matched_success=[], authenticated=False)
+    report = classify_goal(kf, result)
+    assert report.verdict != AggregateVerdict.AUTH_EXPIRED
+    assert report.verdict == AggregateVerdict.REGRESSED
+
+
+def test_authed_scope_goal_passes_when_authenticated() -> None:
+    """An authenticated-scope goal whose run authenticated fine and observed all
+    believed success signals is plain OK: the auth route only diverts a
+    logged-out run, never a healthy authenticated one."""
+    kf = _authed_kf("dashboard", scope="user")
+    result = _run_result(
+        "dashboard", RegressionVerdict.PASS,
+        matched_success=["a Sign out control is present after submitting valid credentials"],
+        authenticated=True,
+    )
+    report = classify_goal(kf, result)
+    assert report.verdict == AggregateVerdict.OK
+    assert not report.fails_run
+
+
+def test_one_auth_expired_goal_is_a_loud_non_ok_that_fails_the_run() -> None:
+    """One AUTH-EXPIRED goal among OK goals makes the aggregate a loud non-OK
+    outcome that fails the run and names the expired role, never a silent green
+    and never mislabeled REGRESSED (ADR-0026 decision 5, AGENTS.md
+    loud-over-silent)."""
+    ok = GoalReport(
+        "public", AggregateVerdict.OK,
+        "all 1 believed success signals observed",
+    )
+    expired = classify_goal(
+        _authed_kf("dashboard", scope="admin"),
+        _run_result("dashboard", RegressionVerdict.UNCERTAIN,
+                    matched_success=[], authenticated=False),
+    )
+    reports = [ok, expired]
+    # The single AUTH-EXPIRED fails the whole run.
+    assert aggregate_run_failed(reports)
+    # The aggregate markdown leads with the loud failure and names the role,
+    # never green and never REGRESSED.
+    md = to_aggregate_markdown(reports)
+    assert "RUN FAILED" in md
+    assert "AUTH-EXPIRED" in md
+    assert "`dashboard`" in md
+    assert "admin" in md
+    assert "RUN PASSED" not in md
+    # The expired goal is named AUTH-EXPIRED, never mislabeled REGRESSED: its
+    # own verdict line carries the AUTH-EXPIRED token, not REGRESSED.
+    dashboard_line = next(
+        ln for ln in md.splitlines() if "`dashboard`" in ln and "AUTH-EXPIRED" in ln
+    )
+    assert "REGRESSED" not in dashboard_line
+    # And no goal in this run is classified REGRESSED (n_reg == 0).
+    assert expired.verdict == AggregateVerdict.AUTH_EXPIRED
+    # A "mostly green" framing must never appear: one AUTH-EXPIRED is loud.
+    assert "mostly green" not in md.lower()
+
+
+def test_aggregate_report_routes_auth_expired_to_reauthenticate_distinctly() -> None:
+    """The aggregate report routes an AUTH-EXPIRED goal to a re-authenticate /
+    refresh message, DISTINCT from the REGRESSED "file a bug" routing and the
+    STALE "re-seed / update the knowledge" routing (ADR-0026 decision 5). The
+    three outcomes coexist in one report so the distinctness is asserted on the
+    same render: each goal's row carries its own routing, never collapsed."""
+    regressed = classify_goal(
+        _believed_kf("login"),
+        _run_result("login", RegressionVerdict.FAIL,
+                    matched_failure=["an invalid credentials banner appears"]),
+    )
+    stale = classify_goal(
+        _believed_kf("profile"),
+        _run_result("profile", RegressionVerdict.UNCERTAIN,
+                    matched_success=[], healthy_equivalent_observed=True),
+    )
+    expired = classify_goal(
+        _authed_kf("dashboard", scope="admin"),
+        _run_result("dashboard", RegressionVerdict.UNCERTAIN,
+                    matched_success=[], authenticated=False),
+    )
+    assert regressed.verdict == AggregateVerdict.REGRESSED
+    assert stale.verdict == AggregateVerdict.STALE
+    assert expired.verdict == AggregateVerdict.AUTH_EXPIRED
+
+    md = to_aggregate_markdown([regressed, stale, expired])
+
+    # The AUTH-EXPIRED goal's row routes to re-authenticate / refresh, NOT to
+    # "file a bug" (REGRESSED) and NOT to "re-seed / update the knowledge"
+    # (STALE).
+    dash_line = next(ln for ln in md.splitlines() if "`dashboard`" in ln)
+    assert "re-authenticate" in dash_line
+    assert "refresh the session" in dash_line
+    assert "file a bug" not in dash_line
+    assert "re-seed" not in dash_line
+
+    # The other two outcomes keep their own, different routing on their own rows.
+    login_line = next(ln for ln in md.splitlines() if "`login`" in ln)
+    assert "file a bug" in login_line
+    assert "re-authenticate" not in login_line
+    profile_line = next(ln for ln in md.splitlines() if "`profile`" in ln)
+    assert "re-seed" in profile_line
+    assert "re-authenticate" not in profile_line
+
+
+def test_aggregate_rollup_counts_auth_expired_distinctly_from_regressed_and_stale() -> None:
+    """The roll-up / count line counts AUTH-EXPIRED goals DISTINCTLY from
+    REGRESSED and STALE (ADR-0026 decision 5): an expired session is neither a
+    broken app nor outdated knowledge, so it gets its own bucket. The
+    RUN FAILED breakdown also names the AUTH-EXPIRED count separately so the
+    action (re-authenticate) is not folded into the REGRESSED bug-filing
+    bucket."""
+    regressed = classify_goal(
+        _believed_kf("login"),
+        _run_result("login", RegressionVerdict.FAIL,
+                    matched_failure=["an invalid credentials banner appears"]),
+    )
+    stale = classify_goal(
+        _believed_kf("profile"),
+        _run_result("profile", RegressionVerdict.UNCERTAIN,
+                    matched_success=[], healthy_equivalent_observed=True),
+    )
+    expired = classify_goal(
+        _authed_kf("dashboard", scope="admin"),
+        _run_result("dashboard", RegressionVerdict.UNCERTAIN,
+                    matched_success=[], authenticated=False),
+    )
+    md = to_aggregate_markdown([regressed, stale, expired])
+
+    # The single roll-up line counts each outcome in its own slot: exactly one
+    # AUTH-EXPIRED, one REGRESSED, one STALE.
+    rollup = next(
+        ln for ln in md.splitlines() if "AUTH-EXPIRED" in ln and "REGRESSED" in ln
+        and "STALE" in ln and "goal(s)" in ln
+    )
+    assert "1 REGRESSED" in rollup
+    assert "1 STALE" in rollup
+    assert "1 AUTH-EXPIRED" in rollup
+    # The RUN FAILED breakdown names AUTH-EXPIRED as its own count, not merged
+    # into the REGRESSED tally.
+    failed_line = next(ln for ln in md.splitlines() if "RUN FAILED" in ln)
+    assert "1 AUTH-EXPIRED" in failed_line
+    assert "1 REGRESSED" in failed_line
+    # The expired goal's named expired role appears in the failure summary.
+    assert "admin" in md
+
+
+# --- ADR-0026 decision 5: CLI _cmd_regress exit code on AUTH-EXPIRED -------
+
+
+def test_cli_regress_exits_non_zero_when_an_auth_expired_goal_is_present(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """The console `praxis regress` (default-all aggregate) exits NON-ZERO when
+    any goal is AUTH-EXPIRED, exactly like REGRESSED / ERROR (ADR-0026 decision
+    5: an expired session fails the run loudly, never a silent green and never a
+    false REGRESSED). The exit branch lives in `_cmd_regress` and computes
+    failure from `aggregate_run_failed`, which includes AUTH-EXPIRED in the
+    fails-run set.
+
+    The library-half projection does not yet pass `auth_state` through to the
+    aggregate read path (that seam is Step 5), so we inject the AUTH-EXPIRED
+    GoalReport at the engine seam `_cmd_regress` calls. This exercises the CLI
+    exit-code contract and the written report end to end without depending on a
+    later step's wiring."""
+    import sys
+
+    import praxis.cli.main  # noqa: F401 - ensure the submodule is imported
+    # `praxis.cli.__init__` re-exports the `main` FUNCTION as `praxis.cli.main`,
+    # shadowing the submodule attribute; reach the real module via sys.modules so
+    # the monkeypatch targets the name `_cmd_regress` actually calls.
+    cli_main = sys.modules["praxis.cli.main"]
+
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["dashboard"])
+
+    expired = classify_goal(
+        _authed_kf("dashboard", scope="admin"),
+        _run_result("dashboard", RegressionVerdict.UNCERTAIN,
+                    matched_success=[], authenticated=False),
+    )
+    assert expired.verdict == AggregateVerdict.AUTH_EXPIRED
+
+    def fake_engine(*_args: Any, **_kwargs: Any) -> list[GoalReport]:
+        return [expired]
+
+    monkeypatch.setattr(cli_main, "regress_aggregate_engine", fake_engine)
+
+    old = Path.cwd()
+    os.chdir(root)
+    try:
+        rc = cli_run(["regress"])
+    finally:
+        os.chdir(old)
+
+    # AUTH-EXPIRED fails the run loudly: non-zero exit, like REGRESSED / ERROR.
+    assert rc == 1
+    # The written aggregate report names AUTH-EXPIRED and the expired role, and
+    # never reports the run as passed.
+    md_files = sorted(
+        (root / ".praxis" / "runs").glob("*/regress-aggregate.md")
+    )
+    assert md_files
+    report_text = md_files[-1].read_text()
+    assert "AUTH-EXPIRED" in report_text
+    assert "`dashboard`" in report_text
+    assert "admin" in report_text
+    assert "RUN FAILED" in report_text
+    assert "RUN PASSED" not in report_text
+
+
+# --- ADR-0026 Step 5: the save / load seam round-trips through auth_session --
+
+
+def test_auth_session_seam_save_then_load_round_trips(tmp_path: Path) -> None:
+    """The teach SAVE seam and the regress / explore LOAD seam round-trip a
+    storageState through the Step 1 channel without duplicating resolution
+    (ADR-0026 decisions 1, 7). `role_for_auth_state` maps an authenticated,
+    non-anonymous goal to its abstract role; the save and load seams persist and
+    fetch the session keyed by that role."""
+    from praxis import auth_session
+
+    auth_dir = tmp_path / auth_session.AUTH_DIRNAME
+
+    # The role a session is keyed by is the abstract ADR-0017 scope, the same
+    # predicate the regress classifier applies (one session per role, decision 4).
+    authed = AuthState(authenticated=True, scope="admin")
+    role = auth_session.role_for_auth_state(authed)
+    assert role == "admin"
+    # An anonymous / unauthenticated goal needs no saved session.
+    assert auth_session.role_for_auth_state(AuthState(authenticated=False, scope=None)) is None
+    assert auth_session.role_for_auth_state(AuthState(authenticated=True, scope="anonymous")) is None
+    assert auth_session.role_for_auth_state(None) is None
+
+    storage_state = {
+        "cookies": [
+            {"name": "session", "value": "seam-cookie-9f3a", "domain": "app", "path": "/"}
+        ],
+        "origins": [],
+    }
+    # SAVE seam (teach bootstrap) then LOAD seam (regress / explore) round-trip.
+    path = auth_session.save_session_for_role(role, storage_state, auth_dir=auth_dir)
+    assert path == auth_dir / "admin.json"
+    loaded = auth_session.load_session_for_role(role, auth_dir=auth_dir, environ={})
+    assert loaded == storage_state
+    # The env / CI runner secret wins over the file (decision 3), proving the
+    # seam reuses the Step 1 env-wins resolution rather than re-implementing it.
+    env_state = {"cookies": [], "origins": [{"origin": "app", "localStorage": []}]}
+    got = auth_session.load_session_for_role(
+        role,
+        auth_dir=auth_dir,
+        environ={auth_session.env_var_name(role): json.dumps(env_state)},
+    )
+    assert got == env_state
+
+
+# --- ADR-0026 Step 5: ORGANIC AUTH-EXPIRED through the real read path --------
+
+
+def _authed_seed_yaml(goal_id: str, *, scope: str = "user") -> str:
+    """A minimal valid seed that records an AUTHENTICATED auth_state scope
+    (ADR-0017): `authenticated: true` with a non-anonymous role. A goal seeded
+    this way is AUTH-EXPIRED when the run reports authenticated=False, PROVIDED
+    the projection carries the seed's auth_state through to the read path
+    (ADR-0026 Step 5 item 1)."""
+    return _seed_yaml(goal_id) + (
+        f"auth_state:\n"
+        f"  authenticated: true\n"
+        f"  scope: {scope}\n"
+    )
+
+
+def test_organic_auth_expired_through_projection_when_logged_out(tmp_path: Path) -> None:
+    """END TO END through the REAL projection + classifier: a from-file aggregate
+    regress over a seed that records an authenticated auth_state scope, with the
+    executor reporting authenticated=False, classifies AUTH-EXPIRED.
+
+    This proves the Step 5 item 1 passthrough: the projected KnowledgeFile the
+    aggregate read path yields now carries the seed's `auth_state`, so the
+    classifier's `_expected_authenticated_scope` sees the expected authenticated
+    role ORGANICALLY (not via an injected GoalReport). Without the passthrough
+    the projection would lose the auth_state and the goal would misclassify as an
+    absent-success REGRESSED."""
+    root = tmp_path / "p"
+    root.mkdir()
+    old = Path.cwd()
+    os.chdir(root)
+    try:
+        assert cli_run(["init", "--app", "testapp", "--env", "local"]) == 0
+        seed = root / "dashboard.yaml"
+        seed.write_text(_authed_seed_yaml("dashboard", scope="admin"))
+        assert cli_run(["learn", "dashboard", "--from-file", str(seed)]) == 0
+    finally:
+        os.chdir(old)
+
+    # First, prove the passthrough directly: the read path yields a KnowledgeFile
+    # that carries the seed's auth_state (the organic input the classifier reads).
+    proj = discover_project(root)
+    kf = proj.adapter().read_knowledge("dashboard")
+    assert kf is not None
+    assert kf.auth_state is not None, (
+        "projection must carry the seed's auth_state through to the read path "
+        "(ADR-0026 Step 5 item 1); without it AUTH-EXPIRED cannot classify "
+        "organically"
+    )
+    assert kf.auth_state.authenticated is True
+    assert kf.auth_state.scope == "admin"
+
+    # A logged-out run for the authenticated-scope goal: authenticated=False with
+    # the post-login success control absent (a login wall). Through the real
+    # engine this is AUTH-EXPIRED, never a false REGRESSED.
+    logged_out = dict(_ABSENT_SUCCESS_OBS)
+    logged_out["authenticated"] = False
+    reports = regress_aggregate_via_skill(_const_brain(logged_out), project_start=root)
+    by_goal = {r.goal_id: r for r in reports}
+    assert by_goal["dashboard"].verdict == AggregateVerdict.AUTH_EXPIRED
+    assert by_goal["dashboard"].verdict != AggregateVerdict.REGRESSED
+    assert "admin" in by_goal["dashboard"].signals
+    assert by_goal["dashboard"].fails_run
+
+
+def test_organic_authenticated_run_does_not_auth_expire(tmp_path: Path) -> None:
+    """The matching control: the SAME authenticated-scope seed, with the executor
+    reporting authenticated=True and the believed success signal observed,
+    classifies OK (not AUTH-EXPIRED). The auth route only diverts a logged-out
+    run, never a healthy authenticated one, end to end through the real read
+    path."""
+    root = tmp_path / "p"
+    root.mkdir()
+    old = Path.cwd()
+    os.chdir(root)
+    try:
+        assert cli_run(["init", "--app", "testapp", "--env", "local"]) == 0
+        seed = root / "dashboard.yaml"
+        seed.write_text(_authed_seed_yaml("dashboard", scope="admin"))
+        assert cli_run(["learn", "dashboard", "--from-file", str(seed)]) == 0
+    finally:
+        os.chdir(old)
+
+    authed = dict(_PASS_OBS)
+    authed["authenticated"] = True
+    reports = regress_aggregate_via_skill(_const_brain(authed), project_start=root)
+    by_goal = {r.goal_id: r for r in reports}
+    assert by_goal["dashboard"].verdict == AggregateVerdict.OK
+    assert by_goal["dashboard"].verdict != AggregateVerdict.AUTH_EXPIRED
+    assert not by_goal["dashboard"].fails_run
+
+
+def test_cli_regress_exit_code_unchanged_for_ok_run(tmp_path: Path) -> None:
+    """The AUTH-EXPIRED exit wiring does not regress the existing exit contract:
+    an all-OK aggregate run still exits 0 (the fails-run set is unchanged for
+    OK / STALE; only REGRESSED / ERROR / AUTH-EXPIRED fail)."""
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["a"])
+    obs_file = root / "pass.json"
+    obs_file.write_text(json.dumps(_PASS_OBS))
+    old = Path.cwd()
+    os.chdir(root)
+    try:
+        rc = cli_run(["regress", "--from-file", str(obs_file)])
+    finally:
+        os.chdir(old)
+    assert rc == 0
 
 
 # --- decision 2 + 4: default-all aggregate, loud single regression ---------
