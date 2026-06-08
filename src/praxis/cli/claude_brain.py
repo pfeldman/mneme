@@ -35,15 +35,20 @@ import json
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
-# How often the headless run prints a "still working" heartbeat to stderr while
-# the claude -p subprocess blocks (ADR-0027 decision 6 / Pablo's feedback: a
-# silent multi-minute run reads as broken). The subprocess captures its own
-# stdout for the observation JSON; the heartbeat is the PARENT printing to its
-# own stderr, so it never pollutes the parsed output.
-_HEARTBEAT_SECONDS = 15
+# Live progress while the claude -p subprocess blocks (ADR-0027 decision 6 /
+# Pablo's feedback: a silent multi-minute run reads as broken). On a real
+# terminal an ASCII spinner animates in place; piped / captured output falls
+# back to a plain line every _HEARTBEAT_SECONDS so logs are not flooded with
+# carriage returns. ASCII frames only (no decorative unicode glyphs). The
+# subprocess captures its own stdout for the observation JSON; this is the
+# PARENT printing to its own stderr, so it never pollutes the parsed output.
+_SPINNER_FRAMES = "|/-\\"
+_SPINNER_INTERVAL = 0.5  # s, TTY refresh
+_HEARTBEAT_SECONDS = 30  # s, non-TTY plain-line cadence
 
 __all__ = ["make_claude_brain", "ClaudeBrainError"]
 
@@ -208,11 +213,14 @@ def make_claude_brain(
         # config is settled live (Open decision 4) it travels as an env hint the
         # MCP server reads, never changing the parse-and-raise contract.
         env_hint = {"PRAXIS_BROWSER_HEADED": "1"} if headed else None
-        # Progress feedback (ADR-0027 decision 6): announce the run immediately
-        # and beat every _HEARTBEAT_SECONDS while the subprocess blocks, so a
-        # multi-minute headless browser run does not read as a hang. Printed by
-        # the PARENT to stderr from a daemon thread; the subprocess's own stdout
-        # is still captured for the observation JSON.
+        # Progress feedback (ADR-0027 decision 6): announce the run immediately,
+        # then show a live ASCII spinner with elapsed time while the subprocess
+        # blocks, so a multi-minute headless browser run does not read as a hang.
+        # The spinner animates in place ONLY on a real terminal (TTY); piped /
+        # captured output (CI, a test) falls back to a plain line every
+        # _HEARTBEAT_SECONDS so logs are not flooded with carriage returns. All of
+        # this is the PARENT printing to its own stderr from a daemon thread; the
+        # subprocess's own stdout is still captured for the observation JSON.
         mode = "headed" if headed else "headless"
         print(
             f"  [claude -p] driving the browser ({mode}) on your subscription; "
@@ -220,15 +228,31 @@ def make_claude_brain(
             file=sys.stderr, flush=True,
         )
         stop = threading.Event()
+        is_tty = sys.stderr.isatty()
 
-        def _heartbeat() -> None:
-            elapsed = 0
-            while not stop.wait(_HEARTBEAT_SECONDS):
-                elapsed += _HEARTBEAT_SECONDS
-                print(f"  [claude -p] still working... ~{elapsed}s elapsed",
-                      file=sys.stderr, flush=True)
+        def _spinner() -> None:
+            start = time.monotonic()
+            last_beat = 0.0
+            i = 0
+            interval = _SPINNER_INTERVAL if is_tty else 1.0
+            while not stop.wait(interval):
+                elapsed = int(time.monotonic() - start)
+                if is_tty:
+                    frame = _SPINNER_FRAMES[i % len(_SPINNER_FRAMES)]
+                    i += 1
+                    # Carriage return rewrites the same line; trailing spaces
+                    # clear any leftover from a longer previous render.
+                    print(f"\r  [claude -p] {frame} working... ~{elapsed}s   ",
+                          end="", file=sys.stderr, flush=True)
+                elif elapsed - last_beat >= _HEARTBEAT_SECONDS:
+                    last_beat = float(elapsed)
+                    print(f"  [claude -p] still working... ~{elapsed}s",
+                          file=sys.stderr, flush=True)
+            if is_tty:
+                # Wipe the spinner line so the verdict output starts clean.
+                print("\r" + " " * 48 + "\r", end="", file=sys.stderr, flush=True)
 
-        hb = threading.Thread(target=_heartbeat, daemon=True)
+        hb = threading.Thread(target=_spinner, daemon=True)
         hb.start()
         try:
             proc = subprocess.run(
