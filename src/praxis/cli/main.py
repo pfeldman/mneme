@@ -537,7 +537,8 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     )
     if results:
         print(format_single_console_summary(
-            results[0], believed_total=believed_total))
+            results[0], believed_total=believed_total,
+            color=sys.stdout.isatty()))
     print(f"report: {last_md}")
     return 1 if regress_failed(results) else 0
 
