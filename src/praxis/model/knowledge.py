@@ -95,6 +95,33 @@ class Signal(_Base):
     confidence: float = Field(ge=0.0, le=1.0)
     status: Status
 
+    @field_validator("value_predicate")
+    @classmethod
+    def _value_predicate_is_valid(cls, v: str | None) -> str | None:
+        """Validate a declared `value_predicate` at the write boundary (ADR-0030
+        decision 6), the same posture as `trigger_validator.validate_trigger`.
+
+        A malformed predicate (no invariant, malformed slot, unknown shape,
+        stopword-only invariant) is a LOUD pydantic rejection here, never a
+        silent downgrade to the free-text path. A free-text signal leaves the
+        field None and skips the check. The parser is the single source of the
+        validation rules (it is also what the matcher evaluates), so the write
+        boundary and the matcher can never drift on what a valid predicate is.
+        """
+        if v is None:
+            return v
+        # Local import keeps the cycle direction one-way (predicate imports
+        # nothing from this module) and the parse is pure / stdlib (ADR-0003).
+        from .predicate import PredicateError, parse
+
+        try:
+            parse(v)
+        except PredicateError as exc:
+            raise ValueError(
+                f"value_predicate rejected (ADR-0030 decision 6): {exc}"
+            ) from exc
+        return v
+
 
 class Target(_Base):
     app: str
