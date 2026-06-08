@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from .claude_brain import make_claude_brain
 
 import yaml
 
@@ -31,6 +34,7 @@ from ..runner import (
     aggregate_run_failed,
     explore_aggregate_engine,
     explore_engine,
+    format_console_summary,
     group_candidates_by_trigger,
     regress_aggregate_engine,
     regress_engine,
@@ -367,46 +371,34 @@ def _cmd_learn(args: argparse.Namespace) -> int:
     return 0
 
 
-def _executor_from_paste(prompt: str) -> dict[str, Any]:
-    """Default interactive executor: print the prompt, read agent JSON
-    back from stdin. The user runs the agent externally (subscription
-    path with Claude Code + Playwright MCP) and pastes the resulting
-    JSON when prompted.
+def _select_console_brain(args: argparse.Namespace) -> Any:
+    """Pick the brain that drives a console regress / explore run (ADR-0027
+    decision 7).
 
-    Refuses to proceed on empty stdin: a careless Ctrl-D used to silently
-    produce an empty observation list, an UNCERTAIN verdict, and a green
-    `praxis regress` exit when the agent had not actually run. The CI
-    gate has to remain trustworthy; "I forgot to paste" is loud, not
-    silent.
+    Precedence: an explicit `--from-file` wins (deterministic; what the tests
+    and the regression-recall harness drive). Otherwise the local `claude -p`
+    brain drives the run headless on the user's subscription with NO API key
+    (ADR-0027 decisions 3, 5), which is the new DEFAULT replacing the retired
+    paste-on-stdin prompt (Finding A). When neither a `--from-file` nor a
+    `claude` binary is available, FAIL LOUDLY with an actionable message instead
+    of hanging on stdin: a console run with no brain is an error, not a wait.
+    The CI API-key brain (ADR-0019, ADR-0024) is unchanged and is wired by CI
+    through its own path, not here.
     """
-    print("\n" + "=" * 78)
-    print("PROMPT TO PASTE INTO YOUR AGENT SESSION (run it, collect output):")
-    print("=" * 78)
-    print(prompt)
-    print("=" * 78)
-    print(
-        "\nPaste the agent's JSON output. End with a blank line then Ctrl-D. "
-        "If the agent emitted nothing, pass an explicit "
-        "`{\"observations\": [], \"actions\": 0, \"tokens\": null, "
-        "\"visited_urls\": []}` so the empty case is intentional."
-    )
-    chunks: list[str] = []
-    try:
-        for line in sys.stdin:
-            chunks.append(line)
-    except EOFError:
-        pass
-    text = "".join(chunks).strip()
-    if not text:
+    if args.from_file:
+        return _executor_from_file(Path(args.from_file))
+    if shutil.which("claude") is None:
         raise SystemExit(
-            "no agent output received on stdin. Refusing to record an empty "
-            "observation list silently. Re-run after pasting the agent's "
-            "JSON, or pass --from-file PATH."
+            "no brain available: `claude` is not on PATH and no --from-file was "
+            "given. Install Claude Code (the local console brain runs headless on "
+            "your subscription, no API key), or pass --from-file PATH with agent "
+            "observations."
         )
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        raise SystemExit(f"could not parse agent JSON: {e}")
+    return make_claude_brain(
+        headed=getattr(args, "headed", False),
+        timeout_seconds=args.budget_wall_seconds,
+        mcp_config_path=getattr(args, "mcp_config", None),
+    )
 
 
 def _executor_from_file(path: Path):
@@ -424,10 +416,7 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     proj = discover_project()
     adapter = proj.adapter()
 
-    if args.from_file:
-        brain = _executor_from_file(Path(args.from_file))
-    else:
-        brain = _executor_from_paste
+    brain = _select_console_brain(args)
 
     # Default-all aggregate (ADR-0023 decision 2): no `--goal` runs EVERY
     # believed goal under .praxis/knowledge/ and emits ONE aggregate
@@ -439,12 +428,31 @@ def _cmd_regress(args: argparse.Namespace) -> int:
             print("no goals to regress (no seeds in .praxis/knowledge/). "
                   "Run `praxis learn ...` first.", file=sys.stderr)
             return 2
+        # Pytest-style: announce the run before driving the goals, then print a
+        # live per-goal progress line as each completes (ADR-0027 decision 6).
+        # The callback fires in the calling thread (engine -> run_partitioned),
+        # so the lines never interleave even under `--jobs > 1`.
+        total = len(goals)
+        if args.jobs and args.jobs > 1:
+            print(f"running {total} goal(s) ({args.jobs} at a time)...")
+        else:
+            print(f"running {total} goal(s)...")
+        progress = {"done": 0, "passed": 0}
+
+        def _on_goal_done(r: Any) -> None:
+            progress["done"] += 1
+            if r.verdict.is_ok:
+                progress["passed"] += 1
+            print(f"  [{progress['done']}/{total}] {r.verdict.value:<10} "
+                  f"{r.goal_id}  ({progress['passed']}/{progress['done']} passed)")
+
         # The console surface drives the SAME aggregate engine a skill driver
         # calls (ADR-0019 decision 4 + ADR-0023 decision 1). The brain seam
-        # carries the paste/file executor here; the verdicts come back
+        # carries the file/claude-p executor here; the verdicts come back
         # identical for the same store + brain output. The per-goal budget
         # slice (ADR-0023 decision 7) is applied per goal, not as one shared
-        # pool: an exhausted slice is a loud ERROR for that goal.
+        # pool: an exhausted slice is a loud ERROR for that goal. `--jobs` caps
+        # concurrency (ADR-0027 decision 4; default 1 = sequential).
         reports = regress_aggregate_engine(
             adapter, brain, goals,
             agent_id=proj.agent_id,
@@ -452,25 +460,24 @@ def _cmd_regress(args: argparse.Namespace) -> int:
             budget_tokens_per_goal=args.budget_tokens,
             budget_actions_per_goal=args.budget_actions,
             budget_wall_seconds_per_goal=args.budget_wall_seconds,
+            jobs=args.jobs,
+            on_goal_done=_on_goal_done,
         )
         run_dir = proj.run_dir()
         report_md = run_dir / "regress-aggregate.md"
         write_aggregate_markdown(reports, report_md)
-        # Print every goal's verdict line so the named goal + signal is on the
-        # console too, not only in the markdown (ADR-0023 decision 4).
-        for r in reports:
-            line = f"  {r.verdict.value:<10} {r.goal_id}"
-            if not r.verdict.is_ok:
-                line += f"  -> {r.evidence}"
-            print(line)
-        print(f"\nreport: {report_md}")
+        # Per-goal verdict lines were printed live by `_on_goal_done` as each
+        # goal completed (ADR-0027 decision 6); the named signal for a non-OK
+        # goal is in the final summary below and the markdown report.
+        # Pytest-style final summary: the loud PASSED / FAILED banner, the
+        # `N passed, N failed, N stale` tally, and every goal that needs action
+        # named with its evidence (ADR-0027 decision 6). Verdicts and exit code
+        # are unchanged; this is presentation only.
+        print(format_console_summary(reports))
+        print(f"report: {report_md}")
         # A REGRESSED or ERROR goal fails the run loudly; STALE alone does not
         # (the app changed on purpose, the fix is a human re-seed).
         failed = aggregate_run_failed(reports)
-        if failed:
-            named = [r.goal_id for r in reports if r.fails_run]
-            print(f"REGRESSION/ERROR: {', '.join(named)} fail the run.",
-                  file=sys.stderr)
         return 1 if failed else 0
 
     # Single-goal pass/fail path (unchanged contract).
@@ -506,6 +513,7 @@ def _explore_aggregate(
     budget_tokens: int | None = None,
     budget_actions: int | None = None,
     budget_wall_seconds: float | None = None,
+    jobs: int = 1,
 ) -> int:
     """Default-all explore: hunt off-happy-path across EVERY believed goal,
     write candidate files on the committed tree, and emit ONE trigger-grouped
@@ -553,6 +561,7 @@ def _explore_aggregate(
         budget_actions_per_goal=budget_actions,
         budget_wall_seconds_per_goal=budget_wall_seconds,
         committed_sink=_commit_new_candidates,
+        jobs=jobs,
     )
 
     # Build the trigger-grouped report from the committed candidate tree, the
@@ -611,10 +620,7 @@ def _explore_aggregate(
 def _cmd_explore(args: argparse.Namespace) -> int:
     proj = discover_project()
     adapter = proj.adapter()
-    if args.from_file:
-        brain = _executor_from_file(Path(args.from_file))
-    else:
-        brain = _executor_from_paste
+    brain = _select_console_brain(args)
 
     # Default-all aggregate (ADR-0023 decision 2): no `--goal` hunts off-happy-
     # path across EVERY believed goal under .praxis/knowledge/, writes candidate
@@ -625,6 +631,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
             budget_tokens=args.budget_tokens,
             budget_actions=args.budget_actions,
             budget_wall_seconds=args.budget_wall_seconds,
+            jobs=args.jobs,
         )
 
     # Snapshot the candidate event ids already in the per-machine log for this
@@ -848,6 +855,16 @@ def _build_parser() -> argparse.ArgumentParser:
     regress.add_argument("--budget-wall-seconds", type=float, default=None,
                           help="Per-goal wall-time slice (s) in aggregate mode; "
                                "a goal that exceeds it is a loud ERROR.")
+    regress.add_argument("--jobs", type=int, default=1,
+                          help="How many goals to run concurrently in aggregate "
+                               "mode (ADR-0027 decision 4; default 1 = "
+                               "sequential). Auth-subject goals run serially.")
+    regress.add_argument("--headed", action="store_true",
+                          help="Show the browser the claude -p brain drives "
+                               "(default headless, ADR-0027 decision 5).")
+    regress.add_argument("--mcp-config",
+                          help="Path to the Playwright MCP config the claude -p "
+                               "brain uses to drive the browser (ADR-0027).")
     regress.add_argument("--stop-on-fail", action="store_true")
     regress.add_argument("--from-file",
                           help="Read agent observations from this JSON file "
@@ -867,6 +884,16 @@ def _build_parser() -> argparse.ArgumentParser:
     explore.add_argument("--budget-wall-seconds", type=float, default=None,
                           help="Per-goal wall-time slice (s) in aggregate mode; "
                                "a goal that exceeds it is a loud ERROR.")
+    explore.add_argument("--jobs", type=int, default=1,
+                          help="How many goals to run concurrently in aggregate "
+                               "mode (ADR-0027 decision 4; default 1 = "
+                               "sequential). Auth-subject goals run serially.")
+    explore.add_argument("--headed", action="store_true",
+                          help="Show the browser the claude -p brain drives "
+                               "(default headless, ADR-0027 decision 5).")
+    explore.add_argument("--mcp-config",
+                          help="Path to the Playwright MCP config the claude -p "
+                               "brain uses to drive the browser (ADR-0027).")
     explore.add_argument("--happy-path", nargs="*", default=None,
                           help="URLs the happy path visits "
                                "(for off_path_fraction).")

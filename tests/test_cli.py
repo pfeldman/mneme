@@ -197,6 +197,70 @@ def test_regress_fail_path_exits_nonzero(tmp_path: Path) -> None:
     assert "regression" in md.lower()
 
 
+# --- ADR-0027 decision 7: default console brain selection ------------------
+
+
+def test_regress_without_claude_or_from_file_fails_loudly_not_hangs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no `--from-file` and no `claude` on PATH, a console regress FAILS
+    LOUDLY with an actionable message instead of hanging on stdin (ADR-0027
+    decision 7, Finding A: the paste-on-stdin default is retired)."""
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+    # `praxis.cli.main` (the function) shadows the submodule attribute; reach the
+    # real module via sys.modules so the monkeypatch targets the right names.
+    import sys
+    cli_mod = sys.modules["praxis.cli.main"]
+    # No claude binary discoverable.
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _name: None)
+    with pytest.raises(SystemExit) as exc:
+        _run(["regress"], tmp_path)
+    msg = str(exc.value)
+    assert "claude" in msg and "--from-file" in msg
+
+
+def test_regress_defaults_to_claude_brain_when_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With `claude` on PATH and no `--from-file`, the console regress drives the
+    `claude -p` brain by default (ADR-0027 decision 7). We monkeypatch the brain
+    factory to a fake so no real claude is invoked, and assert it was selected
+    and the headless default flowed through."""
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+
+    import sys
+    cli_mod = sys.modules["praxis.cli.main"]
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _name: "/usr/bin/claude")
+    captured: dict = {}
+
+    def fake_factory(**kwargs):
+        captured.update(kwargs)
+
+        def brain(prompt: str) -> dict:
+            return {
+                "observations": [{
+                    "kind": "success", "type": "behavioral",
+                    "value": "a Sign out control is present after submitting "
+                             "valid credentials",
+                    "source_type": "agent", "source_id": "praxis-cli",
+                }],
+                "actions": 1, "tokens": 10,
+            }
+        return brain
+
+    monkeypatch.setattr(cli_mod, "make_claude_brain", fake_factory)
+    rc = _run(["regress"], tmp_path)
+    assert rc == 0
+    # The claude brain was selected with the headless default (no --headed).
+    assert captured.get("headed") is False
+
+
 # --- explore --------------------------------------------------------------
 
 

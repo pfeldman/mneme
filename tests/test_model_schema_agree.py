@@ -323,6 +323,57 @@ def test_knowledge_file_with_auth_state_round_trips_through_yaml() -> None:
     validate_against_json_schema(kf.model_dump(mode="json", exclude_none=True))
 
 
+# --- ADR-0027: auth_state.being_tested additive declaration field ---
+
+
+def test_auth_state_being_tested_optional_and_defaults_false() -> None:
+    """`being_tested` is an OPTIONAL boolean defaulting to false in both the
+    schema and the model (ADR-0027 decision 1), so existing knowledge files
+    with no `being_tested` key still validate as precondition goals."""
+    from praxis.model import AuthState
+
+    props = SCHEMA["$defs"]["auth_state"]["properties"]
+    assert "being_tested" in props
+    assert props["being_tested"]["type"] == "boolean"
+    assert props["being_tested"]["default"] is False
+    # Not required in the schema, not required in the model.
+    assert "being_tested" not in SCHEMA["$defs"]["auth_state"]["required"]
+    assert AuthState.model_fields["being_tested"].is_required() is False
+    # Absent key -> precondition (false).
+    a = AuthState(authenticated=True, scope="user")
+    assert a.being_tested is False
+
+
+def test_auth_state_being_tested_true_marks_subject_and_round_trips() -> None:
+    """A goal that declares authentication the subject under test
+    (`being_tested: true`) round-trips through YAML and the JSON Schema."""
+    from praxis.model import KnowledgeFile, dumps, loads, validate_against_json_schema
+
+    src = {
+        "schema_version": "0",
+        "goal_id": "login_reach_dashboard",
+        "goal": "a user can log in and reach the dashboard",
+        "target": {"app": "digioh"},
+        "success_signals": [{
+            "type": "behavioral", "value": "dashboard renders after login",
+            "provenance": {"source_type": "human", "source_id": "pablo-seed",
+                           "last_verified": "2026-06-08T00:00:00Z",
+                           "observation_count": 1},
+            "confidence": 1.0, "status": "believed",
+        }],
+        "auth_state": {"authenticated": True, "scope": "user",
+                       "being_tested": True},
+        "meta": {"created_at": "2026-06-08T00:00:00Z",
+                 "updated_at": "2026-06-08T00:00:00Z"},
+    }
+    kf = KnowledgeFile.model_validate(src)
+    assert kf.auth_state is not None
+    assert kf.auth_state.being_tested is True
+    kf2 = loads(dumps(kf))
+    assert kf2.auth_state == kf.auth_state
+    validate_against_json_schema(kf.model_dump(mode="json", exclude_none=True))
+
+
 def test_schema_rejects_extra_keys_inside_auth_state() -> None:
     """ADR-0017 sec 5: extending auth_state with tenant_id / org_id /
     workspace_id / token / cookie etc is forbidden. The schema's

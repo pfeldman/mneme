@@ -137,6 +137,11 @@
         "scope": {
           "type": ["string", "null"],
           "description": "Abstract role the projection believes the session occupies. Common values: 'anonymous', 'user', 'admin', or a SUT-specific role string registered in the knowledge file. Null when authenticated is false or surviving evidence is too thin (ADR-0008 diversity-or-seed)."
+        },
+        "being_tested": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether authentication is the SUBJECT under test (the login flow itself is what the goal verifies) or merely a PRECONDITION (ADR-0027 decision 1). Optional; default false (precondition). When true, a run performs a real login and does NOT reuse a saved session (ADR-0027 decision 2), because reusing a session would skip the flow under test."
         }
       }
     }

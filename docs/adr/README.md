@@ -31,4 +31,5 @@ per decision; never edit a superseded one (mark it `Superseded by ADR-XXXX`).
 | 0024 | CI integration by invoking the console commands: Praxis owns no CI machinery, the team owns push/PR/auth, promotion stays a human merge (Accepted) |
 | 0025 | Landing page and docs site: minimal non-engineer story, no analytics/signup/SaaS funnel, mkdocs from docs/, documented example CI workflow (Accepted) |
 | 0026 | Persistent authenticated-session reuse: reuse the saved browser session so 2FA is not needed every run, session is a secret (local file or CI secret, never knowledge), AUTH-EXPIRED is a third verdict (Proposed) |
+| 0027 | Self-contained console test runner driven by a local claude -p brain (subscription, no API key, headless, pytest-style), plus auth-as-subject vs auth-as-precondition: an auth-subject goal performs a real login, a feature goal reuses the session (Proposed) |
 | 0028 | Regress agent confirms every believed success signal in its declared type: align the prompt with the exact-type matcher, keep the matcher and Jaccard floor unchanged, never let "confirm all" become "tick all", seed only reproducible types (Proposed) |
