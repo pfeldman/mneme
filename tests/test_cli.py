@@ -68,11 +68,15 @@ def test_init_creates_layout(tmp_path: Path, capsys: pytest.CaptureFixture[str])
     rc = _run(["init", "--app", "tests", "--env", "local"], tmp_path)
     assert rc == 0
     pdir = tmp_path / ".praxis"
+    # ADR-0021 decision 1 layout: config + knowledge + candidates + runs +
+    # .praxisignore. The repo-root .gitignore (not a .praxis/.gitignore) carries
+    # the ignore lines.
     assert (pdir / "config.yaml").exists()
     assert (pdir / "knowledge").is_dir()
-    assert (pdir / "events").is_dir()
-    assert (pdir / "reports").is_dir()
-    assert (pdir / ".gitignore").exists()
+    assert (pdir / "candidates").is_dir()
+    assert (pdir / "runs").is_dir()
+    assert (pdir / ".praxisignore").exists()
+    assert (tmp_path / ".gitignore").exists()
     out = capsys.readouterr().out
     assert "initialized praxis project" in out
 
@@ -156,10 +160,12 @@ def test_regress_pass_path(tmp_path: Path) -> None:
                 "--from-file", str(obs_file),
                 "--budget-tokens", "5000"], tmp_path)
     assert rc == 0  # PASS -> exit 0
-    md = tmp_path / ".praxis" / "reports" / "last-regress.md"
-    xml = tmp_path / ".praxis" / "reports" / "last-regress.xml"
-    assert md.exists() and xml.exists()
-    assert "**pass**" in md.read_text()
+    # Reports land under the per-run dir (ADR-0021: runs/<timestamp>/).
+    runs = tmp_path / ".praxis" / "runs"
+    md_files = sorted(runs.glob("*/last-regress.md"))
+    xml_files = sorted(runs.glob("*/last-regress.xml"))
+    assert md_files and xml_files
+    assert "**pass**" in md_files[-1].read_text()
 
 
 def test_regress_fail_path_exits_nonzero(tmp_path: Path) -> None:
@@ -183,7 +189,10 @@ def test_regress_fail_path_exits_nonzero(tmp_path: Path) -> None:
                 "--from-file", str(obs_file),
                 "--budget-tokens", "5000"], tmp_path)
     assert rc == 1  # any FAIL -> exit non-zero
-    md = (tmp_path / ".praxis" / "reports" / "last-regress.md").read_text()
+    runs = tmp_path / ".praxis" / "runs"
+    md_files = sorted(runs.glob("*/last-regress.md"))
+    assert md_files
+    md = md_files[-1].read_text()
     assert "**fail**" in md
     assert "regression" in md.lower()
 

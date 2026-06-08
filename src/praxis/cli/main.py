@@ -25,6 +25,7 @@ import yaml
 from ..adapters import BrowserUseAdapter
 from ..merge import contested_candidates, project_candidates
 from ..model import KnowledgeFile, Target, dump, load
+from ..resources import iter_skill_files, skills_root
 from ..runner import (
     ExplorationRunner,
     RegressionRunner,
@@ -32,7 +33,7 @@ from ..runner import (
     write_junit_xml,
     write_markdown_report,
 )
-from ..store import FileEventStore, ObservedSignal
+from ..store import RUNS_SUBDIR, ObservedSignal, RunsEventStore, new_run_id
 
 
 # --- project discovery ----------------------------------------------------
@@ -40,14 +41,31 @@ from ..store import FileEventStore, ObservedSignal
 
 CONFIG_NAME = "config.yaml"
 PROJECT_DIR = ".praxis"
+SECRETS_FILE = ".praxis.secrets"
+PRAXISIGNORE_NAME = ".praxisignore"
+SKILLS_INSTALL_DIR = Path(".claude") / "skills"
+
+# The two ignore lines `praxis init` appends to the repo root `.gitignore`
+# (ADR-0021 decisions 5 and 6). `runs/` is the gitignored, regenerable
+# per-machine log; `.praxis.secrets` is the credentials channel that must never
+# be committed. Both are appended idempotently (never duplicated on re-init).
+GITIGNORE_RUNS_LINE = f"{PROJECT_DIR}/{RUNS_SUBDIR}/"
+GITIGNORE_SECRETS_LINE = SECRETS_FILE
 
 
 class ProjectContext:
     """Resolved layout for one `.praxis/` project: paths + config.
 
-    Source of truth for where seeds live, where events go, what base URL
-    the runners reference. Discovered by walking up from cwd to the first
-    directory containing `.praxis/config.yaml`.
+    Source of truth for where seeds live, where the per-machine event log goes
+    (ADR-0021 `runs/<timestamp>/`), what base URL the runners reference.
+    Discovered by walking up from cwd to the first directory containing
+    `.praxis/config.yaml`.
+
+    The committed tree is `config.yaml`, `knowledge/`, `candidates/`, and
+    `.praxisignore`; the per-machine append-only event log lives under the
+    gitignored `runs/<timestamp>/` and is the local source of truth that the
+    projection folds into believed / contested state (ADR-0001, ADR-0021
+    decision 3).
     """
 
     def __init__(self, root: Path) -> None:
@@ -55,9 +73,15 @@ class ProjectContext:
         self.dir = root / PROJECT_DIR
         self.config_path = self.dir / CONFIG_NAME
         self.knowledge_dir = self.dir / "knowledge"
-        self.events_dir = self.dir / "events"
-        self.reports_dir = self.dir / "reports"
+        self.candidates_dir = self.dir / "candidates"
+        self.runs_dir = self.dir / RUNS_SUBDIR
+        self.praxisignore_path = self.dir / PRAXISIGNORE_NAME
         self.config = yaml.safe_load(self.config_path.read_text()) or {}
+        # One run id per CLI invocation: every `store()` call on this context
+        # writes into the SAME `runs/<run_id>/` subtree, while reads fold across
+        # all run subtrees. Lazily assigned on the first `store()` call.
+        self._run_id: str | None = None
+        self._store: RunsEventStore | None = None
 
     @property
     def base_url(self) -> str:
@@ -82,9 +106,34 @@ class ProjectContext:
     def target(self) -> Target:
         return Target(app=self.app, environment=self.environment)
 
-    def store(self) -> FileEventStore:
-        self.events_dir.mkdir(parents=True, exist_ok=True)
-        return FileEventStore(str(self.events_dir))
+    def run_dir(self) -> Path:
+        """The current invocation's `runs/<timestamp>/` directory, created lazily.
+
+        Holds the per-run raw event log plus any per-run artifacts (reports).
+        The directory is gitignored (init writes the ignore line); the run id is
+        fixed for the lifetime of this context so all writes in one CLI
+        invocation share one subtree.
+        """
+        if self._run_id is None:
+            self._run_id = new_run_id()
+        rd = self.runs_dir / self._run_id
+        rd.mkdir(parents=True, exist_ok=True)
+        return rd
+
+    def store(self) -> RunsEventStore:
+        """Per-machine append-only event log spread over `runs/<timestamp>/`.
+
+        Writes land in this invocation's run subtree; reads fold across every
+        run subtree so the believed-state projection sees the whole log even
+        across separate CLI invocations (ADR-0021 decision 3).
+        """
+        if self._store is None:
+            # Touch the current run dir so the store has a stable write target.
+            self.run_dir()
+            assert self._run_id is not None
+            self.runs_dir.mkdir(parents=True, exist_ok=True)
+            self._store = RunsEventStore(str(self.runs_dir), self._run_id)
+        return self._store
 
     def seeds(self) -> dict[str, KnowledgeFile]:
         out: dict[str, KnowledgeFile] = {}
@@ -123,17 +172,78 @@ def discover_project(start: Path | None = None) -> ProjectContext:
 # --- verbs ---------------------------------------------------------------
 
 
+_PRAXISIGNORE_TEMPLATE = (
+    "# Paths Praxis operations must not read or write (analogous to .gitignore).\n"
+    "# One pattern per line; the committed exclusion set is shared with the team\n"
+    "# (ADR-0021 decision 1).\n"
+)
+
+
+def _append_gitignore_lines(repo_root: Path, lines: list[str]) -> list[str]:
+    """Append each ignore line to the repo `.gitignore` exactly once.
+
+    Creates the file if absent. A line already present (after stripping
+    whitespace) is never duplicated, so re-running `praxis init` is idempotent.
+    Returns the lines that were actually added (empty on a no-op re-init). The
+    secrets ignore line is written here so `.praxis.secrets` is gitignored
+    BEFORE any secret could be written (ADR-0021 decisions 5 and 6).
+    """
+    gitignore = repo_root / ".gitignore"
+    existing: list[str] = []
+    if gitignore.exists():
+        existing = gitignore.read_text(encoding="utf-8").splitlines()
+    present = {ln.strip() for ln in existing}
+    to_add = [ln for ln in lines if ln.strip() not in present]
+    if not to_add:
+        return []
+    # Preserve the trailing-newline shape: append after the existing content.
+    body = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    if body and not body.endswith("\n"):
+        body += "\n"
+    if body and not body.endswith("\n\n"):
+        body += "\n"
+    body += "# Praxis (ADR-0021): per-machine run logs and the local secrets file.\n"
+    body += "\n".join(to_add) + "\n"
+    gitignore.write_text(body, encoding="utf-8")
+    return to_add
+
+
+def _scaffold_skills(repo_root: Path) -> int:
+    """Copy the packaged Praxis skills into the project's `.claude/skills/`.
+
+    ADR-0021 decision 5: `praxis init` unpacks the skills shipped as package
+    data (ADR-0020) into the consuming project. The skill files come from
+    `praxis.resources.iter_skill_files`, which resolves them both from an
+    installed wheel and from the src tree. The package-relative subpath of each
+    skill (for example `praxis/teach/SKILL.md`) is preserved under
+    `.claude/skills/`. Returns the number of files written.
+    """
+    dest_root = repo_root / SKILLS_INSTALL_DIR
+    src_root = Path(str(skills_root()))
+    written = 0
+    for src in iter_skill_files():
+        rel = src.relative_to(src_root)
+        dest = dest_root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(src.read_bytes())
+        written += 1
+    return written
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
     root = Path(args.path or Path.cwd()).resolve()
     pdir = root / PROJECT_DIR
     if pdir.exists() and not args.force:
         print(f"{pdir} already exists. Re-run with --force to overwrite the "
-              f"config (knowledge + events are preserved).", file=sys.stderr)
+              f"config (knowledge + candidates + runs are preserved).",
+              file=sys.stderr)
         return 2
+    # The committed tree (ADR-0021 decision 1): config + knowledge + candidates
+    # + .praxisignore travel by git; runs/ is the gitignored per-machine log.
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / "knowledge").mkdir(exist_ok=True)
-    (pdir / "events").mkdir(exist_ok=True)
-    (pdir / "reports").mkdir(exist_ok=True)
+    (pdir / "candidates").mkdir(exist_ok=True)
+    (pdir / RUNS_SUBDIR).mkdir(exist_ok=True)
     config = {
         "base_url": args.base_url,
         "app": args.app or root.name,
@@ -145,14 +255,34 @@ def _cmd_init(args: argparse.Namespace) -> int:
         yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
-    # .gitignore so secrets/events stay local by default; remove to share.
-    (pdir / ".gitignore").write_text("events/\nreports/\n", encoding="utf-8")
+    praxisignore = pdir / PRAXISIGNORE_NAME
+    if not praxisignore.exists():
+        praxisignore.write_text(_PRAXISIGNORE_TEMPLATE, encoding="utf-8")
+
+    # Gitignore the per-machine run logs and the secrets file. This runs on
+    # every init (idempotent), so a re-init never duplicates the lines and
+    # `.praxis.secrets` is gitignored before any secret could be written.
+    added = _append_gitignore_lines(
+        root, [GITIGNORE_RUNS_LINE, GITIGNORE_SECRETS_LINE]
+    )
+
+    # Scaffold the local-brain Claude Code skills from package data.
+    n_skills = _scaffold_skills(root)
+
     print(f"initialized praxis project at {pdir}")
-    print(f"  config: {pdir / CONFIG_NAME}")
-    print(f"  knowledge: {pdir / 'knowledge'}/  (seed goals here)")
-    print(f"  events:    {pdir / 'events'}/    (append-only store; gitignored)")
-    print(f"  reports:   {pdir / 'reports'}/   (run outputs; gitignored)")
+    print(f"  config:     {pdir / CONFIG_NAME}")
+    print(f"  knowledge:  {pdir / 'knowledge'}/   (committed; seed goals here)")
+    print(f"  candidates: {pdir / 'candidates'}/  (committed; contested queue)")
+    print(f"  runs:       {pdir / RUNS_SUBDIR}/        (gitignored per-machine log)")
+    print(f"  ignore set: {pdir / PRAXISIGNORE_NAME}")
+    if added:
+        print(f"  .gitignore: added {', '.join(added)}")
+    else:
+        print("  .gitignore: already covers runs/ + secrets (no change)")
+    print(f"  skills:     {root / SKILLS_INSTALL_DIR}/  ({n_skills} file(s) scaffolded)")
     print()
+    print("Credentials go in a gitignored .praxis.secrets at the repo root "
+          "(KEY=value), never inside .praxis/ (ADR-0021 decision 6).")
     print("Next: drop a *.knowledge.yaml seed file under "
           f"{pdir / 'knowledge'}/ (one per goal, source_type=human or spec), "
           "or import one with `praxis learn <goal-id> --from-file PATH`.")
@@ -273,9 +403,9 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         stop_on_fail=args.stop_on_fail,
     )
 
-    proj.reports_dir.mkdir(parents=True, exist_ok=True)
-    last_md = proj.reports_dir / "last-regress.md"
-    last_xml = proj.reports_dir / "last-regress.xml"
+    run_dir = proj.run_dir()
+    last_md = run_dir / "last-regress.md"
+    last_xml = run_dir / "last-regress.xml"
     write_markdown_report(results, last_md)
     write_junit_xml(results, last_xml)
     print(f"\nreport: {last_md}")

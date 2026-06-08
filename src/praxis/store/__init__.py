@@ -63,11 +63,19 @@ from .events import (
     ObservationEvent,
     ObservedSignal,
 )
-from .file_store import DEFAULT_TENANT_ID, EventStore, FileEventStore
+from .file_store import (
+    DEFAULT_TENANT_ID,
+    RUNS_SUBDIR,
+    EventStore,
+    FileEventStore,
+    RunsEventStore,
+    new_run_id,
+)
 
 __all__ = [
     "DEFAULT_TENANT_ID",
     "FORBIDDEN_SOURCE_TOKEN_KINDS",
+    "RUNS_SUBDIR",
     "AgentIdentity",
     "CandidateEvent",
     "CandidatePayload",
@@ -76,7 +84,9 @@ __all__ = [
     "DecayEvent",
     "EventStore",
     "FileEventStore",
+    "RunsEventStore",
     "ObservationEvent",
     "ObservedSignal",
+    "new_run_id",
     "source_id_for",
 ]
