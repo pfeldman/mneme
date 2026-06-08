@@ -37,6 +37,7 @@ nav:
   - Home: index.md
   - Examples:
       - testapp (minimal loop): examples/testapp.md
+      - Login with two-factor: examples/auth-and-2fa.md
       - Conduit (realistic app): examples/conduit.md
       - Gitea (real OSS app): examples/gitea.md
       - Running in CI: examples/ci.md
@@ -90,3 +91,4 @@ nav:
       - 0023 regress and explore dual surface: adr/0023-regress-explore-dual-surface-and-report.md
       - 0024 CI integration by invoking commands: adr/0024-ci-integration-invoking-commands.md
       - 0025 Landing page and docs site: adr/0025-landing-page-and-docs-site.md
+      - 0026 Persistent auth session reuse: adr/0026-persistent-auth-session-reuse.md

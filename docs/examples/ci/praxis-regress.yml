@@ -5,10 +5,21 @@
 # calls the `praxis` console commands and gates on the exit code. Everything
 # around that command is YOUR CI, owned by your team:
 #   - the push, the pull request, and the runner auth are standard git you own
-#   - the API key (the CI brain) and the app login credential are YOUR runner
-#     secrets, never written into this repo and never echoed into the logs
+#   - the API key (the CI brain), the app login credential, and the saved
+#     authenticated session are YOUR runner secrets, never written into this
+#     repo and never echoed into the logs
 #   - promoting a discovered candidate into trusted knowledge is a HUMAN git
 #     merge, never an auto-merge and never an auto-promote
+#
+# About the saved authenticated session (PRAXIS_AUTH_STATE_USER, ADR-0026): if
+# your app's login needs two-factor, a human passes two-factor ONCE locally and
+# saves the resulting session; CI reuses that saved session so it never has to
+# pass two-factor itself. The session is a SECRET (whoever has it is logged in
+# as that role), so it lives in your CI secret store, never in this repo and
+# never echoed. A run whose saved session expired reports AUTH-EXPIRED (not
+# REGRESSED, not green); a human must then refresh that secret. If the second
+# factor is an emailed code the refresh is manual (re-login locally, update the
+# secret); if it is an authenticator-app code (TOTP) CI can self-refresh.
 #
 # Change anything here freely. The only contract Praxis provides is that a
 # REGRESSED verdict exits non-zero, so any CI can gate on it.
@@ -44,16 +55,25 @@ jobs:
       # A REGRESSED or ERROR goal exits non-zero and names the goal and the
       # signal that flipped, which fails this job.
       #
-      # The API key and the app login credential are read from the runner
-      # environment (the ADR-0021 secrets channel). They are set as repository
-      # or organization secrets in YOUR settings, never committed to the repo.
-      # An environment variable takes precedence over any .praxis.secrets file,
-      # so in CI you supply them purely as secrets with no file on disk.
+      # The API key, the app login credential, and the saved authenticated
+      # session are read from the runner environment (the ADR-0021 secrets
+      # channel). They are set as repository or organization secrets in YOUR
+      # settings, never committed to the repo and never echoed into the logs.
+      # An environment variable takes precedence over any local file, so in CI
+      # you supply them purely as secrets with no file on disk.
+      #
+      # PRAXIS_AUTH_STATE_USER is the saved authenticated session for the "user"
+      # role (ADR-0026): a human passed two-factor once locally and saved it, so
+      # CI reuses it instead of passing two-factor itself. It is a SECRET a human
+      # refreshes when it expires. If the run reports AUTH-EXPIRED, a human must
+      # refresh this secret: emailed-code two-factor = manual refresh (re-login
+      # locally, update the secret); authenticator-app (TOTP) = CI self-refresh.
       - name: praxis regress (the gate)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           APP_USERNAME: ${{ secrets.APP_USERNAME }}
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          PRAXIS_AUTH_STATE_USER: ${{ secrets.PRAXIS_AUTH_STATE_USER }}
         run: praxis regress
 
   # OPTIONAL second job: scheduled exploration. Delete this whole job if you
@@ -84,11 +104,17 @@ jobs:
       - name: Install Praxis with the CI brain
         run: pip install "praxis-qa[live]"
 
+      # Same runner secrets as the regress job, including the saved
+      # authenticated session PRAXIS_AUTH_STATE_USER (ADR-0026): a human-seeded
+      # session CI reuses so it never passes two-factor itself. It is never
+      # committed and never echoed; an AUTH-EXPIRED run means a human must
+      # refresh this secret (emailed code = manual, TOTP = self-refresh).
       - name: praxis explore (writes contested candidate files only)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           APP_USERNAME: ${{ secrets.APP_USERNAME }}
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          PRAXIS_AUTH_STATE_USER: ${{ secrets.PRAXIS_AUTH_STATE_USER }}
         run: praxis explore
 
       # After this, YOUR workflow decides how to surface the new candidate
