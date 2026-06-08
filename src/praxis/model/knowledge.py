@@ -77,10 +77,20 @@ class Provenance(_Base):
 
 class Signal(_Base):
     """An observable oracle/recognition assertion. Carries provenance + confidence
-    + status (all mandatory)."""
+    + status (all mandatory).
+
+    `value_predicate` (ADR-0030) is the OPTIONAL checkable form of `value`: a
+    template string whose text outside a `{slot}` is an INVARIANT matched
+    exactly and whose declared slots are per-run instance tokens the matcher
+    tolerates on presence/shape only. It SUPPLEMENTS `value` (which stays
+    required and is the projection grouping key), never replaces it. A free-text
+    signal leaves it None and is matched exactly as before (Jaccard over the
+    prose `value`, ADR-0028). When present, the matcher evaluates the predicate
+    instead of Jaccard (decision 2)."""
 
     type: SignalType
     value: str
+    value_predicate: str | None = Field(default=None, min_length=1)
     provenance: Provenance
     confidence: float = Field(ge=0.0, le=1.0)
     status: Status
