@@ -27,9 +27,9 @@ from ..merge import contested_candidates, project_candidates
 from ..model import KnowledgeFile, Target, dump, load
 from ..resources import iter_skill_files, skills_root
 from ..runner import (
-    ExplorationRunner,
-    RegressionRunner,
-    RegressionVerdict,
+    explore_engine,
+    regress_engine,
+    regress_failed,
     write_junit_xml,
     write_markdown_report,
 )
@@ -409,16 +409,19 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         return 2
 
     if args.from_file:
-        executor = _executor_from_file(Path(args.from_file))
+        brain = _executor_from_file(Path(args.from_file))
     else:
-        executor = _executor_from_paste
+        brain = _executor_from_paste
 
-    runner = RegressionRunner(
-        adapter, agent_id=proj.agent_id,
+    # The console surface drives the SAME engine a skill driver calls
+    # (ADR-0019 decision 4); the only difference is which brain the seam
+    # carries (here: the paste/file executor; in a skill: the local Claude
+    # session). The verdict comes back identical for the same store + brain
+    # output.
+    results = regress_engine(
+        adapter, brain, goals,
+        agent_id=proj.agent_id,
         observed_app_version=proj.observed_app_version,
-    )
-    results = runner.run_all(
-        goals, executor,
         budget_tokens=args.budget_tokens,
         budget_actions=args.budget_actions,
         stop_on_fail=args.stop_on_fail,
@@ -431,8 +434,7 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     write_junit_xml(results, last_xml)
     print(f"\nreport: {last_md}")
     print(f"junit:  {last_xml}")
-    has_fail = any(r.verdict == RegressionVerdict.FAIL for r in results)
-    return 1 if has_fail else 0
+    return 1 if regress_failed(results) else 0
 
 
 def _cmd_explore(args: argparse.Namespace) -> int:
@@ -442,35 +444,42 @@ def _cmd_explore(args: argparse.Namespace) -> int:
         print("praxis explore requires --goal (one goal per run)", file=sys.stderr)
         return 2
     if args.from_file:
-        executor = _executor_from_file(Path(args.from_file))
+        brain = _executor_from_file(Path(args.from_file))
     else:
-        executor = _executor_from_paste
+        brain = _executor_from_paste
 
-    runner = ExplorationRunner(
-        adapter, agent_id=proj.agent_id,
-        observed_app_version=proj.observed_app_version,
-    )
     # Snapshot the candidate event ids already in the per-machine log for this
     # goal, so after the run we can mirror ONLY this run's newly written
     # candidate events into the committed tree (ADR-0021 decision 4). The runner
     # / adapter rules are unchanged: they still append to the per-machine run
     # log (the local source of truth); the mirror copies each accepted event,
     # by its content-addressable id, into `.praxis/candidates/<goal>/<id>.yaml`,
-    # the shared, git-pushed contested store.
+    # the shared, git-pushed contested store. The mirror runs inside the engine
+    # as the committed sink, so a skill driver gets the same committed count.
     store = proj.store()
     before_ids = {ev.event_id for ev in store.read_candidates(args.goal)}
+
+    def _commit_new_candidates(goal: str) -> list[Path]:
+        new_events = [
+            ev for ev in store.read_candidates(goal)
+            if ev.event_id not in before_ids
+        ]
+        return proj.candidate_files().write_all(new_events)
+
     happy = args.happy_path or []
-    result = runner.run_one(
-        args.goal, executor,
+    # The console surface drives the SAME engine a skill driver calls; the seam
+    # carries the paste/file executor here, the local Claude session in a skill.
+    outcome = explore_engine(
+        adapter, brain, args.goal,
+        agent_id=proj.agent_id,
+        observed_app_version=proj.observed_app_version,
         happy_path_urls=happy,
         budget_tokens=args.budget_tokens,
         budget_actions=args.budget_actions,
+        committed_sink=_commit_new_candidates,
     )
-    new_candidate_events = [
-        ev for ev in store.read_candidates(args.goal)
-        if ev.event_id not in before_ids
-    ]
-    n_committed = len(proj.candidate_files().write_all(new_candidate_events))
+    result = outcome.result
+    n_committed = len(outcome.committed_paths)
     print(f"\ngoal:                  {result.goal_id}")
     print(f"actions:               {result.actions}")
     print(f"tokens:                {result.tokens if result.tokens is not None else '-'}")
