@@ -1,6 +1,6 @@
 # ADR-0027: The self-contained console test runner, the claude -p local brain, and auth-as-subject vs auth-as-precondition
 
-Status: Proposed
+Status: Accepted (2026-06-08)
 
 ## Context
 

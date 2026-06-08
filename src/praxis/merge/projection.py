@@ -238,7 +238,40 @@ def _passthrough_seed_fields(seed: KnowledgeFile, kf: KnowledgeFile) -> Knowledg
         "risks": list(seed.risks) if seed.risks else None,
         "uncertainties": list(seed.uncertainties) if seed.uncertainties else None,
         "auth_state": seed.auth_state,
+        # A seed-authored `value_predicate` (ADR-0030) is per-signal metadata, not
+        # something an agent observes, so it does not ride through the
+        # observation->believed rebuild (ObservedSignal has no predicate field).
+        # Restore it onto the projected believed signals by matching each back to
+        # its seed signal on (type, value) - `value` is the projection grouping
+        # key, so a projected believed signal carries the seed's value verbatim.
+        # Without this the read path returns value_predicate=None and the matcher
+        # silently falls back to Jaccard, making the structured fact path dead
+        # end to end.
+        "success_signals": _restore_predicates(
+            seed.success_signals, kf.success_signals),
+        "failure_signals": _restore_predicates(
+            seed.failure_signals or [], kf.failure_signals or []) or None,
     })
+
+
+def _restore_predicates(seed_signals: list, projected_signals: list) -> list:
+    """Copy each seed signal's `value_predicate` onto the projected believed
+    signal with the same (type, value), since the predicate is seed-authored and
+    is lost in the observation->believed rebuild (ADR-0030 read-path)."""
+    by_key = {
+        (s.type, s.value): s.value_predicate
+        for s in (seed_signals or []) if s.value_predicate is not None
+    }
+    if not by_key:
+        return projected_signals
+    out = []
+    for sig in projected_signals:
+        pred = by_key.get((sig.type, sig.value))
+        if pred is not None and sig.value_predicate is None:
+            out.append(sig.model_copy(update={"value_predicate": pred}))
+        else:
+            out.append(sig)
+    return out
 
 
 def project_with_seed(

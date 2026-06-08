@@ -207,6 +207,28 @@ def test_regression_prompt_demands_each_signal_in_its_declared_type() -> None:
     assert "by what you actually checked" not in low
 
 
+def test_regression_prompt_surfaces_a_structured_predicate(tmp_path: Path) -> None:
+    """ADR-0030 wiring: when a signal carries a `value_predicate`, the prompt must
+    show it and tell the agent to confirm IN that exact shape (fill each {slot}).
+    The matcher fullmatches the observation against the predicate, so without this
+    the agent emits free prose that can never match. Pins the prompt half of the
+    facts feature."""
+    from praxis.model import Signal, SignalType, Status
+
+    kf = _login_kf()
+    kf.success_signals[0] = Signal(
+        type=SignalType.URL,
+        value="the campaign editor route for the new campaign",
+        value_predicate="/Box/Editor/{campaign_id:numeric}",
+        provenance=_provenance(), confidence=1.0, status=Status.BELIEVED,
+    )
+    p = render_regression_prompt(kf)
+    assert "/Box/Editor/{campaign_id:numeric}" in p
+    low = p.lower()
+    assert "fact (confirm in this exact shape" in low
+    assert "must match that\ntemplate exactly" in low or "must match that template exactly" in low
+
+
 def test_parse_executor_result_stamps_missing_provenance() -> None:
     """The agent emits what it SAW (kind / type / value / present); the SYSTEM
     stamps provenance. An observation without source_type / source_id is accepted

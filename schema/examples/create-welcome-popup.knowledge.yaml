@@ -1,0 +1,58 @@
+# Worked example for ADR-0030: signals as checkable facts with variable slots.
+#
+# The live failure this fixes: this goal has four believed success signals. On
+# a real run the agent confirmed all four facts IN their declared type, but
+# reported them with CONCRETE per-run instance tokens (the real campaign id,
+# the full hostname, the real campaign name) while a free-text seed used
+# ABSTRACT placeholders. Per-type Jaccard fell below 0.5 on three of four, so
+# the genuinely passing goal read UNCERTAIN -> a false REGRESSED.
+#
+# Here three of the four signals carry a structured `value_predicate`: the text
+# OUTSIDE a `{slot}` is the INVARIANT (matched exactly, case-folded +
+# whitespace-normalized) and each `{slot}` / `{slot:numeric}` is a per-run
+# instance token the matcher tolerates on presence/shape only. The seed stores
+# only the ABSTRACT slot, never a concrete id (ADR-0017 / ADR-0030 posture).
+# The behavioral signal stays free-text to show the two paths coexist (decision
+# 4): a signal with no `value_predicate` is matched the old Jaccard way.
+schema_version: "0"
+goal_id: create-welcome-popup
+goal: A user can create a welcome popup and land in its editor with the new campaign listed.
+
+target:
+  app: digioh
+  environment: prod
+
+success_signals:
+  # Free-text (no predicate): matched the legacy Jaccard way (ADR-0028).
+  - type: behavioral
+    value: a welcome popup is created and appears in the campaign list
+    confidence: 1.0
+    status: believed
+    provenance: { source_type: human, source_id: pablo-seed, last_verified: "2026-06-08T00:00:00Z", observation_count: 1 }
+  # Structured: the route prefix is the invariant; the numeric campaign id is
+  # the per-run slot. A non-numeric segment is itself a regression.
+  - type: url
+    value: the editor route for the just-created campaign
+    value_predicate: the route matches /Box/Editor/{campaign_id:numeric}
+    confidence: 1.0
+    status: believed
+    provenance: { source_type: human, source_id: pablo-seed, last_verified: "2026-06-08T00:00:00Z", observation_count: 1 }
+  # Structured: the substring `Created Campaign` is the invariant; the id varies.
+  - type: text
+    value: a banner names the created campaign
+    value_predicate: a banner whose text contains Created Campaign {campaign_id}
+    confidence: 1.0
+    status: believed
+    provenance: { source_type: human, source_id: pablo-seed, last_verified: "2026-06-08T00:00:00Z", observation_count: 1 }
+  # Structured: method, host, path, `returns 2xx`, and the structural `contains
+  # a row whose id equals` are hard; only the campaign id is the slot.
+  - type: network
+    value: the create call returns 2xx and the campaign list shows the new row
+    value_predicate: GET account.digioh.com/ returns 2xx and the campaign list contains a row whose id equals {campaign_id}
+    confidence: 1.0
+    status: believed
+    provenance: { source_type: human, source_id: pablo-seed, last_verified: "2026-06-08T00:00:00Z", observation_count: 1 }
+
+meta:
+  created_at: "2026-06-08T00:00:00Z"
+  updated_at: "2026-06-08T00:00:00Z"

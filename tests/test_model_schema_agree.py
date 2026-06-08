@@ -70,6 +70,65 @@ def test_model_rejects_signal_without_provenance() -> None:
                                "confidence": 0.9, "status": "believed"})
 
 
+# --- ADR-0030: value_predicate is optional and validated at the write boundary -
+
+
+def _signal_with_predicate(predicate: str | None) -> dict:
+    d = {
+        "type": "url",
+        "value": "the editor route for the just-created campaign",
+        "provenance": {"source_type": "human", "source_id": "pablo-seed",
+                       "last_verified": "2026-06-08T00:00:00Z",
+                       "observation_count": 1},
+        "confidence": 1.0, "status": "believed",
+    }
+    if predicate is not None:
+        d["value_predicate"] = predicate
+    return d
+
+
+def test_value_predicate_is_optional_and_signal_required_set_unchanged() -> None:
+    """`value_predicate` is additive: the signal required set stays exactly the
+    Phase-1 set, so every existing free-text seed validates unchanged."""
+    from praxis.model import Signal
+
+    schema_required = set(SCHEMA["$defs"]["signal"]["required"])
+    model_required = {
+        name for name, f in Signal.model_fields.items() if f.is_required()
+    }
+    assert schema_required == model_required
+    assert "value_predicate" not in schema_required
+    assert Signal.model_fields["value_predicate"].is_required() is False
+    # A free-text signal (no predicate) validates and leaves the field None.
+    s = Signal.model_validate(_signal_with_predicate(None))
+    assert s.value_predicate is None
+
+
+def test_valid_value_predicate_passes_write_boundary() -> None:
+    from praxis.model import Signal
+
+    s = Signal.model_validate(
+        _signal_with_predicate("the route matches /Box/Editor/{seg:numeric}")
+    )
+    assert s.value_predicate == "the route matches /Box/Editor/{seg:numeric}"
+
+
+def test_malformed_value_predicate_is_a_loud_rejection() -> None:
+    """A malformed predicate fails LOUDLY at the write boundary (ADR-0030
+    decision 6), never a silent downgrade to free-text."""
+    import pytest
+    from pydantic import ValidationError
+
+    from praxis.model import Signal
+
+    # no-invariant (one slot), unknown shape, unbalanced braces, stopword-only.
+    for bad in ("{anything}", "route /Box/Editor/{seg:semver}",
+                "id equals {campaign_id", "the {x}"):
+        with pytest.raises(ValidationError) as ei:
+            Signal.model_validate(_signal_with_predicate(bad))
+        assert "value_predicate rejected" in str(ei.value)
+
+
 # --- Phase-1 schema activation: risks + uncertainties + triggers -------------
 
 

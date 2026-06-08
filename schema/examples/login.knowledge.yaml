@@ -22,6 +22,15 @@ success_signals:
     confidence: 0.9
     status: believed
     provenance: { source_type: agent, source_id: explorer-2, observed_app_version: "2026.5.3", last_verified: "2026-06-01T10:05:00Z", observation_count: 4 }
+    # ADR-0030: this signal could OPT IN to a checkable predicate by adding the
+    # optional `value_predicate` below. The text outside a `{slot}` is the
+    # INVARIANT (matched exactly, case-folded + whitespace-normalized); a
+    # `{slot}` / `{slot:numeric}` / `{slot:uuid}` is a per-run instance token
+    # the matcher tolerates on presence/shape only (never compared literally).
+    # `value` stays required (it remains the projection grouping key); the
+    # predicate SUPPLEMENTS it. Left commented so this example keeps matching
+    # the free-text way; uncomment to make it a checkable fact:
+    #   value_predicate: POST /session returns 2xx and sets cookie {session_cookie}
   # Seeded oracle: trusted from the start because acceptance criteria define it.
   - type: behavioral
     value: the authenticated home state is reachable (per acceptance criteria)
