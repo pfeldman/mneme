@@ -18,6 +18,7 @@ or an unfilled slot still does NOT match.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from praxis.model import (
     KnowledgeFile,
@@ -274,3 +275,31 @@ def test_unfilled_slot_yields_uncertain_never_pass() -> None:
     assert verdict == RegressionVerdict.UNCERTAIN
     assert verdict != RegressionVerdict.PASS
     assert len(matched) == 2  # url + network held; the unfilled banner did NOT
+
+
+# --- Step 7: the worked-example seed file matches an honest concrete run -----
+
+
+def test_worked_example_seed_file_passes_offline_run() -> None:
+    """The committed `create-welcome-popup` worked example (three structured
+    signals + one free-text) matches all four believed success signals when an
+    honest run reports the same facts with CONCRETE per-run instance tokens
+    (the real id) -> PASS, not the old false UNCERTAIN."""
+    from praxis.model import load
+
+    root = Path(__file__).resolve().parents[1]
+    kf = load(root / "schema" / "examples" / "create-welcome-popup.knowledge.yaml")
+    # Honest run: same facts, real concrete instance tokens (campaign id 329419).
+    obs = [
+        _obs("success", SignalType.BEHAVIORAL,
+             "a welcome popup is created and appears in the campaign list"),
+        _obs("success", SignalType.URL, "the route matches /Box/Editor/329419"),
+        _obs("success", SignalType.TEXT,
+             "a banner whose text contains Created Campaign 329419"),
+        _obs("success", SignalType.NETWORK,
+             "GET account.digioh.com/ returns 2xx and the campaign list "
+             "contains a row whose id equals 329419"),
+    ]
+    verdict, matched, _ = verdict_from_observations(kf, obs)
+    assert verdict == RegressionVerdict.PASS
+    assert len(matched) == 4
