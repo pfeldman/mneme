@@ -1,8 +1,8 @@
-"""`FileEventStore`: one immutable JSON file per event (ADR-0001, ADR-0012, ADR-0013).
+"""`FileEventStore`: one immutable JSON file per event (ADR-0001, ADR-0012, ADR-0013, ADR-0014).
 
 Append-only by construction: every event lands in its own uniquely-named file,
 so concurrent writers never collide and never need a lock. There is no
-`update()` and no `delete()` -- overwriting an existing event file raises,
+`update()` and no `delete()` - overwriting an existing event file raises,
 loudly.
 
 Phase 2 (ADR-0012) extends this with:
@@ -27,6 +27,16 @@ Phase 2 (ADR-0013) extends this with:
   append-only for both event kinds; the projection driver decides when to
   write a decay event by re-running the surviving-set diversity check.
 
+Phase 2 (ADR-0014) extends this with:
+
+- `CandidateEvent`s are stored in a sibling `candidates/` subdirectory under
+  the same tenant root (`<root>/<tenant_id>/candidates/`). The read paths stay
+  disjoint: signal events flow through `read()` / `since()`, decay events
+  through `read_decay()`, candidates through `read_candidates()` /
+  `candidates_since()`. The diversity gate (`oracle/trust.py`) only sees
+  signal events through the projection - a candidate write cannot be
+  miscounted as evidence (ADR-0008 schema-drift defense).
+
 The "no consensus synthetic entry" clause from ADR-0012 lives at the merge
 layer (`merge/projection.py`); the store just keeps every writer's event as
 its own row with its own `source_id`.
@@ -37,7 +47,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
 
-from .events import DecayEvent, ObservationEvent
+from .events import CandidateEvent, DecayEvent, ObservationEvent
 
 # The default tenant id used when the caller does not specify one. ADR-0012
 # names `local` as the conventional default for Phase 2 single-tenant
@@ -52,6 +62,7 @@ DEFAULT_TENANT_ID: str = "local"
 # behind the SPI can reuse the same tenant root.
 _EVENTS_SUBDIR: str = "events"
 _DECAY_SUBDIR: str = "decay"
+_CANDIDATES_SUBDIR: str = "candidates"
 
 
 def _validate_tenant_id(tenant_id: str) -> str:
@@ -117,8 +128,34 @@ class EventStore(ABC):
         order. Decay events are stored separately from observation events but
         live in the same logical log."""
 
+    @abstractmethod
+    def append_candidate(
+        self, event: CandidateEvent, *, tenant_id: str | None = None
+    ) -> None:
+        """Persist one immutable candidate event (ADR-0014). Raises on overwrite.
 
-def _filename(event: ObservationEvent | DecayEvent) -> str:
+        Append-only contract is identical to `append()`: human promotion
+        appends a fresh seed event, never edits the original (ADR-0014 sec 4).
+        """
+
+    @abstractmethod
+    def read_candidates(
+        self, goal_id: str | None = None, *, tenant_id: str | None = None
+    ) -> list[CandidateEvent]:
+        """Return all candidate events (optionally for one goal), time-ordered."""
+
+    @abstractmethod
+    def candidates_since(
+        self,
+        ts: datetime,
+        goal_id: str | None = None,
+        *,
+        tenant_id: str | None = None,
+    ) -> list[CandidateEvent]:
+        """Return candidate events strictly newer than `ts`, time-ordered."""
+
+
+def _filename(event: ObservationEvent | DecayEvent | CandidateEvent) -> str:
     # Sortable ts prefix keeps files roughly time-ordered on disk; the event
     # id guarantees uniqueness (lock-free concurrency). The event_id itself is
     # a uuid4 hex; collisions are impossible by construction so the filesystem
@@ -133,11 +170,13 @@ class FileEventStore(EventStore):
     Layout::
 
         <root>/<tenant_id>/events/<ts>__<event_id>.json
-        <root>/<tenant_id>/decay/<ts>__<event_id>.json   (ADR-0013)
+        <root>/<tenant_id>/decay/<ts>__<event_id>.json       (ADR-0013)
+        <root>/<tenant_id>/candidates/<ts>__<event_id>.json  (ADR-0014)
 
     Observation events live under `events/`; decay events live under a sibling
-    `decay/` subdirectory so the two event kinds never deserialize against
-    the wrong model.
+    `decay/` subdirectory; candidate events live under a sibling `candidates/`
+    subdirectory. The three event kinds never deserialize against the wrong
+    model because each glob is scoped to its own subdirectory.
 
     The constructor accepts an optional `default_tenant_id` that callers
     targeting a single tenant can rely on without threading the id through
@@ -172,7 +211,15 @@ class FileEventStore(EventStore):
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    # ---- EventStore API ---------------------------------------------------
+    def _candidates_dir(self, tenant_id: str | None) -> Path:
+        tenant = self._resolve_tenant(tenant_id)
+        d = self.root / tenant / _CANDIDATES_SUBDIR
+        # Lazily created on first candidate write; absent dir = no candidates
+        # for this tenant (legacy stores stay byte-equivalent on disk).
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    # ---- EventStore API: ObservationEvent ---------------------------------
 
     def append(self, event: ObservationEvent, *, tenant_id: str | None = None) -> None:
         events_dir = self._events_dir(tenant_id)
@@ -212,6 +259,8 @@ class FileEventStore(EventStore):
     ) -> list[ObservationEvent]:
         return [e for e in self.read(goal_id, tenant_id=tenant_id) if e.ts > ts]
 
+    # ---- EventStore API: DecayEvent (ADR-0013) ----------------------------
+
     def append_decay(
         self, event: DecayEvent, *, tenant_id: str | None = None
     ) -> None:
@@ -245,3 +294,50 @@ class FileEventStore(EventStore):
         if goal_id is not None:
             events = [e for e in events if e.goal_id == goal_id]
         return events
+
+    # ---- EventStore API: CandidateEvent (ADR-0014) ------------------------
+
+    def append_candidate(
+        self, event: CandidateEvent, *, tenant_id: str | None = None
+    ) -> None:
+        candidates_dir = self._candidates_dir(tenant_id)
+        path = candidates_dir / _filename(event)
+        if path.exists():
+            # Append-only: candidates are immutable too; human promotion appends
+            # a fresh seed event, never edits this one (ADR-0014 sec 4).
+            raise FileExistsError(
+                f"candidate event already exists, refusing to overwrite: {path}"
+            )
+        # Same atomic-rename commit as `append()`. Salt the tmp name with the
+        # event id so concurrent candidate writers do not stomp each other.
+        tmp = candidates_dir / f".{event.event_id}.tmp"
+        tmp.write_text(event.model_dump_json(indent=2), encoding="utf-8")
+        tmp.rename(path)
+
+    def _load_all_candidates(self, tenant_id: str | None) -> list[CandidateEvent]:
+        tenant = self._resolve_tenant(tenant_id)
+        candidates_dir = self.root / tenant / _CANDIDATES_SUBDIR
+        events: list[CandidateEvent] = []
+        if not candidates_dir.exists():
+            return events
+        for f in candidates_dir.glob("*.json"):
+            events.append(CandidateEvent.model_validate_json(f.read_text(encoding="utf-8")))
+        events.sort(key=lambda e: (e.ts, e.event_id))
+        return events
+
+    def read_candidates(
+        self, goal_id: str | None = None, *, tenant_id: str | None = None
+    ) -> list[CandidateEvent]:
+        events = self._load_all_candidates(tenant_id)
+        if goal_id is not None:
+            events = [e for e in events if e.goal_id == goal_id]
+        return events
+
+    def candidates_since(
+        self,
+        ts: datetime,
+        goal_id: str | None = None,
+        *,
+        tenant_id: str | None = None,
+    ) -> list[CandidateEvent]:
+        return [e for e in self.read_candidates(goal_id, tenant_id=tenant_id) if e.ts > ts]
