@@ -27,8 +27,20 @@ from ..model import (
 
 
 def _format_signal(sig: Signal, idx: int) -> str:
+    # When a signal carries a structured predicate (ADR-0030), surface it so the
+    # agent can confirm IN that exact shape. The matcher fullmatches the
+    # observation against the predicate (invariant exact, {slots} filled), so the
+    # agent must report the observation as the predicate with each {slot} replaced
+    # by the concrete value it saw; otherwise a genuinely-passing check cannot
+    # match. Without this line the agent only sees the prose value and emits free
+    # prose that can never fullmatch the predicate.
+    predicate = (
+        f"\n     fact (confirm in THIS exact shape, fill each {{slot}} with the "
+        f"concrete value you saw): {sig.value_predicate}"
+        if sig.value_predicate is not None else ""
+    )
     return (
-        f"  {idx}. [{sig.type.value}] {sig.value}"
+        f"  {idx}. [{sig.type.value}] {sig.value}{predicate}"
         f"  (status={sig.status.value}, confidence={sig.confidence:.2f})"
     )
 
@@ -99,7 +111,10 @@ def render_regression_prompt(kf: KnowledgeFile, *, budget_actions: int | None = 
         f"visual), through write_observations. Each observation must be grounded in evidence\n"
         f"you actually saw; NEVER assert a signal just to complete the list. If you cannot\n"
         f"ground a signal in its declared type, leave it unconfirmed - do NOT fabricate one,\n"
-        f"because a false confirmation is the worst possible outcome. Match a failure signal\n"
+        f"because a false confirmation is the worst possible outcome. For a signal that shows a\n"
+        f"`fact (confirm in THIS exact shape...)` line, your observation value MUST match that\n"
+        f"template exactly, with each {{slot}} replaced by the concrete value you actually\n"
+        f"observed and everything outside the slots kept verbatim. Match a failure signal\n"
         f"-> regression."
         f"\n{budget_line}"
     )
