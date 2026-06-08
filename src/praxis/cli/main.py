@@ -33,7 +33,13 @@ from ..runner import (
     write_junit_xml,
     write_markdown_report,
 )
-from ..store import RUNS_SUBDIR, ObservedSignal, RunsEventStore, new_run_id
+from ..store import (
+    RUNS_SUBDIR,
+    CandidateFileStore,
+    ObservedSignal,
+    RunsEventStore,
+    new_run_id,
+)
 
 
 # --- project discovery ----------------------------------------------------
@@ -82,6 +88,7 @@ class ProjectContext:
         # all run subtrees. Lazily assigned on the first `store()` call.
         self._run_id: str | None = None
         self._store: RunsEventStore | None = None
+        self._candidate_files: CandidateFileStore | None = None
 
     @property
     def base_url(self) -> str:
@@ -134,6 +141,20 @@ class ProjectContext:
             self.runs_dir.mkdir(parents=True, exist_ok=True)
             self._store = RunsEventStore(str(self.runs_dir), self._run_id)
         return self._store
+
+    def candidate_files(self) -> CandidateFileStore:
+        """The committed candidate tree under `.praxis/candidates/` (ADR-0021).
+
+        This is the shared, git-pulled / git-pushed contested store, distinct
+        from the per-machine event log under the gitignored `runs/` tree. One
+        file per observation event id keeps concurrent adds across machines
+        merge-safe (ADR-0021 decision 4); `praxis explore` writes accepted
+        candidates here and `praxis review` reads the aggregate queue from here.
+        """
+        if self._candidate_files is None:
+            self.candidates_dir.mkdir(parents=True, exist_ok=True)
+            self._candidate_files = CandidateFileStore(self.candidates_dir)
+        return self._candidate_files
 
     def seeds(self) -> dict[str, KnowledgeFile]:
         out: dict[str, KnowledgeFile] = {}
@@ -429,6 +450,15 @@ def _cmd_explore(args: argparse.Namespace) -> int:
         adapter, agent_id=proj.agent_id,
         observed_app_version=proj.observed_app_version,
     )
+    # Snapshot the candidate event ids already in the per-machine log for this
+    # goal, so after the run we can mirror ONLY this run's newly written
+    # candidate events into the committed tree (ADR-0021 decision 4). The runner
+    # / adapter rules are unchanged: they still append to the per-machine run
+    # log (the local source of truth); the mirror copies each accepted event,
+    # by its content-addressable id, into `.praxis/candidates/<goal>/<id>.yaml`,
+    # the shared, git-pushed contested store.
+    store = proj.store()
+    before_ids = {ev.event_id for ev in store.read_candidates(args.goal)}
     happy = args.happy_path or []
     result = runner.run_one(
         args.goal, executor,
@@ -436,6 +466,11 @@ def _cmd_explore(args: argparse.Namespace) -> int:
         budget_tokens=args.budget_tokens,
         budget_actions=args.budget_actions,
     )
+    new_candidate_events = [
+        ev for ev in store.read_candidates(args.goal)
+        if ev.event_id not in before_ids
+    ]
+    n_committed = len(proj.candidate_files().write_all(new_candidate_events))
     print(f"\ngoal:                  {result.goal_id}")
     print(f"actions:               {result.actions}")
     print(f"tokens:                {result.tokens if result.tokens is not None else '-'}")
@@ -444,6 +479,8 @@ def _cmd_explore(args: argparse.Namespace) -> int:
     print(f"candidate_observations: {len(result.candidate_observations)}")
     print(f"new_risks:             {len(result.new_risks)}  (all contested per ADR-0008)")
     print(f"new_uncertainties:     {len(result.new_uncertainties)}")
+    print(f"committed_candidates:  {n_committed}  "
+          f"(.praxis/candidates/{result.goal_id}/, one file per observation)")
     for o in result.candidate_observations:
         print(f"  [{o.kind}/{o.type.value}] {o.value}")
     return 0
@@ -465,23 +502,31 @@ def _cmd_review(args: argparse.Namespace) -> int:
     proj = discover_project()
     adapter = proj.adapter()
     seeds = proj.seeds()
-    goal_ids = (
-        [args.goal] if args.goal else sorted(seeds.keys())
-    )
+    # The committed candidate tree is the aggregate queue source (ADR-0021
+    # decision 4): a teammate's `git pull` brought their candidate files here.
+    # Review folds the committed tree, NOT the per-machine run log, so the queue
+    # reflects the shared contested store. A goal can have committed candidates
+    # without a seed (a discovered finding), so the goal set is the union of
+    # seeded goals and goals that already carry committed candidates.
+    candidate_files = proj.candidate_files()
+    if args.goal:
+        goal_ids = [args.goal]
+    else:
+        goal_ids = sorted(set(seeds.keys()) | set(candidate_files.goals()))
     if not goal_ids:
         print("no goals to review.", file=sys.stderr)
         return 2
     any_contested = False
-    store = proj.store()
     for gid in goal_ids:
+        contested_succ: list[Any] = []
+        contested_fail: list[Any] = []
         kf = adapter.read_knowledge(gid)
-        if kf is None:
-            continue
-        contested_succ = [s for s in kf.success_signals
-                           if s.status.value == "contested"]
-        contested_fail = [s for s in (kf.failure_signals or [])
-                           if s.status.value == "contested"]
-        cand_events = store.read_candidates(gid)
+        if kf is not None:
+            contested_succ = [s for s in kf.success_signals
+                              if s.status.value == "contested"]
+            contested_fail = [s for s in (kf.failure_signals or [])
+                              if s.status.value == "contested"]
+        cand_events = candidate_files.read(gid)
         projected = project_candidates(
             cand_events, goal_id=gid, seed=seeds.get(gid),
         )

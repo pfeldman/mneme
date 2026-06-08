@@ -33,6 +33,13 @@ Phase 2 (ADR-0014):
   tenant so the diversity gate over signal observations cannot count
   candidate writes as evidence (ADR-0008 schema-drift defense).
 
+Phase 3 (ADR-0021):
+
+- `CandidateFileStore` is the committed candidate tree: one YAML file per
+  observation event id under `.praxis/candidates/<goal>/<id>.yaml`, the shared
+  (git-pulled / git-pushed) contested store. One file per id keeps concurrent
+  adds merge-safe; dedup/corroboration stays at the projection by `trigger`.
+
 Public API:
     ObservedSignal, ObservationEvent  -- the immutable signal-event model
     DecayEvent                        -- projection-driven status-flip event
@@ -43,6 +50,7 @@ Public API:
                                          + append_decay/read_decay
                                          + append_candidate/read_candidates)
     FileEventStore                    -- per-tenant one-file-per-event backend
+    CandidateFileStore                -- committed candidate YAML tree (ADR-0021)
     DEFAULT_TENANT_ID                 -- the Phase 2 conventional default
     AgentIdentity, source_id_for      -- the multi-writer source_id contract
     FORBIDDEN_SOURCE_TOKEN_KINDS      -- names of tokens that MUST NOT be used
@@ -53,6 +61,10 @@ from .agent_identity import (
     FORBIDDEN_SOURCE_TOKEN_KINDS,
     AgentIdentity,
     source_id_for,
+)
+from .candidate_files import (
+    CANDIDATE_FILE_SUFFIX,
+    CandidateFileStore,
 )
 from .events import (
     CandidateEvent,
@@ -73,11 +85,13 @@ from .file_store import (
 )
 
 __all__ = [
+    "CANDIDATE_FILE_SUFFIX",
     "DEFAULT_TENANT_ID",
     "FORBIDDEN_SOURCE_TOKEN_KINDS",
     "RUNS_SUBDIR",
     "AgentIdentity",
     "CandidateEvent",
+    "CandidateFileStore",
     "CandidatePayload",
     "CandidateRiskPayload",
     "CandidateUncertaintyPayload",
