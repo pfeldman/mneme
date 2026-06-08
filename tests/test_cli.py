@@ -261,6 +261,45 @@ def test_regress_defaults_to_claude_brain_when_on_path(
     assert captured.get("headed") is False
 
 
+def test_regress_uses_the_project_mcp_config_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A project can declare its Playwright MCP once in .praxis/config.yaml
+    (`mcp_config`), and a run with no --mcp-config picks it up, resolved absolute
+    against the project root (ADR-0027). The flag still overrides it."""
+    _run(["init", "--mcp-config", "playwright-mcp.json"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+
+    import sys
+    cli_mod = sys.modules["praxis.cli.main"]
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _name: "/usr/bin/claude")
+    captured: dict = {}
+
+    def fake_factory(**kwargs):
+        captured.update(kwargs)
+        return lambda prompt: {
+            "observations": [{
+                "kind": "success", "type": "behavioral",
+                "value": "a Sign out control is present after submitting "
+                         "valid credentials",
+                "source_type": "agent", "source_id": "praxis-cli",
+            }],
+            "actions": 1, "tokens": 10,
+        }
+
+    monkeypatch.setattr(cli_mod, "make_claude_brain", fake_factory)
+    rc = _run(["regress"], tmp_path)
+    assert rc == 0
+    # The config default flowed through, resolved absolute against the root.
+    got = captured.get("mcp_config_path")
+    assert got is not None
+    assert Path(got).is_absolute()
+    assert got.endswith("playwright-mcp.json")
+    assert str(tmp_path) in got
+
+
 # --- explore --------------------------------------------------------------
 
 
