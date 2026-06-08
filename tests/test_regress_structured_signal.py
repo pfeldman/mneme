@@ -168,3 +168,109 @@ def test_wrong_type_never_matches_even_with_holding_invariant() -> None:
              "the route matches /Box/Editor/329419"),
         _URL_SEED,
     )
+
+
+# --- Step 6: the load-bearing no-false-pass gate at the VERDICT level --------
+#
+# A real regression passing silently is the worst possible outcome (docs/06,
+# AGENTS.md non-negotiable 5). These prove that under the structured path a
+# planted regression yields FAIL or UNCERTAIN, NEVER PASS.
+
+
+def _structured_kf() -> KnowledgeFile:
+    """A goal whose three success signals are all structured predicates."""
+    return KnowledgeFile(
+        schema_version="0", goal_id="create-welcome-popup",
+        goal="a user can create a welcome popup",
+        target=Target(app="digioh"),
+        success_signals=[_URL_SEED, _TEXT_SEED, _NETWORK_SEED],
+        failure_signals=[
+            _seed(SignalType.TEXT, "an error toast names a failed create",
+                  "an error toast contains Failed to create campaign "
+                  "{campaign_id}"),
+        ],
+        meta=Meta(created_at=datetime(2026, 6, 8, tzinfo=timezone.utc),
+                  updated_at=datetime(2026, 6, 8, tzinfo=timezone.utc)),
+    )
+
+
+def test_planted_failure_invariant_observed_yields_fail_not_pass() -> None:
+    """A believed FAILURE invariant observed (the error toast) -> FAIL, even if
+    every success predicate also holds. A failure signal overrides success."""
+    kf = _structured_kf()
+    obs = [
+        _obs("success", SignalType.URL, "the route matches /Box/Editor/329419"),
+        _obs("success", SignalType.TEXT,
+             "a banner whose text contains Created Campaign 329419"),
+        _obs("success", SignalType.NETWORK,
+             "GET account.digioh.com/ returns 2xx and the campaign list "
+             "contains a row whose id equals 329419"),
+        # the planted regression: the failure invariant is genuinely observed.
+        _obs("failure", SignalType.TEXT,
+             "an error toast contains Failed to create campaign 329419"),
+    ]
+    verdict, _, bad = verdict_from_observations(kf, obs)
+    assert verdict == RegressionVerdict.FAIL
+    assert bad  # the fired failure signal is named, never swallowed
+
+
+def test_wrong_status_code_yields_uncertain_never_pass() -> None:
+    """A believed success invariant genuinely ABSENT (the network call returned
+    500, not 2xx) -> the success predicate does NOT hold -> UNCERTAIN, never a
+    false PASS. Under 0.5 Jaccard the heavy word-overlap could have admitted
+    the 500 observation as a match and PASSED the goal silently."""
+    kf = _structured_kf()
+    obs = [
+        _obs("success", SignalType.URL, "the route matches /Box/Editor/329419"),
+        _obs("success", SignalType.TEXT,
+             "a banner whose text contains Created Campaign 329419"),
+        # the planted regression: 500, not 2xx.
+        _obs("success", SignalType.NETWORK,
+             "GET account.digioh.com/ returns 500 and the campaign list "
+             "contains a row whose id equals 329419"),
+    ]
+    verdict, matched, _ = verdict_from_observations(kf, obs)
+    assert verdict == RegressionVerdict.UNCERTAIN
+    assert verdict != RegressionVerdict.PASS
+    assert len(matched) == 2  # url + text held; the 500 network did NOT
+
+
+def test_wrong_route_yields_uncertain_never_pass() -> None:
+    """A wrong route (a different page) -> the url predicate does NOT hold ->
+    UNCERTAIN, never a false PASS."""
+    kf = _structured_kf()
+    obs = [
+        # the planted regression: a login page, not the editor route.
+        _obs("success", SignalType.URL,
+             "the route matches /Account/Login/329419"),
+        _obs("success", SignalType.TEXT,
+             "a banner whose text contains Created Campaign 329419"),
+        _obs("success", SignalType.NETWORK,
+             "GET account.digioh.com/ returns 2xx and the campaign list "
+             "contains a row whose id equals 329419"),
+    ]
+    verdict, matched, _ = verdict_from_observations(kf, obs)
+    assert verdict == RegressionVerdict.UNCERTAIN
+    assert verdict != RegressionVerdict.PASS
+    assert len(matched) == 2  # text + network held; the wrong route did NOT
+
+
+def test_unfilled_slot_yields_uncertain_never_pass() -> None:
+    """A success invariant whose declared slot is UNFILLED (no instance token
+    where the slot is) -> does NOT hold -> UNCERTAIN, never a free pass. An
+    empty / missing slot is a non-match (decision 3)."""
+    kf = _structured_kf()
+    obs = [
+        _obs("success", SignalType.URL, "the route matches /Box/Editor/329419"),
+        # the planted regression: the banner has no campaign id after the
+        # invariant text -> the slot is unfilled.
+        _obs("success", SignalType.TEXT,
+             "a banner whose text contains Created Campaign"),
+        _obs("success", SignalType.NETWORK,
+             "GET account.digioh.com/ returns 2xx and the campaign list "
+             "contains a row whose id equals 329419"),
+    ]
+    verdict, matched, _ = verdict_from_observations(kf, obs)
+    assert verdict == RegressionVerdict.UNCERTAIN
+    assert verdict != RegressionVerdict.PASS
+    assert len(matched) == 2  # url + network held; the unfilled banner did NOT
