@@ -25,14 +25,27 @@ import yaml
 from ..adapters import BrowserUseAdapter
 from ..merge import contested_candidates, project_candidates
 from ..model import KnowledgeFile, Target, dump, load
+from ..resources import iter_skill_files, skills_root
 from ..runner import (
-    ExplorationRunner,
-    RegressionRunner,
-    RegressionVerdict,
+    aggregate_run_failed,
+    explore_aggregate_engine,
+    explore_engine,
+    group_candidates_by_trigger,
+    regress_aggregate_engine,
+    regress_engine,
+    regress_failed,
+    write_aggregate_markdown,
+    write_candidate_markdown,
     write_junit_xml,
     write_markdown_report,
 )
-from ..store import FileEventStore, ObservedSignal
+from ..store import (
+    RUNS_SUBDIR,
+    CandidateFileStore,
+    ObservedSignal,
+    RunsEventStore,
+    new_run_id,
+)
 
 
 # --- project discovery ----------------------------------------------------
@@ -40,14 +53,31 @@ from ..store import FileEventStore, ObservedSignal
 
 CONFIG_NAME = "config.yaml"
 PROJECT_DIR = ".praxis"
+SECRETS_FILE = ".praxis.secrets"
+PRAXISIGNORE_NAME = ".praxisignore"
+SKILLS_INSTALL_DIR = Path(".claude") / "skills"
+
+# The two ignore lines `praxis init` appends to the repo root `.gitignore`
+# (ADR-0021 decisions 5 and 6). `runs/` is the gitignored, regenerable
+# per-machine log; `.praxis.secrets` is the credentials channel that must never
+# be committed. Both are appended idempotently (never duplicated on re-init).
+GITIGNORE_RUNS_LINE = f"{PROJECT_DIR}/{RUNS_SUBDIR}/"
+GITIGNORE_SECRETS_LINE = SECRETS_FILE
 
 
 class ProjectContext:
     """Resolved layout for one `.praxis/` project: paths + config.
 
-    Source of truth for where seeds live, where events go, what base URL
-    the runners reference. Discovered by walking up from cwd to the first
-    directory containing `.praxis/config.yaml`.
+    Source of truth for where seeds live, where the per-machine event log goes
+    (ADR-0021 `runs/<timestamp>/`), what base URL the runners reference.
+    Discovered by walking up from cwd to the first directory containing
+    `.praxis/config.yaml`.
+
+    The committed tree is `config.yaml`, `knowledge/`, `candidates/`, and
+    `.praxisignore`; the per-machine append-only event log lives under the
+    gitignored `runs/<timestamp>/` and is the local source of truth that the
+    projection folds into believed / contested state (ADR-0001, ADR-0021
+    decision 3).
     """
 
     def __init__(self, root: Path) -> None:
@@ -55,9 +85,16 @@ class ProjectContext:
         self.dir = root / PROJECT_DIR
         self.config_path = self.dir / CONFIG_NAME
         self.knowledge_dir = self.dir / "knowledge"
-        self.events_dir = self.dir / "events"
-        self.reports_dir = self.dir / "reports"
+        self.candidates_dir = self.dir / "candidates"
+        self.runs_dir = self.dir / RUNS_SUBDIR
+        self.praxisignore_path = self.dir / PRAXISIGNORE_NAME
         self.config = yaml.safe_load(self.config_path.read_text()) or {}
+        # One run id per CLI invocation: every `store()` call on this context
+        # writes into the SAME `runs/<run_id>/` subtree, while reads fold across
+        # all run subtrees. Lazily assigned on the first `store()` call.
+        self._run_id: str | None = None
+        self._store: RunsEventStore | None = None
+        self._candidate_files: CandidateFileStore | None = None
 
     @property
     def base_url(self) -> str:
@@ -82,9 +119,48 @@ class ProjectContext:
     def target(self) -> Target:
         return Target(app=self.app, environment=self.environment)
 
-    def store(self) -> FileEventStore:
-        self.events_dir.mkdir(parents=True, exist_ok=True)
-        return FileEventStore(str(self.events_dir))
+    def run_dir(self) -> Path:
+        """The current invocation's `runs/<timestamp>/` directory, created lazily.
+
+        Holds the per-run raw event log plus any per-run artifacts (reports).
+        The directory is gitignored (init writes the ignore line); the run id is
+        fixed for the lifetime of this context so all writes in one CLI
+        invocation share one subtree.
+        """
+        if self._run_id is None:
+            self._run_id = new_run_id()
+        rd = self.runs_dir / self._run_id
+        rd.mkdir(parents=True, exist_ok=True)
+        return rd
+
+    def store(self) -> RunsEventStore:
+        """Per-machine append-only event log spread over `runs/<timestamp>/`.
+
+        Writes land in this invocation's run subtree; reads fold across every
+        run subtree so the believed-state projection sees the whole log even
+        across separate CLI invocations (ADR-0021 decision 3).
+        """
+        if self._store is None:
+            # Touch the current run dir so the store has a stable write target.
+            self.run_dir()
+            assert self._run_id is not None
+            self.runs_dir.mkdir(parents=True, exist_ok=True)
+            self._store = RunsEventStore(str(self.runs_dir), self._run_id)
+        return self._store
+
+    def candidate_files(self) -> CandidateFileStore:
+        """The committed candidate tree under `.praxis/candidates/` (ADR-0021).
+
+        This is the shared, git-pulled / git-pushed contested store, distinct
+        from the per-machine event log under the gitignored `runs/` tree. One
+        file per observation event id keeps concurrent adds across machines
+        merge-safe (ADR-0021 decision 4); `praxis explore` writes accepted
+        candidates here and `praxis review` reads the aggregate queue from here.
+        """
+        if self._candidate_files is None:
+            self.candidates_dir.mkdir(parents=True, exist_ok=True)
+            self._candidate_files = CandidateFileStore(self.candidates_dir)
+        return self._candidate_files
 
     def seeds(self) -> dict[str, KnowledgeFile]:
         out: dict[str, KnowledgeFile] = {}
@@ -123,17 +199,78 @@ def discover_project(start: Path | None = None) -> ProjectContext:
 # --- verbs ---------------------------------------------------------------
 
 
+_PRAXISIGNORE_TEMPLATE = (
+    "# Paths Praxis operations must not read or write (analogous to .gitignore).\n"
+    "# One pattern per line; the committed exclusion set is shared with the team\n"
+    "# (ADR-0021 decision 1).\n"
+)
+
+
+def _append_gitignore_lines(repo_root: Path, lines: list[str]) -> list[str]:
+    """Append each ignore line to the repo `.gitignore` exactly once.
+
+    Creates the file if absent. A line already present (after stripping
+    whitespace) is never duplicated, so re-running `praxis init` is idempotent.
+    Returns the lines that were actually added (empty on a no-op re-init). The
+    secrets ignore line is written here so `.praxis.secrets` is gitignored
+    BEFORE any secret could be written (ADR-0021 decisions 5 and 6).
+    """
+    gitignore = repo_root / ".gitignore"
+    existing: list[str] = []
+    if gitignore.exists():
+        existing = gitignore.read_text(encoding="utf-8").splitlines()
+    present = {ln.strip() for ln in existing}
+    to_add = [ln for ln in lines if ln.strip() not in present]
+    if not to_add:
+        return []
+    # Preserve the trailing-newline shape: append after the existing content.
+    body = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    if body and not body.endswith("\n"):
+        body += "\n"
+    if body and not body.endswith("\n\n"):
+        body += "\n"
+    body += "# Praxis (ADR-0021): per-machine run logs and the local secrets file.\n"
+    body += "\n".join(to_add) + "\n"
+    gitignore.write_text(body, encoding="utf-8")
+    return to_add
+
+
+def _scaffold_skills(repo_root: Path) -> int:
+    """Copy the packaged Praxis skills into the project's `.claude/skills/`.
+
+    ADR-0021 decision 5: `praxis init` unpacks the skills shipped as package
+    data (ADR-0020) into the consuming project. The skill files come from
+    `praxis.resources.iter_skill_files`, which resolves them both from an
+    installed wheel and from the src tree. The package-relative subpath of each
+    skill (for example `praxis/teach/SKILL.md`) is preserved under
+    `.claude/skills/`. Returns the number of files written.
+    """
+    dest_root = repo_root / SKILLS_INSTALL_DIR
+    src_root = Path(str(skills_root()))
+    written = 0
+    for src in iter_skill_files():
+        rel = src.relative_to(src_root)
+        dest = dest_root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(src.read_bytes())
+        written += 1
+    return written
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
     root = Path(args.path or Path.cwd()).resolve()
     pdir = root / PROJECT_DIR
     if pdir.exists() and not args.force:
         print(f"{pdir} already exists. Re-run with --force to overwrite the "
-              f"config (knowledge + events are preserved).", file=sys.stderr)
+              f"config (knowledge + candidates + runs are preserved).",
+              file=sys.stderr)
         return 2
+    # The committed tree (ADR-0021 decision 1): config + knowledge + candidates
+    # + .praxisignore travel by git; runs/ is the gitignored per-machine log.
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / "knowledge").mkdir(exist_ok=True)
-    (pdir / "events").mkdir(exist_ok=True)
-    (pdir / "reports").mkdir(exist_ok=True)
+    (pdir / "candidates").mkdir(exist_ok=True)
+    (pdir / RUNS_SUBDIR).mkdir(exist_ok=True)
     config = {
         "base_url": args.base_url,
         "app": args.app or root.name,
@@ -145,14 +282,34 @@ def _cmd_init(args: argparse.Namespace) -> int:
         yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
-    # .gitignore so secrets/events stay local by default; remove to share.
-    (pdir / ".gitignore").write_text("events/\nreports/\n", encoding="utf-8")
+    praxisignore = pdir / PRAXISIGNORE_NAME
+    if not praxisignore.exists():
+        praxisignore.write_text(_PRAXISIGNORE_TEMPLATE, encoding="utf-8")
+
+    # Gitignore the per-machine run logs and the secrets file. This runs on
+    # every init (idempotent), so a re-init never duplicates the lines and
+    # `.praxis.secrets` is gitignored before any secret could be written.
+    added = _append_gitignore_lines(
+        root, [GITIGNORE_RUNS_LINE, GITIGNORE_SECRETS_LINE]
+    )
+
+    # Scaffold the local-brain Claude Code skills from package data.
+    n_skills = _scaffold_skills(root)
+
     print(f"initialized praxis project at {pdir}")
-    print(f"  config: {pdir / CONFIG_NAME}")
-    print(f"  knowledge: {pdir / 'knowledge'}/  (seed goals here)")
-    print(f"  events:    {pdir / 'events'}/    (append-only store; gitignored)")
-    print(f"  reports:   {pdir / 'reports'}/   (run outputs; gitignored)")
+    print(f"  config:     {pdir / CONFIG_NAME}")
+    print(f"  knowledge:  {pdir / 'knowledge'}/   (committed; seed goals here)")
+    print(f"  candidates: {pdir / 'candidates'}/  (committed; contested queue)")
+    print(f"  runs:       {pdir / RUNS_SUBDIR}/        (gitignored per-machine log)")
+    print(f"  ignore set: {pdir / PRAXISIGNORE_NAME}")
+    if added:
+        print(f"  .gitignore: added {', '.join(added)}")
+    else:
+        print("  .gitignore: already covers runs/ + secrets (no change)")
+    print(f"  skills:     {root / SKILLS_INSTALL_DIR}/  ({n_skills} file(s) scaffolded)")
     print()
+    print("Credentials go in a gitignored .praxis.secrets at the repo root "
+          "(KEY=value), never inside .praxis/ (ADR-0021 decision 6).")
     print("Next: drop a *.knowledge.yaml seed file under "
           f"{pdir / 'knowledge'}/ (one per goal, source_type=human or spec), "
           "or import one with `praxis learn <goal-id> --from-file PATH`.")
@@ -248,64 +405,242 @@ def _executor_from_file(path: Path):
 def _cmd_regress(args: argparse.Namespace) -> int:
     proj = discover_project()
     adapter = proj.adapter()
-    goals = (
-        [args.goal] if args.goal
-        else sorted(proj.seeds().keys())
-    )
-    if not goals:
-        print("no goals to regress (no seeds in .praxis/knowledge/). "
-              "Run `praxis learn ...` first.", file=sys.stderr)
-        return 2
 
     if args.from_file:
-        executor = _executor_from_file(Path(args.from_file))
+        brain = _executor_from_file(Path(args.from_file))
     else:
-        executor = _executor_from_paste
+        brain = _executor_from_paste
 
-    runner = RegressionRunner(
-        adapter, agent_id=proj.agent_id,
+    # Default-all aggregate (ADR-0023 decision 2): no `--goal` runs EVERY
+    # believed goal under .praxis/knowledge/ and emits ONE aggregate
+    # break-vs-drift report. `praxis regress --goal <name>` keeps the
+    # single-goal pass/fail path below.
+    if not args.goal:
+        goals = sorted(proj.seeds().keys())
+        if not goals:
+            print("no goals to regress (no seeds in .praxis/knowledge/). "
+                  "Run `praxis learn ...` first.", file=sys.stderr)
+            return 2
+        # The console surface drives the SAME aggregate engine a skill driver
+        # calls (ADR-0019 decision 4 + ADR-0023 decision 1). The brain seam
+        # carries the paste/file executor here; the verdicts come back
+        # identical for the same store + brain output. The per-goal budget
+        # slice (ADR-0023 decision 7) is applied per goal, not as one shared
+        # pool: an exhausted slice is a loud ERROR for that goal.
+        reports = regress_aggregate_engine(
+            adapter, brain, goals,
+            agent_id=proj.agent_id,
+            observed_app_version=proj.observed_app_version,
+            budget_tokens_per_goal=args.budget_tokens,
+            budget_actions_per_goal=args.budget_actions,
+            budget_wall_seconds_per_goal=args.budget_wall_seconds,
+        )
+        run_dir = proj.run_dir()
+        report_md = run_dir / "regress-aggregate.md"
+        write_aggregate_markdown(reports, report_md)
+        # Print every goal's verdict line so the named goal + signal is on the
+        # console too, not only in the markdown (ADR-0023 decision 4).
+        for r in reports:
+            line = f"  {r.verdict.value:<10} {r.goal_id}"
+            if not r.verdict.is_ok:
+                line += f"  -> {r.evidence}"
+            print(line)
+        print(f"\nreport: {report_md}")
+        # A REGRESSED or ERROR goal fails the run loudly; STALE alone does not
+        # (the app changed on purpose, the fix is a human re-seed).
+        failed = aggregate_run_failed(reports)
+        if failed:
+            named = [r.goal_id for r in reports if r.fails_run]
+            print(f"REGRESSION/ERROR: {', '.join(named)} fail the run.",
+                  file=sys.stderr)
+        return 1 if failed else 0
+
+    # Single-goal pass/fail path (unchanged contract).
+    goals = [args.goal]
+    # The console surface drives the SAME engine a skill driver calls
+    # (ADR-0019 decision 4); the only difference is which brain the seam
+    # carries (here: the paste/file executor; in a skill: the local Claude
+    # session). The verdict comes back identical for the same store + brain
+    # output.
+    results = regress_engine(
+        adapter, brain, goals,
+        agent_id=proj.agent_id,
         observed_app_version=proj.observed_app_version,
-    )
-    results = runner.run_all(
-        goals, executor,
         budget_tokens=args.budget_tokens,
         budget_actions=args.budget_actions,
         stop_on_fail=args.stop_on_fail,
     )
 
-    proj.reports_dir.mkdir(parents=True, exist_ok=True)
-    last_md = proj.reports_dir / "last-regress.md"
-    last_xml = proj.reports_dir / "last-regress.xml"
+    run_dir = proj.run_dir()
+    last_md = run_dir / "last-regress.md"
+    last_xml = run_dir / "last-regress.xml"
     write_markdown_report(results, last_md)
     write_junit_xml(results, last_xml)
     print(f"\nreport: {last_md}")
     print(f"junit:  {last_xml}")
-    has_fail = any(r.verdict == RegressionVerdict.FAIL for r in results)
-    return 1 if has_fail else 0
+    return 1 if regress_failed(results) else 0
+
+
+def _explore_aggregate(
+    proj: "ProjectContext",
+    brain: Any,
+    *,
+    budget_tokens: int | None = None,
+    budget_actions: int | None = None,
+    budget_wall_seconds: float | None = None,
+) -> int:
+    """Default-all explore: hunt off-happy-path across EVERY believed goal,
+    write candidate files on the committed tree, and emit ONE trigger-grouped
+    candidate report (ADR-0023 decisions 2 + 8).
+
+    The console surface drives the SAME aggregate engine a skill driver calls
+    (ADR-0019 decision 4 + ADR-0023 decision 1); the brain seam carries the
+    paste/file executor here, the local Claude session in a skill. The mirror to
+    the committed tree runs inside the engine as the committed sink, so a skill
+    driver gets the same committed count.
+    """
+    goals = sorted(proj.seeds().keys())
+    if not goals:
+        print("no goals to explore (no seeds in .praxis/knowledge/). "
+              "Run `praxis learn ...` first.", file=sys.stderr)
+        return 2
+
+    adapter = proj.adapter()
+    store = proj.store()
+    # Snapshot the candidate event ids already in the per-machine log per goal,
+    # so the mirror copies ONLY this run's newly written candidate events into
+    # the committed tree (ADR-0021 decision 4), exactly as the single-goal path.
+    before_ids = {
+        gid: {ev.event_id for ev in store.read_candidates(gid)} for gid in goals
+    }
+
+    def _commit_new_candidates(goal: str) -> list[Path]:
+        new_events = [
+            ev for ev in store.read_candidates(goal)
+            if ev.event_id not in before_ids.get(goal, set())
+        ]
+        return proj.candidate_files().write_all(new_events)
+
+    # Forward the per-goal budget slice (ADR-0023 decision 7): the engine
+    # accepts and per-goal-slices these, matching the single-goal explore path
+    # and the regress aggregate path. Without this, `praxis explore
+    # --budget-tokens N` (no --goal) would silently drop the flag. The wall-time
+    # slice is the second budget dimension the regress aggregate also enforces:
+    # a goal that exceeds either slice is a loud per-goal ERROR (decision 7).
+    outcome = explore_aggregate_engine(
+        adapter, brain, goals,
+        agent_id=proj.agent_id,
+        observed_app_version=proj.observed_app_version,
+        budget_tokens_per_goal=budget_tokens,
+        budget_actions_per_goal=budget_actions,
+        budget_wall_seconds_per_goal=budget_wall_seconds,
+        committed_sink=_commit_new_candidates,
+    )
+
+    # Build the trigger-grouped report from the committed candidate tree, the
+    # shared store `praxis review` also reads (ADR-0021 decision 4). Reading the
+    # committed tree (not the per-machine log) keeps the report consistent with
+    # what a teammate sees after `git pull`.
+    candidate_files = proj.candidate_files()
+    seeds = proj.seeds()
+    groups: list[Any] = []
+    for gid in goals:
+        events = candidate_files.read(gid)
+        if events:
+            groups.extend(
+                group_candidates_by_trigger(events, seed=seeds.get(gid))
+            )
+
+    off_path = {
+        oc.goal_id: oc.result.off_path_fraction
+        for oc in outcome.outcomes if oc.ok and oc.result is not None
+    }
+    errors = {
+        oc.goal_id: oc.error
+        for oc in outcome.outcomes if oc.error is not None
+    }
+
+    run_dir = proj.run_dir()
+    report_md = run_dir / "explore-candidates.md"
+    write_candidate_markdown(
+        groups, report_md, off_path_fractions=off_path, errors=errors,
+    )
+
+    n_believed = sum(1 for g in groups if g.believed)
+    print(f"\ngoals explored:        {len(goals) - len(errors)}/{len(goals)}")
+    print(f"committed candidates:  {len(outcome.committed_paths)}  "
+          f"(.praxis/candidates/<goal>/, one file per observation)")
+    print(f"findings (by trigger): {len(groups)}  "
+          f"({n_believed} believed / {len(groups) - n_believed} contested)")
+    for gid in sorted(off_path):
+        print(f"  off_path_fraction[{gid}]: {off_path[gid]:.2f}")
+    for gid in sorted(errors):
+        print(f"  ERROR {gid}: {errors[gid]}", file=sys.stderr)
+    print(f"\nreport: {report_md}")
+    # A goal that errored (the brain threw, the app would not load) is a loud
+    # non-OK ERROR that fails the run, never a silent skip (ADR-0023 forbidden
+    # alternatives + decision 4). This mirrors the sibling regress aggregate's
+    # `return 1 if failed else 0` loud-failure contract; explore must not be more
+    # lenient than the single-goal path, which lets brain exceptions crash.
+    if errors:
+        named = ", ".join(sorted(errors))
+        print(f"ERROR: {named} could not be explored and fail the run.",
+              file=sys.stderr)
+        return 1
+    return 0
 
 
 def _cmd_explore(args: argparse.Namespace) -> int:
     proj = discover_project()
     adapter = proj.adapter()
-    if not args.goal:
-        print("praxis explore requires --goal (one goal per run)", file=sys.stderr)
-        return 2
     if args.from_file:
-        executor = _executor_from_file(Path(args.from_file))
+        brain = _executor_from_file(Path(args.from_file))
     else:
-        executor = _executor_from_paste
+        brain = _executor_from_paste
 
-    runner = ExplorationRunner(
-        adapter, agent_id=proj.agent_id,
-        observed_app_version=proj.observed_app_version,
-    )
+    # Default-all aggregate (ADR-0023 decision 2): no `--goal` hunts off-happy-
+    # path across EVERY believed goal under .praxis/knowledge/, writes candidate
+    # files on the committed tree, and emits ONE report grouped by trigger.
+    if not args.goal:
+        return _explore_aggregate(
+            proj, brain,
+            budget_tokens=args.budget_tokens,
+            budget_actions=args.budget_actions,
+            budget_wall_seconds=args.budget_wall_seconds,
+        )
+
+    # Snapshot the candidate event ids already in the per-machine log for this
+    # goal, so after the run we can mirror ONLY this run's newly written
+    # candidate events into the committed tree (ADR-0021 decision 4). The runner
+    # / adapter rules are unchanged: they still append to the per-machine run
+    # log (the local source of truth); the mirror copies each accepted event,
+    # by its content-addressable id, into `.praxis/candidates/<goal>/<id>.yaml`,
+    # the shared, git-pushed contested store. The mirror runs inside the engine
+    # as the committed sink, so a skill driver gets the same committed count.
+    store = proj.store()
+    before_ids = {ev.event_id for ev in store.read_candidates(args.goal)}
+
+    def _commit_new_candidates(goal: str) -> list[Path]:
+        new_events = [
+            ev for ev in store.read_candidates(goal)
+            if ev.event_id not in before_ids
+        ]
+        return proj.candidate_files().write_all(new_events)
+
     happy = args.happy_path or []
-    result = runner.run_one(
-        args.goal, executor,
+    # The console surface drives the SAME engine a skill driver calls; the seam
+    # carries the paste/file executor here, the local Claude session in a skill.
+    outcome = explore_engine(
+        adapter, brain, args.goal,
+        agent_id=proj.agent_id,
+        observed_app_version=proj.observed_app_version,
         happy_path_urls=happy,
         budget_tokens=args.budget_tokens,
         budget_actions=args.budget_actions,
+        committed_sink=_commit_new_candidates,
     )
+    result = outcome.result
+    n_committed = len(outcome.committed_paths)
     print(f"\ngoal:                  {result.goal_id}")
     print(f"actions:               {result.actions}")
     print(f"tokens:                {result.tokens if result.tokens is not None else '-'}")
@@ -314,6 +649,8 @@ def _cmd_explore(args: argparse.Namespace) -> int:
     print(f"candidate_observations: {len(result.candidate_observations)}")
     print(f"new_risks:             {len(result.new_risks)}  (all contested per ADR-0008)")
     print(f"new_uncertainties:     {len(result.new_uncertainties)}")
+    print(f"committed_candidates:  {n_committed}  "
+          f"(.praxis/candidates/{result.goal_id}/, one file per observation)")
     for o in result.candidate_observations:
         print(f"  [{o.kind}/{o.type.value}] {o.value}")
     return 0
@@ -335,23 +672,31 @@ def _cmd_review(args: argparse.Namespace) -> int:
     proj = discover_project()
     adapter = proj.adapter()
     seeds = proj.seeds()
-    goal_ids = (
-        [args.goal] if args.goal else sorted(seeds.keys())
-    )
+    # The committed candidate tree is the aggregate queue source (ADR-0021
+    # decision 4): a teammate's `git pull` brought their candidate files here.
+    # Review folds the committed tree, NOT the per-machine run log, so the queue
+    # reflects the shared contested store. A goal can have committed candidates
+    # without a seed (a discovered finding), so the goal set is the union of
+    # seeded goals and goals that already carry committed candidates.
+    candidate_files = proj.candidate_files()
+    if args.goal:
+        goal_ids = [args.goal]
+    else:
+        goal_ids = sorted(set(seeds.keys()) | set(candidate_files.goals()))
     if not goal_ids:
         print("no goals to review.", file=sys.stderr)
         return 2
     any_contested = False
-    store = proj.store()
     for gid in goal_ids:
+        contested_succ: list[Any] = []
+        contested_fail: list[Any] = []
         kf = adapter.read_knowledge(gid)
-        if kf is None:
-            continue
-        contested_succ = [s for s in kf.success_signals
-                           if s.status.value == "contested"]
-        contested_fail = [s for s in (kf.failure_signals or [])
-                           if s.status.value == "contested"]
-        cand_events = store.read_candidates(gid)
+        if kf is not None:
+            contested_succ = [s for s in kf.success_signals
+                              if s.status.value == "contested"]
+            contested_fail = [s for s in (kf.failure_signals or [])
+                              if s.status.value == "contested"]
+        cand_events = candidate_files.read(gid)
         projected = project_candidates(
             cand_events, goal_id=gid, seed=seeds.get(gid),
         )
@@ -476,9 +821,15 @@ def _build_parser() -> argparse.ArgumentParser:
     regress = sub.add_parser(
         "regress", help="Run R-mode across known goals (pre-deploy check).",
     )
-    regress.add_argument("--goal", help="Run only this goal (default: all seeds).")
-    regress.add_argument("--budget-tokens", type=int, default=None)
+    regress.add_argument("--goal", help="Run only this goal (default: aggregate "
+                                        "over all seeds).")
+    regress.add_argument("--budget-tokens", type=int, default=None,
+                          help="Per-goal token slice in aggregate mode "
+                               "(ADR-0023 decision 7).")
     regress.add_argument("--budget-actions", type=int, default=None)
+    regress.add_argument("--budget-wall-seconds", type=float, default=None,
+                          help="Per-goal wall-time slice (s) in aggregate mode; "
+                               "a goal that exceeds it is a loud ERROR.")
     regress.add_argument("--stop-on-fail", action="store_true")
     regress.add_argument("--from-file",
                           help="Read agent observations from this JSON file "
@@ -486,12 +837,18 @@ def _build_parser() -> argparse.ArgumentParser:
     regress.set_defaults(func=_cmd_regress)
 
     explore = sub.add_parser(
-        "explore", help="Run E-mode against believed knowledge for one goal.",
+        "explore", help="Run E-mode against believed knowledge (default: all goals).",
     )
     explore.add_argument("--goal", required=False,
-                          help="Goal to explore (required at run time).")
-    explore.add_argument("--budget-tokens", type=int, default=None)
+                          help="Explore only this goal (default: aggregate over "
+                               "all seeds, one report grouped by trigger).")
+    explore.add_argument("--budget-tokens", type=int, default=None,
+                          help="Per-goal token slice in aggregate mode "
+                               "(ADR-0023 decision 7).")
     explore.add_argument("--budget-actions", type=int, default=None)
+    explore.add_argument("--budget-wall-seconds", type=float, default=None,
+                          help="Per-goal wall-time slice (s) in aggregate mode; "
+                               "a goal that exceeds it is a loud ERROR.")
     explore.add_argument("--happy-path", nargs="*", default=None,
                           help="URLs the happy path visits "
                                "(for off_path_fraction).")

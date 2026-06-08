@@ -44,7 +44,7 @@ its own row with its own `source_id`.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .events import CandidateEvent, DecayEvent, ObservationEvent
@@ -332,6 +332,128 @@ class FileEventStore(EventStore):
         if goal_id is not None:
             events = [e for e in events if e.goal_id == goal_id]
         return events
+
+    def candidates_since(
+        self,
+        ts: datetime,
+        goal_id: str | None = None,
+        *,
+        tenant_id: str | None = None,
+    ) -> list[CandidateEvent]:
+        return [e for e in self.read_candidates(goal_id, tenant_id=tenant_id) if e.ts > ts]
+
+
+# Default name of the per-run directory parent under `.praxis/`. ADR-0021
+# decision 1 fixes `runs/<timestamp>/` as the per-machine append-only event log
+# location; the timestamped run dir is the FileEventStore root for one run.
+RUNS_SUBDIR: str = "runs"
+
+
+def new_run_id(now: datetime | None = None) -> str:
+    """Return a sortable timestamp id for one `runs/<timestamp>/` directory.
+
+    UTC, second resolution plus microseconds, so two runs in the same second do
+    not collide and the lexical sort over run dirs matches chronological order.
+    """
+    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%S%fZ")
+    return stamp
+
+
+class RunsEventStore(FileEventStore):
+    """Per-machine append-only event log spread across `runs/<timestamp>/` dirs.
+
+    ADR-0021 decision 1 puts the raw per-machine event log under
+    `.praxis/runs/<timestamp>/`, one subtree per teach / regress / explore
+    session, gitignored and regenerable (decision 2). ADR-0021 decision 3 keeps
+    that log the local source of truth and folds it into believed / contested
+    state through the projection (`merge`), exactly as in Phase 1 and Phase 2.
+
+    This store reconciles the file-per-event layout of `FileEventStore`
+    (ADR-0012) with that runs convention:
+
+    - WRITES land in the CURRENT run directory
+      (`<runs_root>/<run_id>/<tenant>/{events,decay,candidates}/`). One run's
+      writes are one append-only subtree; nothing is ever mutated in place
+      (ADR-0001), and the file-per-event id keeps concurrent writers lock-free
+      (ADR-0012).
+    - READS fold across EVERY `<runs_root>/<timestamp>/` subtree (the current
+      run and all prior runs). The projection therefore sees the whole
+      per-machine log, so the believed-state projection works unchanged across
+      separate CLI invocations: an `explore` that wrote a candidate in one run
+      dir is visible to a later `review` reading across all run dirs.
+
+    The base `FileEventStore` is reused for both halves: the current-run root is
+    a plain `FileEventStore`, and each prior-run subtree is read through a
+    throwaway `FileEventStore` rooted at that subtree. No base-class behavior is
+    overridden except to widen reads from one root to the union of run roots.
+    """
+
+    def __init__(
+        self,
+        runs_root: str | Path,
+        run_id: str,
+        *,
+        default_tenant_id: str = DEFAULT_TENANT_ID,
+    ) -> None:
+        self.runs_root = Path(runs_root)
+        self.run_id = run_id
+        # The current-run subtree is the write target; the base class manages it
+        # as an ordinary one-file-per-event root.
+        super().__init__(
+            self.runs_root / run_id, default_tenant_id=default_tenant_id
+        )
+
+    def _run_roots(self) -> list[Path]:
+        """Every existing `runs/<timestamp>/` subtree, current run last.
+
+        The current run's root is always present (the base constructor created
+        it). Prior runs are any sibling timestamp dirs; sorting by name matches
+        chronological order because `new_run_id` is a sortable UTC stamp.
+        """
+        if not self.runs_root.exists():
+            return [self.root]
+        roots = [
+            p for p in sorted(self.runs_root.iterdir())
+            if p.is_dir() and p != self.root
+        ]
+        roots.append(self.root)
+        return roots
+
+    def _read_across(
+        self, method: str, *args: object, tenant_id: str | None, **kwargs: object
+    ) -> list[ObservationEvent] | list[DecayEvent] | list[CandidateEvent]:
+        """Call a base read method on every run root and concat, time-ordered.
+
+        Re-sorts the union by (ts, event_id) so the cross-run fold is the same
+        deterministic order a single-root projection would see (ADR-0012: two
+        readers of the same on-disk set get the same projection).
+        """
+        merged: list[object] = []
+        for root in self._run_roots():
+            sub = FileEventStore(root, default_tenant_id=self.default_tenant_id)
+            merged.extend(getattr(sub, method)(*args, tenant_id=tenant_id, **kwargs))
+        merged.sort(key=lambda e: (e.ts, e.event_id))  # type: ignore[attr-defined]
+        return merged  # type: ignore[return-value]
+
+    def read(
+        self, goal_id: str | None = None, *, tenant_id: str | None = None
+    ) -> list[ObservationEvent]:
+        return self._read_across("read", goal_id, tenant_id=tenant_id)  # type: ignore[return-value]
+
+    def since(
+        self, ts: datetime, goal_id: str | None = None, *, tenant_id: str | None = None
+    ) -> list[ObservationEvent]:
+        return [e for e in self.read(goal_id, tenant_id=tenant_id) if e.ts > ts]
+
+    def read_decay(
+        self, goal_id: str | None = None, *, tenant_id: str | None = None
+    ) -> list[DecayEvent]:
+        return self._read_across("read_decay", goal_id, tenant_id=tenant_id)  # type: ignore[return-value]
+
+    def read_candidates(
+        self, goal_id: str | None = None, *, tenant_id: str | None = None
+    ) -> list[CandidateEvent]:
+        return self._read_across("read_candidates", goal_id, tenant_id=tenant_id)  # type: ignore[return-value]
 
     def candidates_since(
         self,

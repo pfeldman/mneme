@@ -1,0 +1,81 @@
+# Running Praxis in CI
+
+This page shows one way to run `praxis regress` as a required check in your CI, and,
+optionally, to run `praxis explore` on a schedule. The workflow below is an EXAMPLE you
+copy and adapt. Praxis ships no reusable CI action.
+
+## CI is your CI
+
+Praxis does not publish a GitHub Action, a plugin, or any turnkey CI product
+([ADR-0024](../adr/0024-ci-integration-invoking-commands.md)). Integration is exactly
+this: your CI calls the `praxis` console commands, and gates on the exit code. There is
+nothing between `praxis regress` and your pipeline except your own workflow file.
+
+That means a few things stay yours, not Praxis's:
+
+- **The push, the pull request, and the runner auth are standard git you own.** Praxis
+  never pushes, never opens a pull request, and never authenticates your runner.
+- **The secrets are your runner secrets.** The API key for the CI brain and the app login
+  credential live in your CI's secret store and are read from the runner environment. They
+  are never committed to the repo and never echoed into the logs.
+- **Promotion is a human git merge.** When exploration discovers something, it writes a
+  contested candidate file. Turning that into trusted knowledge is a person reviewing and
+  merging it, never an auto-merge and never an auto-promotion by a count of CI runs.
+
+The only contract Praxis provides is the exit code: a REGRESSED verdict exits non-zero, so
+any CI that can run a process and read an exit code can gate on it.
+
+## The regress gate
+
+`praxis regress` runs every believed goal under `.praxis/knowledge/` and fails the job on
+its loud non-zero exit, which a REGRESSED verdict produces
+([ADR-0023](../adr/0023-regress-explore-dual-surface-and-report.md)). One REGRESSED goal
+fails the whole run and names the goal and the signal that flipped, so a real regression
+cannot pass behind a "mostly green" summary. Wire it on pull requests and on release tags
+and it becomes a required check with no Praxis-specific machinery.
+
+A STALE verdict (the app changed on purpose, the knowledge is now out of date) is a
+knowledge-update task, not a code bug. How you treat STALE is your CI policy: hard-fail on
+it, or read the report and open a follow-up to re-teach the goal. That choice is yours,
+not a Praxis behavior.
+
+## The CI brain and the credentials
+
+When the commands run autonomously in CI there is no human session to borrow, so they use
+the API-key agent from the `live` extra
+([ADR-0019](../adr/0019-brain-pluggability-and-execution-surfaces.md)). Install it with:
+
+```
+pip install "praxis-qa[live]"
+```
+
+The API key, and any app login credential a run needs, are supplied as runner secrets read
+from the environment (the [ADR-0021](../adr/0021-praxis-directory-convention.md) secrets
+channel). An environment variable wins over any `.praxis.secrets` file, so in CI you pass
+them purely as secrets with no file on disk. Praxis reads them at runtime and never writes
+them into the repo or the logs.
+
+## Optional: scheduled exploration
+
+If you want autonomous exploration, run `praxis explore` on a schedule. It hunts off the
+happy path and writes any findings as contested candidate files under
+`.praxis/candidates/`, one file per observation. Then it exits. That is where Praxis
+stops.
+
+What happens next is your CI and your git: committing the files, pushing them, and opening
+a pull request for review are steps you own. Never force-push `.praxis/`, never auto-merge
+a candidate, and never auto-promote one into trusted knowledge. A human merge is the
+promotion.
+
+`teach` never runs in CI. Authoring new goals is a local, human-in-the-loop session whose
+output a human commits and pushes; an autonomous CI teach would certify its own oracle,
+which Praxis forbids.
+
+## The example workflow
+
+Copy this into `.github/workflows/` in your own repo and change it freely. It is a
+starting point, not a supported action.
+
+```yaml
+--8<-- "examples/ci/praxis-regress.yml"
+```

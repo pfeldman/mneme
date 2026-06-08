@@ -1,5 +1,8 @@
+# Distribution name is `praxis-qa` because `praxis` is taken on PyPI
+# (ADR-0020 decision 1). The import package and the CLI command both stay
+# `praxis`: only the published distribution name moves.
 [project]
-name = "praxis"
+name = "praxis-qa"
 version = "0.0.1"
 description = "A shared semantic-memory layer for QA agents. Agents store and maintain knowledge about a system under test (goals, recognition signals, success/failure oracles, alternative paths, risks) decoupled from the procedure used to reach it."
 readme = "README.md"
@@ -21,6 +24,11 @@ browser-use = ["browser-use"]
 # Optional - the core + tests run without it; only `experiments/regression_recall/
 # exec_anthropic.py` needs the SDK.
 live = ["anthropic>=0.40"]
+# Docs-only dev tool: the mkdocs-material static-site generator that renders the
+# `docs/` tree into the landing page and docs site (ADR-0025). It is NOT a core
+# dependency and NOT a runtime adapter; the base install stays pydantic + pyyaml
+# only (ADR-0020 decision 3). Install with `pip install -e ".[docs]"`.
+docs = ["mkdocs-material>=9"]
 # stagehand / playwright adapters declared as they are implemented.
 
 [project.scripts]
@@ -32,6 +40,26 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/praxis"]
+# Ship the JSON schema as package data inside the wheel (ADR-0020 decision 6).
+# The schema lives once at the repo root (`schema/knowledge.schema.json`) and is
+# force-included into the `praxis` package so an installed wheel resolves the
+# SAME bytes the source tree tests against, with no second copy to drift.
+# `src/praxis/skills/` is a regular sub-package and ships via `packages` above
+# (ADR-0020 decision 7); the non-`.py` SKILL.md files under it are carried by
+# the artifacts rule below.
+[tool.hatch.build.targets.wheel.force-include]
+"schema/knowledge.schema.json" = "praxis/_resources/knowledge.schema.json"
+
+[tool.hatch.build]
+# SKILL.md (and any other non-Python skill assets) are not .py files, so name
+# them explicitly as build artifacts to keep them in the wheel and the sdist.
+artifacts = ["src/praxis/skills/**/*.md"]
+
+[tool.hatch.build.targets.sdist]
+# The sdist already carries `schema/` from the repo root; keep the skills tree
+# and the schema in it so `pip install` from an sdist matches the wheel.
+include = ["src/praxis", "schema", "README.md", "pyproject.toml"]
+artifacts = ["src/praxis/skills/**/*.md"]
 
 [tool.ruff]
 target-version = "py311"

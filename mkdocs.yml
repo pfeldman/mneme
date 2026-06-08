@@ -1,0 +1,92 @@
+# Praxis docs site (ADR-0025). mkdocs-material renders the existing docs/ tree
+# in place, so the published site stays sourced from the same files the ADRs
+# live beside and cannot drift into a separately maintained marketing site.
+#
+# Deliberately absent, per ADR-0025 decision 3 and its forbidden alternatives:
+# NO analytics, NO Google Analytics, NO tracking beacon, NO signup flow, NO
+# email capture, NO hosted account, NO SaaS funnel. There is nothing to sign up
+# for; the calls to action are `pip install praxis-qa` and the repository link,
+# and the conversion event is a git clone, not a lead.
+
+site_name: Praxis
+site_description: A shared operational-knowledge layer for QA agents. Library plus git, no SaaS.
+site_url: https://pfeldman.github.io/mneme/
+repo_url: https://github.com/pfeldman/mneme
+repo_name: pfeldman/mneme
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.snippets:
+      base_path: docs
+
+nav:
+  - Home: index.md
+  - Examples:
+      - testapp (minimal loop): examples/testapp.md
+      - Conduit (realistic app): examples/conduit.md
+      - Gitea (real OSS app): examples/gitea.md
+      - Running in CI: examples/ci.md
+  - Design docs:
+      - Product brief: 00-product-brief.md
+      - Vision and thesis: 01-vision-and-thesis.md
+      - Architecture: 02-architecture.md
+      - Knowledge schema: 03-knowledge-schema.md
+      - MVP experiment: 04-mvp-experiment.md
+      - Multi-agent and conflicts: 05-multi-agent-and-conflicts.md
+      - Risks and failure modes: 06-risks-and-failure-modes.md
+      - Roadmap: 07-roadmap.md
+      - Glossary: 08-glossary.md
+      - Handoff: HANDOFF.md
+  - Experiments:
+      - Phase 0 results: phase-0-results.md
+      - Phase 1 plan: phase-1-plan.md
+      - Phase 1 experiment: phase-1-experiment.md
+      - Phase 2 plan: phase-2-plan.md
+      - Phase 2 features:
+          - Overview: phase-2-features/README.md
+          - Multi-writer: phase-2-features/01-multi-writer.md
+          - Recency decay: phase-2-features/02-recency-decay.md
+          - Candidate persistence: phase-2-features/03-candidate-persistence.md
+          - Exploration reward: phase-2-features/04-exploration-reward.md
+          - Real-app SUT: phase-2-features/05-real-app-sut.md
+  - Decision records:
+      - ADR index: adr/README.md
+      - 0001 Append-only event log: adr/0001-append-only-event-log.md
+      - 0002 Schema as neutral interop layer: adr/0002-schema-as-neutral-interop-layer.md
+      - 0003 Runtime adapter boundary: adr/0003-runtime-adapter-boundary.md
+      - 0004 Mandatory provenance and confidence: adr/0004-mandatory-provenance-confidence.md
+      - 0005 Oracle trust by diversity: adr/0005-oracle-trust-by-diversity.md
+      - 0006 Status semantics (Phase 0): adr/0006-status-semantics-phase0.md
+      - 0007 Phase 0 gate passed: adr/0007-phase-0-gate-passed.md
+      - 0008 Oracle source-independence gap: adr/0008-oracle-source-independence-gap.md
+      - 0009 Phase 1 scope and praxis reframe: adr/0009-phase-1-scope-and-praxis-reframe.md
+      - 0010 Phase 1 regression-recall verdict: adr/0010-phase-1-regression-recall-verdict.md
+      - 0011 Phase 2 scope and deferrals: adr/0011-phase-2-scope-and-deferrals.md
+      - 0012 Multi-writer concurrency contract: adr/0012-multi-writer-concurrency-contract.md
+      - 0013 Recency decay as projection derivation: adr/0013-recency-decay-as-projection-derivation.md
+      - 0014 E-mode candidate persistence: adr/0014-e-mode-candidate-persistence.md
+      - 0015 Exploration reward pre-registration: adr/0015-exploration-reward-pre-registration.md
+      - 0016 Real-app SUT selection: adr/0016-real-app-sut-selection.md
+      - 0017 Schema extension auth_state: adr/0017-schema-extension-auth-state.md
+      - 0018 Phase 3 scope and library-git reframe: adr/0018-phase-3-scope-and-library-git-reframe.md
+      - 0019 Brain pluggability and execution surfaces: adr/0019-brain-pluggability-and-execution-surfaces.md
+      - 0020 PyPI packaging and distribution: adr/0020-pypi-packaging-and-distribution.md
+      - 0021 The .praxis directory convention: adr/0021-praxis-directory-convention.md
+      - 0022 The praxis teach skill: adr/0022-praxis-teach-skill.md
+      - 0023 regress and explore dual surface: adr/0023-regress-explore-dual-surface-and-report.md
+      - 0024 CI integration by invoking commands: adr/0024-ci-integration-invoking-commands.md
+      - 0025 Landing page and docs site: adr/0025-landing-page-and-docs-site.md

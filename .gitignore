@@ -21,6 +21,9 @@ local-memory/
 .claude/secrets.env
 .claude/*.local.*
 
+# mkdocs-material build output (ADR-0025 docs site; regenerable via `mkdocs build`)
+site/
+
 # Generated experiment outputs (reproducible via harness.py / LOCAL_RUN.md)
 experiments/ui-mutation/results.json
 experiments/ui-mutation/results.md
