@@ -1044,6 +1044,97 @@ def test_errored_goal_is_not_counted_ok_in_rollup(tmp_path: Path) -> None:
     assert aggregate_run_failed([a, b])
 
 
+# --- ADR-0027 decision 4: bounded concurrency with a --jobs cap ------------
+
+
+def test_jobs_gt_1_matches_sequential_goals_order_and_verdicts(tmp_path: Path) -> None:
+    """Concurrency changes only the scheduling: `jobs=4` returns the same goals
+    in the same order with the same verdicts as `jobs=1` (ADR-0027 decision 4).
+    A REGRESSED goal among OK goals stays a loud failure either way."""
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["a", "b", "c", "d"])
+    proj = discover_project(root)
+    runner = RegressionRunner(proj.adapter(), agent_id=proj.agent_id)
+
+    def mixed_brain(prompt: str) -> dict[str, Any]:
+        if "GOAL (c)" in prompt:
+            return json.loads(json.dumps(_FAIL_OBS))
+        return json.loads(json.dumps(_PASS_OBS))
+
+    seq = run_aggregate(runner, ["a", "b", "c", "d"], mixed_brain, jobs=1)
+    par = run_aggregate(runner, ["a", "b", "c", "d"], mixed_brain, jobs=4)
+
+    assert [r.goal_id for r in seq] == ["a", "b", "c", "d"]
+    assert [r.goal_id for r in par] == ["a", "b", "c", "d"]
+    assert [r.verdict for r in seq] == [r.verdict for r in par]
+    by_goal = {r.goal_id: r for r in par}
+    assert by_goal["c"].verdict == AggregateVerdict.REGRESSED
+    assert aggregate_run_failed(par)
+
+
+def test_jobs_gt_1_a_raising_goal_is_a_loud_error_and_does_not_abort_siblings(
+    tmp_path: Path,
+) -> None:
+    """Under `jobs > 1`, a goal whose brain raises is still boxed into a loud
+    ERROR and the sibling goals still reach their verdicts (ADR-0027 decision 4:
+    failure isolation is per goal, independent of scheduling)."""
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["a", "b", "c"])
+    proj = discover_project(root)
+    runner = RegressionRunner(proj.adapter(), agent_id=proj.agent_id)
+
+    def exploding_brain(prompt: str) -> dict[str, Any]:
+        if "GOAL (b)" in prompt:
+            raise RuntimeError("adapter could not load the app")
+        return json.loads(json.dumps(_PASS_OBS))
+
+    reports = run_aggregate(runner, ["a", "b", "c"], exploding_brain, jobs=3)
+    by_goal = {r.goal_id: r for r in reports}
+    assert by_goal["a"].verdict == AggregateVerdict.OK
+    assert by_goal["c"].verdict == AggregateVerdict.OK
+    assert by_goal["b"].verdict == AggregateVerdict.ERROR
+    assert {r.goal_id for r in reports} == {"a", "b", "c"}
+
+
+def test_run_partitioned_runs_auth_subject_goals_serially(tmp_path: Path) -> None:
+    """`run_partitioned` never runs two auth-SUBJECT goals concurrently even at
+    `jobs > 1` (ADR-0027 decision 4: two real logins must not collide on one
+    test account), while feature goals do fan out. Asserted with a concurrency
+    counter: the subject goals' peak concurrency is 1; the feature goals' peak
+    is greater than 1."""
+    import threading
+    import time
+
+    from praxis.runner._parallel import run_partitioned
+
+    subjects = {"login_a", "login_b", "login_c"}
+    lock = threading.Lock()
+    active = {"now": 0, "peak_subject": 0, "peak_feature": 0}
+
+    def run_one(gid: str) -> str:
+        with lock:
+            active["now"] += 1
+            key = "peak_subject" if gid in subjects else "peak_feature"
+            active[key] = max(active[key], active["now"])
+        time.sleep(0.02)
+        with lock:
+            active["now"] -= 1
+        return gid
+
+    goals = ["f1", "login_a", "f2", "login_b", "f3", "login_c", "f4"]
+    out = run_partitioned(
+        goals, run_one,
+        is_subject=lambda g: g in subjects, jobs=4,
+    )
+    # Order preserved regardless of completion order.
+    assert out == goals
+    # Subject logins never overlap; feature goals did run concurrently.
+    assert active["peak_subject"] == 1
+    assert active["peak_feature"] > 1
+
+
 # --- decision 7: per-goal budget slice; exhaustion is a loud ERROR ---------
 
 

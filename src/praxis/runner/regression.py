@@ -28,6 +28,7 @@ from ..adapters.spi import KnowledgeAdapter
 from ..merge.decay import DecayConfig, _parse_semver, is_observation_staled
 from ..model import KnowledgeFile, Signal, Status
 from ..store import ObservedSignal
+from ._parallel import run_partitioned
 from .prompts import render_regression_prompt
 
 
@@ -610,6 +611,88 @@ def classify_goal(
     )
 
 
+def _aggregate_one_goal(
+    runner: "RegressionRunner",
+    gid: str,
+    kf: "KnowledgeFile | None",
+    executor: Executor,
+    slice_: BudgetSlice,
+    *,
+    current_version: str | None,
+    budget_tokens_per_goal: int | None,
+    budget_actions_per_goal: int | None,
+    budget_wall_seconds_per_goal: float | None,
+    decay_config: DecayConfig | None,
+) -> GoalReport:
+    """Compute the GoalReport for ONE goal: read-knowledge guard, run the brain
+    within the per-goal slice, enforce the budget, classify.
+
+    Returns a report for every input; it NEVER raises (a thrown brain becomes a
+    loud ERROR report), so it is safe to dispatch concurrently (ADR-0027
+    decision 4): a worker thread always returns a report and order stays
+    recoverable.
+    """
+    if kf is None:
+        return GoalReport(
+            goal_id=gid,
+            verdict=AggregateVerdict.ERROR,
+            evidence=(
+                "no believed knowledge for this goal (seed it with "
+                "`praxis learn`); cannot reach a verdict"
+            ),
+            signals=[],
+            budget=slice_,
+        )
+    try:
+        result = runner.run_one(
+            gid, executor,
+            budget_tokens=budget_tokens_per_goal,
+            budget_actions=budget_actions_per_goal,
+        )
+    except Exception as exc:  # noqa: BLE001 - a thrown goal must be a loud ERROR
+        return GoalReport(
+            goal_id=gid,
+            verdict=AggregateVerdict.ERROR,
+            evidence=f"could not reach a verdict: {type(exc).__name__}: {exc}",
+            signals=[],
+            budget=slice_,
+        )
+
+    # Per-goal budget enforcement (decision 7): a goal that exhausted its
+    # token or wall-time slice is a loud ERROR, not a trusted verdict.
+    exhausted: list[str] = []
+    if (budget_tokens_per_goal is not None and result.tokens is not None
+            and result.tokens > budget_tokens_per_goal):
+        exhausted.append(
+            f"tokens {result.tokens} > slice {budget_tokens_per_goal}"
+        )
+    if (budget_wall_seconds_per_goal is not None
+            and result.wall_seconds > budget_wall_seconds_per_goal):
+        exhausted.append(
+            f"wall {result.wall_seconds:.2f}s > slice "
+            f"{budget_wall_seconds_per_goal:.2f}s"
+        )
+    if exhausted:
+        return GoalReport(
+            goal_id=gid,
+            verdict=AggregateVerdict.ERROR,
+            evidence="per-goal budget exhausted: " + "; ".join(exhausted),
+            signals=[],
+            result=result,
+            budget=slice_,
+            notes=result.notes,
+        )
+
+    report = classify_goal(
+        kf, result,
+        current_version=current_version,
+        decay_config=decay_config,
+    )
+    report.budget = slice_
+    report.notes = result.notes
+    return report
+
+
 def run_aggregate(
     runner: "RegressionRunner",
     goal_ids: list[str],
@@ -620,9 +703,11 @@ def run_aggregate(
     budget_actions_per_goal: int | None = None,
     budget_wall_seconds_per_goal: float | None = None,
     decay_config: DecayConfig | None = None,
+    jobs: int = 1,
+    on_goal_done: "Callable[[GoalReport], None] | None" = None,
 ) -> list[GoalReport]:
     """Run R-mode across every goal with a PER-GOAL budget slice and emit one
-    GoalReport per goal (ADR-0023 decisions 2, 3, 4, 7).
+    GoalReport per goal (ADR-0023 decisions 2, 3, 4, 7; ADR-0027 decision 4).
 
     Every goal is attempted within its OWN budget slice (decision 7); a goal
     that throws or exhausts its slice without a verdict becomes a loud ERROR for
@@ -634,77 +719,42 @@ def run_aggregate(
     exceeds its wall slice is reported as an ERROR (budget exhausted) rather
     than its verdict being trusted. The token slice is passed into the prompt
     budget; the same post-hoc cap turns an over-token run into an ERROR.
+
+    `jobs` caps how many goals run concurrently (ADR-0027 decision 4): the
+    default 1 is strictly sequential (unchanged behavior); `jobs > 1` runs
+    feature / precondition goals in a bounded thread pool while auth-SUBJECT
+    goals (`auth_state.being_tested`) run serially so two real logins never
+    collide on one test account. The per-goal budget and the loud-ERROR contract
+    are unchanged by concurrency; only the scheduling differs. `on_goal_done`
+    fires once per completed goal in the calling thread (a progress callback).
     """
-    reports: list[GoalReport] = []
     slice_ = BudgetSlice(
         tokens=budget_tokens_per_goal,
         wall_seconds=budget_wall_seconds_per_goal,
     )
-    for gid in goal_ids:
-        kf = runner.adapter.read_knowledge(gid)
-        if kf is None:
-            reports.append(GoalReport(
-                goal_id=gid,
-                verdict=AggregateVerdict.ERROR,
-                evidence=(
-                    "no believed knowledge for this goal (seed it with "
-                    "`praxis learn`); cannot reach a verdict"
-                ),
-                signals=[],
-                budget=slice_,
-            ))
-            continue
-        try:
-            result = runner.run_one(
-                gid, executor,
-                budget_tokens=budget_tokens_per_goal,
-                budget_actions=budget_actions_per_goal,
-            )
-        except Exception as exc:  # noqa: BLE001 - a thrown goal must be a loud ERROR
-            reports.append(GoalReport(
-                goal_id=gid,
-                verdict=AggregateVerdict.ERROR,
-                evidence=f"could not reach a verdict: {type(exc).__name__}: {exc}",
-                signals=[],
-                budget=slice_,
-            ))
-            continue
+    # Read each goal's believed knowledge once, up front: it is the auth-subject
+    # partition input (ADR-0027 decision 4) and the per-goal body's input, so a
+    # single read serves both and the concurrent workers do not re-read.
+    kfs = {gid: runner.adapter.read_knowledge(gid) for gid in goal_ids}
 
-        # Per-goal budget enforcement (decision 7): a goal that exhausted its
-        # token or wall-time slice is a loud ERROR, not a trusted verdict.
-        exhausted: list[str] = []
-        if (budget_tokens_per_goal is not None and result.tokens is not None
-                and result.tokens > budget_tokens_per_goal):
-            exhausted.append(
-                f"tokens {result.tokens} > slice {budget_tokens_per_goal}"
-            )
-        if (budget_wall_seconds_per_goal is not None
-                and result.wall_seconds > budget_wall_seconds_per_goal):
-            exhausted.append(
-                f"wall {result.wall_seconds:.2f}s > slice "
-                f"{budget_wall_seconds_per_goal:.2f}s"
-            )
-        if exhausted:
-            reports.append(GoalReport(
-                goal_id=gid,
-                verdict=AggregateVerdict.ERROR,
-                evidence="per-goal budget exhausted: " + "; ".join(exhausted),
-                signals=[],
-                result=result,
-                budget=slice_,
-                notes=result.notes,
-            ))
-            continue
-
-        report = classify_goal(
-            kf, result,
+    def _one(gid: str) -> GoalReport:
+        return _aggregate_one_goal(
+            runner, gid, kfs[gid], executor, slice_,
             current_version=current_version,
+            budget_tokens_per_goal=budget_tokens_per_goal,
+            budget_actions_per_goal=budget_actions_per_goal,
+            budget_wall_seconds_per_goal=budget_wall_seconds_per_goal,
             decay_config=decay_config,
         )
-        report.budget = slice_
-        report.notes = result.notes
-        reports.append(report)
-    return reports
+
+    def _is_subject(gid: str) -> bool:
+        kf = kfs[gid]
+        return kf is not None and kf.auth_state is not None \
+            and kf.auth_state.being_tested
+
+    return run_partitioned(
+        goal_ids, _one, is_subject=_is_subject, jobs=jobs, on_done=on_goal_done,
+    )
 
 
 def aggregate_failed(reports: list[GoalReport]) -> bool:

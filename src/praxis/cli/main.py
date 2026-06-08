@@ -440,16 +440,31 @@ def _cmd_regress(args: argparse.Namespace) -> int:
             print("no goals to regress (no seeds in .praxis/knowledge/). "
                   "Run `praxis learn ...` first.", file=sys.stderr)
             return 2
-        # Pytest-style: announce the run before driving the goals (ADR-0027
-        # decision 6). Live per-goal progress lands with the concurrency change;
-        # here we frame the run and emit the final summary below.
-        print(f"running {len(goals)} goal(s)...")
+        # Pytest-style: announce the run before driving the goals, then print a
+        # live per-goal progress line as each completes (ADR-0027 decision 6).
+        # The callback fires in the calling thread (engine -> run_partitioned),
+        # so the lines never interleave even under `--jobs > 1`.
+        total = len(goals)
+        if args.jobs and args.jobs > 1:
+            print(f"running {total} goal(s) ({args.jobs} at a time)...")
+        else:
+            print(f"running {total} goal(s)...")
+        progress = {"done": 0, "passed": 0}
+
+        def _on_goal_done(r: Any) -> None:
+            progress["done"] += 1
+            if r.verdict.is_ok:
+                progress["passed"] += 1
+            print(f"  [{progress['done']}/{total}] {r.verdict.value:<10} "
+                  f"{r.goal_id}  ({progress['passed']}/{progress['done']} passed)")
+
         # The console surface drives the SAME aggregate engine a skill driver
         # calls (ADR-0019 decision 4 + ADR-0023 decision 1). The brain seam
-        # carries the paste/file executor here; the verdicts come back
+        # carries the file/claude-p executor here; the verdicts come back
         # identical for the same store + brain output. The per-goal budget
         # slice (ADR-0023 decision 7) is applied per goal, not as one shared
-        # pool: an exhausted slice is a loud ERROR for that goal.
+        # pool: an exhausted slice is a loud ERROR for that goal. `--jobs` caps
+        # concurrency (ADR-0027 decision 4; default 1 = sequential).
         reports = regress_aggregate_engine(
             adapter, brain, goals,
             agent_id=proj.agent_id,
@@ -457,17 +472,15 @@ def _cmd_regress(args: argparse.Namespace) -> int:
             budget_tokens_per_goal=args.budget_tokens,
             budget_actions_per_goal=args.budget_actions,
             budget_wall_seconds_per_goal=args.budget_wall_seconds,
+            jobs=args.jobs,
+            on_goal_done=_on_goal_done,
         )
         run_dir = proj.run_dir()
         report_md = run_dir / "regress-aggregate.md"
         write_aggregate_markdown(reports, report_md)
-        # Print every goal's verdict line so the named goal + signal is on the
-        # console too, not only in the markdown (ADR-0023 decision 4).
-        for r in reports:
-            line = f"  {r.verdict.value:<10} {r.goal_id}"
-            if not r.verdict.is_ok:
-                line += f"  -> {r.evidence}"
-            print(line)
+        # Per-goal verdict lines were printed live by `_on_goal_done` as each
+        # goal completed (ADR-0027 decision 6); the named signal for a non-OK
+        # goal is in the final summary below and the markdown report.
         # Pytest-style final summary: the loud PASSED / FAILED banner, the
         # `N passed, N failed, N stale` tally, and every goal that needs action
         # named with its evidence (ADR-0027 decision 6). Verdicts and exit code
@@ -512,6 +525,7 @@ def _explore_aggregate(
     budget_tokens: int | None = None,
     budget_actions: int | None = None,
     budget_wall_seconds: float | None = None,
+    jobs: int = 1,
 ) -> int:
     """Default-all explore: hunt off-happy-path across EVERY believed goal,
     write candidate files on the committed tree, and emit ONE trigger-grouped
@@ -559,6 +573,7 @@ def _explore_aggregate(
         budget_actions_per_goal=budget_actions,
         budget_wall_seconds_per_goal=budget_wall_seconds,
         committed_sink=_commit_new_candidates,
+        jobs=jobs,
     )
 
     # Build the trigger-grouped report from the committed candidate tree, the
@@ -631,6 +646,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
             budget_tokens=args.budget_tokens,
             budget_actions=args.budget_actions,
             budget_wall_seconds=args.budget_wall_seconds,
+            jobs=args.jobs,
         )
 
     # Snapshot the candidate event ids already in the per-machine log for this
@@ -854,6 +870,10 @@ def _build_parser() -> argparse.ArgumentParser:
     regress.add_argument("--budget-wall-seconds", type=float, default=None,
                           help="Per-goal wall-time slice (s) in aggregate mode; "
                                "a goal that exceeds it is a loud ERROR.")
+    regress.add_argument("--jobs", type=int, default=1,
+                          help="How many goals to run concurrently in aggregate "
+                               "mode (ADR-0027 decision 4; default 1 = "
+                               "sequential). Auth-subject goals run serially.")
     regress.add_argument("--stop-on-fail", action="store_true")
     regress.add_argument("--from-file",
                           help="Read agent observations from this JSON file "
@@ -873,6 +893,10 @@ def _build_parser() -> argparse.ArgumentParser:
     explore.add_argument("--budget-wall-seconds", type=float, default=None,
                           help="Per-goal wall-time slice (s) in aggregate mode; "
                                "a goal that exceeds it is a loud ERROR.")
+    explore.add_argument("--jobs", type=int, default=1,
+                          help="How many goals to run concurrently in aggregate "
+                               "mode (ADR-0027 decision 4; default 1 = "
+                               "sequential). Auth-subject goals run serially.")
     explore.add_argument("--happy-path", nargs="*", default=None,
                           help="URLs the happy path visits "
                                "(for off_path_fraction).")
