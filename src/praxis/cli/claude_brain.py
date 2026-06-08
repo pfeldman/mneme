@@ -33,8 +33,17 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+import threading
 from collections.abc import Callable
 from typing import Any
+
+# How often the headless run prints a "still working" heartbeat to stderr while
+# the claude -p subprocess blocks (ADR-0027 decision 6 / Pablo's feedback: a
+# silent multi-minute run reads as broken). The subprocess captures its own
+# stdout for the observation JSON; the heartbeat is the PARENT printing to its
+# own stderr, so it never pollutes the parsed output.
+_HEARTBEAT_SECONDS = 15
 
 __all__ = ["make_claude_brain", "ClaudeBrainError"]
 
@@ -199,6 +208,28 @@ def make_claude_brain(
         # config is settled live (Open decision 4) it travels as an env hint the
         # MCP server reads, never changing the parse-and-raise contract.
         env_hint = {"PRAXIS_BROWSER_HEADED": "1"} if headed else None
+        # Progress feedback (ADR-0027 decision 6): announce the run immediately
+        # and beat every _HEARTBEAT_SECONDS while the subprocess blocks, so a
+        # multi-minute headless browser run does not read as a hang. Printed by
+        # the PARENT to stderr from a daemon thread; the subprocess's own stdout
+        # is still captured for the observation JSON.
+        mode = "headed" if headed else "headless"
+        print(
+            f"  [claude -p] driving the browser ({mode}) on your subscription; "
+            f"this can take a few minutes...",
+            file=sys.stderr, flush=True,
+        )
+        stop = threading.Event()
+
+        def _heartbeat() -> None:
+            elapsed = 0
+            while not stop.wait(_HEARTBEAT_SECONDS):
+                elapsed += _HEARTBEAT_SECONDS
+                print(f"  [claude -p] still working... ~{elapsed}s elapsed",
+                      file=sys.stderr, flush=True)
+
+        hb = threading.Thread(target=_heartbeat, daemon=True)
+        hb.start()
         try:
             proc = subprocess.run(
                 argv,
@@ -217,6 +248,9 @@ def make_claude_brain(
                 f"claude binary not found: {claude_bin!r}. Install Claude Code or "
                 f"pass --from-file."
             ) from exc
+        finally:
+            stop.set()
+            hb.join(timeout=1)
         if proc.returncode != 0:
             # Name the failure without echoing stdout (it may carry app content);
             # the trimmed stderr tail is enough to diagnose.
