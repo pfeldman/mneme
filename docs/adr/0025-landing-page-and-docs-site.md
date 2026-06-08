@@ -9,7 +9,7 @@ owned items. This ADR owns the last of them: how Praxis is presented to a
 person evaluating whether to adopt it. The other six Phase 3 ADRs decide
 the product (ADR-0019 the brain split, ADR-0020 packaging, ADR-0021 the
 `.praxis/` convention, ADR-0022 teach, ADR-0023 the regress / explore dual
-surface, ADR-0024 the CI action). None of them decides the public-facing
+surface, ADR-0024 CI integration). None of them decides the public-facing
 story, and the no-SaaS reframe makes that story a deliberate decision
 rather than a default: a hosted product would have come with a marketing
 funnel; a library distributed for free does not, and the landing page has
@@ -107,6 +107,18 @@ does not appear. The thesis itself (operational knowledge outlives a
 procedure cache) is presented as the project's bet, sourced to ADR-0009,
 not as a proven fact.
 
+### 6. The docs site ships a documented example CI workflow, not a product.
+
+The site includes a documented, copy-paste example CI workflow (a minimal
+GitHub Actions file) that runs `praxis regress` as a gate and, optionally,
+`praxis explore` on a schedule. It is explicitly an EXAMPLE the reader
+adapts, not a Praxis-owned, versioned, or supported action: Praxis ships no
+reusable CI action (ADR-0024), and the team owns the push, the pull
+request, the runner auth, and the secret wiring. The example exists so a
+team has a copy-paste starting point without Praxis growing a CI product
+behind the library, consistent with "CI is the team's CI" (ADR-0018,
+ADR-0024).
+
 ### Forbidden alternatives
 
 DO NOT, in the landing page, the docs site, or its implementation:
@@ -194,7 +206,7 @@ allowed to make, presented with its provisional status intact.
 Presents the ADR-0009 thesis (operational knowledge, not procedure cache,
 Accepted) as the project's bet, and points the reader at the surfaces owned
 by ADR-0020 (`pip install praxis-qa`), ADR-0021 (git as shared memory),
-ADR-0022 (teach), ADR-0023 (regress / explore), and ADR-0024 (the CI
-action) without re-deciding any of them. The example set names Conduit per
+ADR-0022 (teach), ADR-0023 (regress / explore), and ADR-0024 (CI
+integration) without re-deciding any of them. The example set names Conduit per
 ADR-0016 (real-app SUT selection, Accepted). Does not supersede any prior
 ADR.

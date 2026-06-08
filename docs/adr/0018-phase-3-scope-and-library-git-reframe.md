@@ -25,7 +25,8 @@ is reframed to **library plus git, no SaaS**, with two halves:
 - The brain that decides what to click and what to ask is pluggable. The
   local brain is Claude Code, delivered as skills with no API key, running
   on the user's own subscription. The CI brain is an API-key agent (the
-  existing `live` extra), wired as a GitHub Action.
+  existing `live` extra), which the team invokes from its own CI; Praxis
+  ships no reusable action.
 
 A repo's knowledge lives under `.praxis/` (Pablo chose `.praxis/` over
 `praxis/` on 2026-06-08: "less clutter, more serious"). Multi-tenancy is
@@ -87,9 +88,10 @@ batch:
    a Claude Code skill for both operations, the default-all aggregate
    report, and the OK / REGRESSED / STALE break-vs-drift verdict that is
    the core value over a plain test runner.
-6. **The GitHub Action CI brain** (ADR-0024). The reusable action that
-   gates PRs on `praxis regress` with the API-key brain and opens draft
-   candidate PRs from `praxis explore`, with promotion = human merge.
+6. **CI integration by invoking the console commands** (ADR-0024). Praxis
+   exposes the console commands the team wires into its own CI; Praxis owns
+   no reusable action and no push / PR / auth (that is the team's git and
+   CI), and promotion stays a human merge.
 7. **The landing page and docs site** (ADR-0025). The minimal non-engineer
    evaluation story, explicitly with no analytics, no signup, no SaaS
    funnel.
@@ -250,8 +252,8 @@ Invariants this ADR does NOT cover (deferred to the owning Phase 3 ADRs):
   owned by ADR-0022.
 - `no-silent-success-when-app-broken` for the regress / explore report:
   owned by ADR-0023.
-- `no-self-corroboration-source-independence` for the CI candidate PR
-  path: owned by ADR-0024.
+- `no-self-corroboration-source-independence` for the autonomous CI
+  candidate path: owned by ADR-0024.
 
 ## Relation to prior ADRs
 

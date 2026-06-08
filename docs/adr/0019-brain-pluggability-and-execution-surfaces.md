@@ -85,8 +85,9 @@ A brain plugs in through exactly one of two surfaces:
 - **CI brain: an API-key agent (the `live` extra).** A headless agent
   driven by an Anthropic API key, installed via the existing `live`
   optional extra. This is the only paid surface and exists because CI has
-  no human subscription session to borrow. It is what the GitHub Action
-  runs (ADR-0024).
+  no human subscription session to borrow. It is the brain the console
+  `praxis regress` and `praxis explore` use when run autonomously, for
+  example wired into a team's CI (ADR-0024).
 
 The cost asymmetry is deliberate: local use is free on a subscription, the
 API key is the live extra paid for CI throughput. Choosing a brain never
@@ -222,7 +223,7 @@ local-free / CI-paid cost model are the concrete realization of ADR-0018
 section 1's second half. The remaining Phase 3 ADRs build on the split
 fixed here: ADR-0020 ships the skills and the `live` extra, ADR-0022 owns
 the skill-only teach protocol, ADR-0023 owns the dual-surface report, and
-ADR-0024 runs the CI brain.
+ADR-0024 covers wiring the console commands into a team's CI.
 
 Re-cites ADR-0001, ADR-0005, ADR-0009, and ADR-0014 where the brain
 boundary touches them (append-only store, the first-oracle-seeded rule,

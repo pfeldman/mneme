@@ -242,7 +242,7 @@ Invariants this ADR does NOT cover:
   regress operation's job, not teach's.
 - `no-self-corroboration-source-independence` for the CI candidate path:
   owned by ADR-0024. Teach never runs in CI; the CI brain's
-  candidate-PR writes and their source-independence are ADR-0024's job.
+  candidate writes and their source-independence are ADR-0024's job.
 - `concurrent-writes-lose-no-knowledge` and the one-file-per-candidate
   layout for the candidate refinement teach emits: owned by ADR-0021
   (file-per-event layout) and ADR-0012 (multi-writer contract); this ADR

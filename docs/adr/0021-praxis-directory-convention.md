@@ -137,9 +137,21 @@ the shared candidate store safe under concurrent contribution:
 
 The ADR-0012 source-independence contract carries over unchanged: each candidate
 file records its own `source_id = agent_identity` (ADR-0009 / ADR-0014), so N
-same-model writers adding N candidate files still count as one source under the
-diversity-or-seed gate. One file per id gives merge-safety; `source_id =
-agent_identity` keeps the safety from becoming a self-promotion path.
+same-model writers adding N candidate files still count as ONE source under
+ADR-0008's source-independence rule and the diversity-or-seed gate. One file per
+id gives merge-safety; `source_id = agent_identity` keeps the safety from
+becoming a self-promotion path.
+
+The file id is per-observation, not the finding identity. A candidate file
+is named by its observation event id (the ADR-0012 content-addressable
+event id), NOT by the finding it reports. Two observations of the SAME
+finding are two files that share the same structured `trigger`; they are
+never merged into one file. Deduplication and corroboration of same-trigger
+observations happen at the projection (the merge groups observations by
+`trigger`), never by editing or overwriting a candidate file. The on-disk
+store stays append-only and merge-safe; the judgment that two observations
+are the same finding is made at projection time, not by a filename
+collision.
 
 ### 5. The init operation scaffolds the tree, gitignores `runs/`, and installs the skills.
 
@@ -250,10 +262,10 @@ Invariants this ADR does NOT cover:
 - `no-silent-success-when-app-broken` and the OK / REGRESSED / STALE report for
   the operations that read these files: owned by ADR-0023. This ADR fixes the
   on-disk convention; ADR-0023 fixes what regress and explore report over it.
-- `no-self-corroboration-source-independence` for the CI candidate-PR path that
-  adds candidate files: owned by ADR-0024. This ADR fixes the one-file-per-id
-  layout that keeps those adds merge-safe; ADR-0024 owns how the CI brain's
-  writes stay source-independent.
+- `no-self-corroboration-source-independence` for the autonomous CI candidate
+  path that adds candidate files: owned by ADR-0024. This ADR fixes the
+  one-file-per-id layout that keeps those adds merge-safe; ADR-0024 owns how the
+  CI brain's writes stay source-independent.
 - The brain-agnostic split that decides which operations touch this tree with or
   without a brain: owned by ADR-0019. This ADR fixes that init is deterministic;
   ADR-0019 owns the deterministic-vs-agentic classification.

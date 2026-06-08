@@ -49,8 +49,8 @@ The regress and explore operations each ship on TWO surfaces over the SAME
 engine, per ADR-0019 section 4:
 
 - A **console CLI** (`praxis regress`, `praxis explore`): test-style
-  output, a process exit code, no chat. This is what the GitHub Action runs
-  (ADR-0024) and what a user scripts. Driven by whichever brain the surface
+  output, a process exit code, no chat. This is what a team wires into its
+  own CI (ADR-0024) and what a user scripts. Driven by whichever brain the surface
   selects (the CI API-key brain in automation, the local brain when invoked
   from a session).
 - A **Claude Code skill** (`/praxis:regress`, `/praxis:explore`): the same
@@ -156,6 +156,26 @@ truncating the run. The per-goal budget keeps the aggregate report complete
 and bounded: every goal is attempted within its own slice and every
 non-verdict is named.
 
+### 8. Explore writes contested candidate files, grouped by trigger in the report; the skill triages inline.
+
+The explore operation writes any candidate risks and uncertainties it finds
+as contested candidate files under `.praxis/candidates/` (ADR-0021,
+ADR-0014), one file per observation, on both surfaces. In the candidate
+report, observations are GROUPED by their structured `trigger`: each finding
+appears ONCE, annotated with how many times it was observed and how many
+DISTINCT `source_id`s attest to it. N observations from the same
+`agent_identity` count as ONE source (ADR-0008), never as N duplicate
+entries, and a finding earns `believed` only by diversity-or-seed
+(ADR-0005, ADR-0014). On the console surface, the explore operation writes
+the files and exits. On the Claude Code skill surface, it ALSO surfaces what
+it just found and triages it inline with the user, who can promote, leave,
+or discard a fresh finding in the same session, applied immediately as the
+corresponding review action. The `praxis review` command remains the
+surface for the AGGREGATE contested queue, the candidates the user was not
+present to triage (a teammate's runs, the autonomous CI runs, the history);
+the inline skill triage handles only what the current explore run just
+produced.
+
 ### Forbidden alternatives
 
 DO NOT, in any surface or implementation of regress or explore:
@@ -229,10 +249,10 @@ Invariants respected:
 
 Invariants this ADR does NOT cover:
 
-- The CI wiring of these operations - which trigger runs the regress gate,
-  how the API-key brain is invoked, and how the explore operation opens
-  candidate PRs: owned by ADR-0024. This ADR fixes what the operations
-  report; ADR-0024 fixes how CI runs them.
+- The CI wiring of these operations - how a team invokes the console
+  commands in its own CI and gates on the exit code: owned by ADR-0024.
+  This ADR fixes what the operations report; ADR-0024 fixes how a team
+  wires them into CI.
 - `first-oracle-must-be-seeded` and the teach re-seed protocol that a STALE
   verdict proposes: owned by ADR-0022 (the teach skill) and ADR-0005 (the
   seed rule). This ADR proposes the re-seed; it does not own the seed
