@@ -179,16 +179,45 @@ def _tokens(s: str) -> set[str]:
 
 
 def _value_matches(observed: ObservedSignal, target: Signal) -> bool:
-    """A coarse match: same `type` and Jaccard word-overlap above the floor.
+    """Does the observation match the target signal?
 
-    Phase-1 keeps this simple - value strings are short semantic phrases
-    ("a sign-out action becomes available"). Exact equality is too strict
-    (agents paraphrase); substring containment misses common cases ("sign-out
-    becomes available" is not a substring of "a sign-out action becomes
-    available"). Jaccard on content tokens captures both.
+    Exact-type equality gates first, unchanged and never relaxed (ADR-0028): a
+    structured predicate NEVER loosens the type guard. Then the matcher
+    dispatches on whether the TARGET carries a structured `value_predicate`
+    (ADR-0030 decision 4):
+
+      - structured target -> evaluate the predicate against the OBSERVED value
+        (decision 2). The invariant text matches EXACTLY (case-folded +
+        whitespace-normalized) and each declared slot must be FILLED (and, with
+        a declared shape, shaped); Jaccard is NOT computed. This is STRICTER
+        than Jaccard everywhere except the one declared instance-token axis
+        where Jaccard produced a false negative (decision 3). A malformed
+        predicate cannot reach here: it is rejected at the write boundary
+        (decision 6), so a parse failure is a hard non-match, never a silent
+        fall-through to the looser free-text path.
+
+      - free-text target -> the legacy Jaccard path, unchanged (ADR-0028). Value
+        strings are short semantic phrases; exact equality is too strict (agents
+        paraphrase) and substring containment misses common cases, so Jaccard on
+        content tokens at `_PARAPHRASE_THRESHOLD` decides.
     """
     if observed.type != target.type:
         return False
+
+    if target.value_predicate is not None:
+        # Structured path: evaluate the predicate, no Jaccard (decision 2).
+        from ..model.predicate import PredicateError, parse
+
+        try:
+            predicate = parse(target.value_predicate)
+        except PredicateError:
+            # The write boundary rejects a malformed predicate (decision 6), so
+            # this is unreachable for stored knowledge. Treat any parse failure
+            # as a hard NON-match anyway: a predicate that cannot be evaluated
+            # must never silently fall through to the looser Jaccard path.
+            return False
+        return predicate.evaluate(observed.value)
+
     a = _tokens(observed.value)
     b = _tokens(target.value)
     if not a or not b:
