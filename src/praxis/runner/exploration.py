@@ -193,3 +193,132 @@ class ExplorationRunner:
             started_at=started_at,
             ended_at=ended_at,
         )
+
+    def run_all(self, goal_ids: list[str], executor: Executor, *,
+                happy_path_urls: list[str] | None = None,
+                budget_tokens: int | None = None,
+                budget_actions: int | None = None,
+                persist_observations: bool = True) -> list[ExplorationResult]:
+        """Run E-mode across `goal_ids` in order, one ExplorationResult each.
+
+        The simple sequential counterpart to `RegressionRunner.run_all`. The
+        aggregate default-all path (`run_explore_aggregate`) wraps this with
+        per-goal error isolation so one goal that throws does not kill the run.
+        """
+        results: list[ExplorationResult] = []
+        for gid in goal_ids:
+            results.append(self.run_one(
+                gid, executor,
+                happy_path_urls=happy_path_urls,
+                budget_tokens=budget_tokens,
+                budget_actions=budget_actions,
+                persist_observations=persist_observations,
+            ))
+        return results
+
+
+# --- the aggregate (default-all) explore run (ADR-0023 decision 2, 8) -------
+
+
+@dataclass
+class ExploreGoalOutcome:
+    """The per-goal outcome of a default-all explore run.
+
+    Carries EITHER a completed `ExplorationResult` (the goal ran within its
+    budget slice) OR an `error` string (the goal could not run: no believed
+    knowledge, the brain threw, or the goal exhausted its per-goal token / wall
+    slice per ADR-0023 decision 7). A failed goal is surfaced, never silently
+    dropped, so the aggregate report names every goal it attempted (the same
+    loud-over-silent posture R-mode's `run_aggregate` takes for ERROR goals).
+    """
+
+    goal_id: str
+    result: ExplorationResult | None = None
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.result is not None and self.error is None
+
+
+def run_explore_aggregate(
+    runner: "ExplorationRunner",
+    goal_ids: list[str],
+    executor: Executor,
+    *,
+    happy_path_urls_for: Callable[[str], list[str]] | None = None,
+    budget_tokens_per_goal: int | None = None,
+    budget_actions_per_goal: int | None = None,
+    budget_wall_seconds_per_goal: float | None = None,
+) -> list[ExploreGoalOutcome]:
+    """Hunt off-happy-path across EVERY believed goal (ADR-0023 decision 2).
+
+    With no `--goal`, explore runs every goal under `.praxis/knowledge/` and
+    returns one outcome per goal. Each goal runs in its own try block so a goal
+    whose brain throws becomes a surfaced error for that goal, not a crash that
+    drops the rest of the run (ADR-0023 decision 4's loud-over-silent posture,
+    applied to E-mode: a goal that cannot run is named, never silently skipped).
+    The `off_path_fraction` floor (ADR-0009) is preserved per goal inside each
+    `ExplorationResult`.
+
+    `happy_path_urls_for` lets the caller supply the believed happy-path URLs
+    for each goal (used by `compute_off_path_fraction`); when None, every goal
+    runs with an empty happy path. Order of `goal_ids` is preserved so the
+    report is stable across runs.
+
+    Per-goal budget slice (ADR-0023 decision 7), mirroring the regress
+    aggregate (`regression.run_aggregate`): each goal gets its OWN token and
+    wall-time slice, not a shared pool the goals race for, so one expensive or
+    pathological goal cannot starve the rest. The slice is enforced as a
+    post-hoc cap because the executor is a single opaque call the runner cannot
+    interrupt mid-flight: a goal whose run exceeds its token or wall slice is
+    surfaced as a loud budget-exhaustion ERROR for that goal (`ok=False`),
+    never returned as a clean success and never silently counted as explored.
+    `ExplorationResult` already carries `.tokens` and `.wall_seconds`, so the
+    cap reads the same dimensions the regress aggregate does. Because the
+    committed-candidate mirror downstream runs only for `ok` outcomes, an
+    exhausted goal's candidate files are not mirrored to the shared tree as a
+    clean success; the budget verdict is loud and traceable, not convenient.
+    """
+    outcomes: list[ExploreGoalOutcome] = []
+    for gid in goal_ids:
+        happy = happy_path_urls_for(gid) if happy_path_urls_for else None
+        try:
+            result = runner.run_one(
+                gid, executor,
+                happy_path_urls=happy,
+                budget_tokens=budget_tokens_per_goal,
+                budget_actions=budget_actions_per_goal,
+            )
+        except Exception as exc:  # noqa: BLE001 - a thrown goal is surfaced, not dropped
+            outcomes.append(ExploreGoalOutcome(
+                goal_id=gid,
+                error=f"could not explore: {type(exc).__name__}: {exc}",
+            ))
+            continue
+
+        # Per-goal budget enforcement (ADR-0023 decision 7): a goal that
+        # exhausted its token or wall slice is a loud ERROR, not a trusted
+        # success. Same post-hoc cap and same two dimensions the regress
+        # aggregate applies (regression.run_aggregate ~lines 588-612).
+        exhausted: list[str] = []
+        if (budget_tokens_per_goal is not None and result.tokens is not None
+                and result.tokens > budget_tokens_per_goal):
+            exhausted.append(
+                f"tokens {result.tokens} > slice {budget_tokens_per_goal}"
+            )
+        if (budget_wall_seconds_per_goal is not None
+                and result.wall_seconds > budget_wall_seconds_per_goal):
+            exhausted.append(
+                f"wall {result.wall_seconds:.2f}s > slice "
+                f"{budget_wall_seconds_per_goal:.2f}s"
+            )
+        if exhausted:
+            outcomes.append(ExploreGoalOutcome(
+                goal_id=gid,
+                error="per-goal budget exhausted: " + "; ".join(exhausted),
+            ))
+            continue
+
+        outcomes.append(ExploreGoalOutcome(goal_id=gid, result=result))
+    return outcomes

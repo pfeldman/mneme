@@ -16,8 +16,10 @@ from .engine import (
     AGENTIC_OPERATIONS,
     DETERMINISTIC_OPERATIONS,
     Brain,
+    ExploreAggregateOutcome,
     ExploreOutcome,
     aggregate_run_failed,
+    explore_aggregate_engine,
     explore_engine,
     is_agentic,
     regress_aggregate_engine,
@@ -25,9 +27,11 @@ from .engine import (
     regress_failed,
 )
 from .exploration import (
+    ExploreGoalOutcome,
     ExplorationResult,
     ExplorationRunner,
     compute_off_path_fraction,
+    run_explore_aggregate,
 )
 from .regression import (
     AggregateVerdict,
@@ -42,8 +46,12 @@ from .regression import (
     verdict_from_observations,
 )
 from .report import (
+    CandidateGroup,
+    group_candidates_by_trigger,
     to_aggregate_markdown,
+    to_candidate_markdown,
     write_aggregate_markdown,
+    write_candidate_markdown,
     write_junit_xml,
     write_markdown_report,
 )
@@ -54,8 +62,11 @@ __all__ = [
     "AggregateVerdict",
     "Brain",
     "BudgetSlice",
+    "CandidateGroup",
     "ExplorationResult",
     "ExplorationRunner",
+    "ExploreAggregateOutcome",
+    "ExploreGoalOutcome",
     "ExploreOutcome",
     "GoalReport",
     "RegressionRunner",
@@ -65,15 +76,20 @@ __all__ = [
     "aggregate_run_failed",
     "classify_goal",
     "compute_off_path_fraction",
+    "explore_aggregate_engine",
     "explore_engine",
+    "group_candidates_by_trigger",
     "is_agentic",
     "regress_aggregate_engine",
     "regress_engine",
     "regress_failed",
     "run_aggregate",
+    "run_explore_aggregate",
     "to_aggregate_markdown",
+    "to_candidate_markdown",
     "verdict_from_observations",
     "write_aggregate_markdown",
+    "write_candidate_markdown",
     "write_junit_xml",
     "write_markdown_report",
 ]

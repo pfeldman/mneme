@@ -23,9 +23,11 @@ from pathlib import Path
 
 from .runner import (
     Brain,
+    ExploreAggregateOutcome,
     ExploreOutcome,
     GoalReport,
     RunResult,
+    explore_aggregate_engine,
     explore_engine,
     regress_aggregate_engine,
     regress_engine,
@@ -35,6 +37,7 @@ __all__ = [
     "regress_via_skill",
     "regress_aggregate_via_skill",
     "explore_via_skill",
+    "explore_aggregate_via_skill",
 ]
 
 
@@ -155,5 +158,67 @@ def explore_via_skill(
         happy_path_urls=happy_path_urls,
         budget_tokens=budget_tokens,
         budget_actions=budget_actions,
+        committed_sink=_commit_new_candidates,
+    )
+
+
+def explore_aggregate_via_skill(
+    brain: Brain,
+    *,
+    project_start: Path | None = None,
+    goals: list[str] | None = None,
+    budget_tokens_per_goal: int | None = None,
+    budget_actions_per_goal: int | None = None,
+    budget_wall_seconds_per_goal: float | None = None,
+) -> ExploreAggregateOutcome:
+    """Run the default-all explore from the skill surface (ADR-0023 decision 2).
+
+    Same engine and same committed-candidate mirror as the console
+    `praxis explore` (no `--goal`), so a skill run hunts every believed goal and
+    writes one file per observation into the committed tree exactly as the
+    console does (ADR-0021 decision 4). With `goals=None` it explores EVERY
+    seeded goal. Each goal runs in its own error box, so a goal whose brain
+    throws is a surfaced error for that goal, not a crash that drops the rest.
+
+    The per-goal token AND wall-time budget slice (ADR-0023 decision 7) is
+    applied per goal exactly as in the regress aggregate skill driver: a goal
+    that exhausts its slice is a loud ERROR for that goal, not a silent skip,
+    and its candidates are not mirrored to the committed tree as a clean
+    success.
+
+    The runner forces `source_id = agent_identity`, so N same-brain observations
+    stay ONE source (ADR-0008) at the report's trigger grouping, and the brain
+    choice never becomes a stored field.
+    """
+    from .cli.main import discover_project
+
+    proj = discover_project(project_start)
+    adapter = proj.adapter()
+    goal_ids = goals if goals else sorted(proj.seeds().keys())
+    if not goal_ids:
+        raise ValueError(
+            "no goals to explore (no seeds in .praxis/knowledge/); "
+            "seed one with `praxis learn` first"
+        )
+    store = proj.store()
+    before_ids = {
+        gid: {ev.event_id for ev in store.read_candidates(gid)}
+        for gid in goal_ids
+    }
+
+    def _commit_new_candidates(goal: str) -> list[Path]:
+        new_events = [
+            ev for ev in store.read_candidates(goal)
+            if ev.event_id not in before_ids.get(goal, set())
+        ]
+        return proj.candidate_files().write_all(new_events)
+
+    return explore_aggregate_engine(
+        adapter, brain, goal_ids,
+        agent_id=proj.agent_id,
+        observed_app_version=proj.observed_app_version,
+        budget_tokens_per_goal=budget_tokens_per_goal,
+        budget_actions_per_goal=budget_actions_per_goal,
+        budget_wall_seconds_per_goal=budget_wall_seconds_per_goal,
         committed_sink=_commit_new_candidates,
     )

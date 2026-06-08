@@ -40,7 +40,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ..adapters.spi import KnowledgeAdapter
-from .exploration import ExplorationResult, ExplorationRunner
+from .exploration import (
+    ExploreGoalOutcome,
+    ExplorationResult,
+    ExplorationRunner,
+    run_explore_aggregate,
+)
 from .regression import (
     GoalReport,
     RegressionRunner,
@@ -228,3 +233,75 @@ def explore_engine(
     if committed_sink is not None:
         committed = committed_sink(goal)
     return ExploreOutcome(result=result, committed_paths=committed)
+
+
+@dataclass
+class ExploreAggregateOutcome:
+    """A default-all explore run plus the candidate events the engine mirrored
+    to the committed tree across every goal (ADR-0023 decision 2 + 8).
+
+    `outcomes` is one `ExploreGoalOutcome` per goal (a completed result or a
+    surfaced error, never a silent drop). `committed_paths` is every candidate
+    file mirrored into `.praxis/candidates/<goal>/` across all goals this run,
+    so both surfaces report the same committed count."""
+
+    outcomes: list[ExploreGoalOutcome] = field(default_factory=list)
+    committed_paths: list[Any] = field(default_factory=list)
+
+
+def explore_aggregate_engine(
+    adapter: KnowledgeAdapter,
+    brain: Brain,
+    goals: list[str],
+    *,
+    agent_id: str = "praxis-explore",
+    observed_app_version: str | None = None,
+    happy_path_urls_for: Callable[[str], list[str]] | None = None,
+    budget_tokens_per_goal: int | None = None,
+    budget_actions_per_goal: int | None = None,
+    budget_wall_seconds_per_goal: float | None = None,
+    committed_sink: CommittedSink | None = None,
+) -> ExploreAggregateOutcome:
+    """Hunt off-happy-path across EVERY believed goal, surface-independent
+    (ADR-0023 decisions 1, 2, 7, 8).
+
+    The single engine the console `praxis explore` (no `--goal`) and a
+    direct-call skill driver both call, so both surfaces run the same goals,
+    write one candidate file per observation into the same committed tree, and
+    produce the same outcomes for the same store + brain output. Each goal runs
+    in its own error box (`run_explore_aggregate`), so a goal whose brain throws
+    is a surfaced error for that goal, not a crash that drops the rest.
+
+    The runner forces `source_id = agent_identity` on emitted candidates
+    (ADR-0008), so N same-brain observations across the run count as ONE source
+    at the report's grouping; the brain choice never becomes a stored field.
+    The `off_path_fraction` floor (ADR-0009) is preserved per goal inside each
+    `ExplorationResult`. `committed_sink`, when provided, mirrors each goal's
+    new candidate events into the committed tree and is run after that goal's
+    brain returns, so both surfaces produce the same committed count.
+
+    The per-goal token AND wall-time budget slice (ADR-0023 decision 7) is
+    forwarded to `run_explore_aggregate`, matching the regress aggregate: a goal
+    that exhausts its slice is a loud per-goal ERROR (`ok=False`), so its
+    candidates are NOT mirrored to the committed tree as a clean success (the
+    mirror below runs only for `ok` outcomes).
+    """
+    runner = ExplorationRunner(
+        adapter, agent_id=agent_id, observed_app_version=observed_app_version,
+    )
+    outcomes = run_explore_aggregate(
+        runner, goals, brain,
+        happy_path_urls_for=happy_path_urls_for,
+        budget_tokens_per_goal=budget_tokens_per_goal,
+        budget_actions_per_goal=budget_actions_per_goal,
+        budget_wall_seconds_per_goal=budget_wall_seconds_per_goal,
+    )
+    committed: list[Any] = []
+    if committed_sink is not None:
+        # Mirror only the goals that actually ran (an errored goal wrote no new
+        # candidate events). The sink is keyed by goal, so a per-goal mirror keeps
+        # the committed count exact across both surfaces.
+        for oc in outcomes:
+            if oc.ok:
+                committed.extend(committed_sink(oc.goal_id))
+    return ExploreAggregateOutcome(outcomes=outcomes, committed_paths=committed)

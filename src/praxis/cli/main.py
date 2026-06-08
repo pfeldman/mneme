@@ -28,11 +28,14 @@ from ..model import KnowledgeFile, Target, dump, load
 from ..resources import iter_skill_files, skills_root
 from ..runner import (
     aggregate_run_failed,
+    explore_aggregate_engine,
     explore_engine,
+    group_candidates_by_trigger,
     regress_aggregate_engine,
     regress_engine,
     regress_failed,
     write_aggregate_markdown,
+    write_candidate_markdown,
     write_junit_xml,
     write_markdown_report,
 )
@@ -478,16 +481,133 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     return 1 if regress_failed(results) else 0
 
 
+def _explore_aggregate(
+    proj: "ProjectContext",
+    brain: Any,
+    *,
+    budget_tokens: int | None = None,
+    budget_actions: int | None = None,
+    budget_wall_seconds: float | None = None,
+) -> int:
+    """Default-all explore: hunt off-happy-path across EVERY believed goal,
+    write candidate files on the committed tree, and emit ONE trigger-grouped
+    candidate report (ADR-0023 decisions 2 + 8).
+
+    The console surface drives the SAME aggregate engine a skill driver calls
+    (ADR-0019 decision 4 + ADR-0023 decision 1); the brain seam carries the
+    paste/file executor here, the local Claude session in a skill. The mirror to
+    the committed tree runs inside the engine as the committed sink, so a skill
+    driver gets the same committed count.
+    """
+    goals = sorted(proj.seeds().keys())
+    if not goals:
+        print("no goals to explore (no seeds in .praxis/knowledge/). "
+              "Run `praxis learn ...` first.", file=sys.stderr)
+        return 2
+
+    adapter = proj.adapter()
+    store = proj.store()
+    # Snapshot the candidate event ids already in the per-machine log per goal,
+    # so the mirror copies ONLY this run's newly written candidate events into
+    # the committed tree (ADR-0021 decision 4), exactly as the single-goal path.
+    before_ids = {
+        gid: {ev.event_id for ev in store.read_candidates(gid)} for gid in goals
+    }
+
+    def _commit_new_candidates(goal: str) -> list[Path]:
+        new_events = [
+            ev for ev in store.read_candidates(goal)
+            if ev.event_id not in before_ids.get(goal, set())
+        ]
+        return proj.candidate_files().write_all(new_events)
+
+    # Forward the per-goal budget slice (ADR-0023 decision 7): the engine
+    # accepts and per-goal-slices these, matching the single-goal explore path
+    # and the regress aggregate path. Without this, `praxis explore
+    # --budget-tokens N` (no --goal) would silently drop the flag. The wall-time
+    # slice is the second budget dimension the regress aggregate also enforces:
+    # a goal that exceeds either slice is a loud per-goal ERROR (decision 7).
+    outcome = explore_aggregate_engine(
+        adapter, brain, goals,
+        agent_id=proj.agent_id,
+        observed_app_version=proj.observed_app_version,
+        budget_tokens_per_goal=budget_tokens,
+        budget_actions_per_goal=budget_actions,
+        budget_wall_seconds_per_goal=budget_wall_seconds,
+        committed_sink=_commit_new_candidates,
+    )
+
+    # Build the trigger-grouped report from the committed candidate tree, the
+    # shared store `praxis review` also reads (ADR-0021 decision 4). Reading the
+    # committed tree (not the per-machine log) keeps the report consistent with
+    # what a teammate sees after `git pull`.
+    candidate_files = proj.candidate_files()
+    seeds = proj.seeds()
+    groups: list[Any] = []
+    for gid in goals:
+        events = candidate_files.read(gid)
+        if events:
+            groups.extend(
+                group_candidates_by_trigger(events, seed=seeds.get(gid))
+            )
+
+    off_path = {
+        oc.goal_id: oc.result.off_path_fraction
+        for oc in outcome.outcomes if oc.ok and oc.result is not None
+    }
+    errors = {
+        oc.goal_id: oc.error
+        for oc in outcome.outcomes if oc.error is not None
+    }
+
+    run_dir = proj.run_dir()
+    report_md = run_dir / "explore-candidates.md"
+    write_candidate_markdown(
+        groups, report_md, off_path_fractions=off_path, errors=errors,
+    )
+
+    n_believed = sum(1 for g in groups if g.believed)
+    print(f"\ngoals explored:        {len(goals) - len(errors)}/{len(goals)}")
+    print(f"committed candidates:  {len(outcome.committed_paths)}  "
+          f"(.praxis/candidates/<goal>/, one file per observation)")
+    print(f"findings (by trigger): {len(groups)}  "
+          f"({n_believed} believed / {len(groups) - n_believed} contested)")
+    for gid in sorted(off_path):
+        print(f"  off_path_fraction[{gid}]: {off_path[gid]:.2f}")
+    for gid in sorted(errors):
+        print(f"  ERROR {gid}: {errors[gid]}", file=sys.stderr)
+    print(f"\nreport: {report_md}")
+    # A goal that errored (the brain threw, the app would not load) is a loud
+    # non-OK ERROR that fails the run, never a silent skip (ADR-0023 forbidden
+    # alternatives + decision 4). This mirrors the sibling regress aggregate's
+    # `return 1 if failed else 0` loud-failure contract; explore must not be more
+    # lenient than the single-goal path, which lets brain exceptions crash.
+    if errors:
+        named = ", ".join(sorted(errors))
+        print(f"ERROR: {named} could not be explored and fail the run.",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
 def _cmd_explore(args: argparse.Namespace) -> int:
     proj = discover_project()
     adapter = proj.adapter()
-    if not args.goal:
-        print("praxis explore requires --goal (one goal per run)", file=sys.stderr)
-        return 2
     if args.from_file:
         brain = _executor_from_file(Path(args.from_file))
     else:
         brain = _executor_from_paste
+
+    # Default-all aggregate (ADR-0023 decision 2): no `--goal` hunts off-happy-
+    # path across EVERY believed goal under .praxis/knowledge/, writes candidate
+    # files on the committed tree, and emits ONE report grouped by trigger.
+    if not args.goal:
+        return _explore_aggregate(
+            proj, brain,
+            budget_tokens=args.budget_tokens,
+            budget_actions=args.budget_actions,
+            budget_wall_seconds=args.budget_wall_seconds,
+        )
 
     # Snapshot the candidate event ids already in the per-machine log for this
     # goal, so after the run we can mirror ONLY this run's newly written
@@ -717,12 +837,18 @@ def _build_parser() -> argparse.ArgumentParser:
     regress.set_defaults(func=_cmd_regress)
 
     explore = sub.add_parser(
-        "explore", help="Run E-mode against believed knowledge for one goal.",
+        "explore", help="Run E-mode against believed knowledge (default: all goals).",
     )
     explore.add_argument("--goal", required=False,
-                          help="Goal to explore (required at run time).")
-    explore.add_argument("--budget-tokens", type=int, default=None)
+                          help="Explore only this goal (default: aggregate over "
+                               "all seeds, one report grouped by trigger).")
+    explore.add_argument("--budget-tokens", type=int, default=None,
+                          help="Per-goal token slice in aggregate mode "
+                               "(ADR-0023 decision 7).")
     explore.add_argument("--budget-actions", type=int, default=None)
+    explore.add_argument("--budget-wall-seconds", type=float, default=None,
+                          help="Per-goal wall-time slice (s) in aggregate mode; "
+                               "a goal that exceeds it is a loud ERROR.")
     explore.add_argument("--happy-path", nargs="*", default=None,
                           help="URLs the happy path visits "
                                "(for off_path_fraction).")
