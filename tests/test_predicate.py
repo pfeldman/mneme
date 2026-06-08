@@ -97,6 +97,20 @@ def test_exact_invariant_holds() -> None:
     assert p.evaluate("a create endpoint returns 2xx for campaign 329419")
 
 
+def test_invariant_is_contained_not_whole_string_equal() -> None:
+    """Containment, not whole-string equality: the invariant (with its slot) may
+    be wrapped in an agent's narration and still hold, so an LLM's run-to-run
+    phrasing variance does not drop a genuine pass. A wrong invariant or a
+    shape-violating slot still does NOT hold (no false pass)."""
+    p = parse("the route matches /Box/Editor/{campaign_id:numeric}")
+    # Surrounding narration before and after the invariant: still holds.
+    assert p.evaluate("After saving, the route matches /Box/Editor/329419 successfully")
+    assert p.evaluate("the route matches /Box/Editor/329419")
+    # No false pass: a wrong route, or a non-numeric slot, still does not hold.
+    assert not p.evaluate("After saving, the route matches /Account/Login/Index")
+    assert not p.evaluate("the route matches /Box/Editor/welcome and it worked")
+
+
 def test_case_and_whitespace_normalized_but_not_punctuation() -> None:
     p = parse("the route matches /Box/Editor/{seg:numeric}")
     # case-folded + whitespace-collapsed still holds
