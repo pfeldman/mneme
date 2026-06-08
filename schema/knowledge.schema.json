@@ -48,6 +48,7 @@
           "description": "Ordered most->least durable. Raw selectors/xpath/coordinates are intentionally NOT representable. The oracle treats DIFFERENT types as independent evidence; same-type repeats are not independent."
         },
         "value": { "type": "string", "description": "The observable thing, described semantically." },
+        "value_predicate": { "type": "string", "minLength": 1, "description": "Optional checkable form of `value` (ADR-0030): a template string whose text OUTSIDE a variable slot is the INVARIANT (matched exactly, case-folded + whitespace-normalized) and whose `{slot}` / `{slot:numeric}` / `{slot:uuid}` markers are per-run instance tokens the matcher tolerates on presence/shape only (mirrors the `risks.trigger.expect` inline-slot convention). SUPPLEMENTS `value` (which stays required and is the projection grouping key); when present, the matcher evaluates the predicate instead of Jaccard word-overlap. A predicate with no invariant, a malformed slot, an unknown shape, or only stopwords is rejected at write time." },
         "provenance": { "$ref": "#/$defs/provenance" },
         "confidence": { "$ref": "#/$defs/confidence" },
         "status": { "$ref": "#/$defs/status" }
