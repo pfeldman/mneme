@@ -1,0 +1,120 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 36.587002916960046,
+  "goal_id": "login",
+  "raw_output": {
+    "actions_used": 8,
+    "arm": "memory",
+    "elapsed_seconds": 36.585667332983576,
+    "goal_id": "login",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "The cookie value is always the literal string 'ok' regardless of credentials \u2014 this is a hardcoded/stub response, not a real session token.",
+      "The server issues session=ok even for wrong credentials (bad@example.com/wrong \u2192 200 + Set-Cookie: session=ok), but rejects empty credentials (\u2192 401). Credential validation is partially broken.",
+      "GET /me with session=ok \u2192 401: the server does not recognise its own issued cookie as valid, confirming the stale-session-cookie regression.",
+      "GET / with session=ok \u2192 200 but no Sign out link, confirming the home page does not honour the session cookie either.",
+      "All three R-mode success signals failed; both R-mode failure signals were triggered."
+    ],
+    "observations": [
+      {
+        "value": "REGRESSION (failure signal): GET /me with Cookie: session=ok (issued by POST /session on successful login) returns HTTP 401 with body {\"authenticated\": false, \"reason\": \"session cookie missing or invalid\"}. This matches the failure signal: 'GET /me with the just-issued session cookie returns 401 unauthorized even though POST /session returned 200 with the cookie'. The session cookie set by the server is not recognized as valid on authenticated endpoints \u2014 stale-session-cookie regression confirmed."
+      },
+      {
+        "value": "REGRESSION (behavioral): GET / with Cookie: session=ok does NOT show a 'Sign out' control \u2014 the home page body contains only the unauthenticated nav (<a href=\"/login\">login</a>). The success signal 'a Sign out control is present on the home page after successful login' is NOT satisfied; the session cookie is not honoured by the home page."
+      },
+      {
+        "value": "REGRESSION (network): POST /session with invalid credentials (identifier=bad@example.com, secret=wrong) returns HTTP 200 and sets Set-Cookie: session=ok; Path=/ \u2014 identical response to a supposedly valid login. The authentication check is not enforcing credentials: any non-empty identifier/secret pair is accepted and issues the same fixed cookie value 'ok'."
+      },
+      {
+        "value": "EXPLORATION (stale-session-cookie risk confirmed): The trigger 'HTTP GET /me with the just-issued session cookie' returned 401 with authenticated=false, confirming that POST /session issues a cookie (session=ok) that the server does not register as a valid session. The expect predicate 'returns 200 with authenticated=true' was NOT met \u2014 failure signal observed."
+      },
+      {
+        "value": "EXPLORATION (rate-limit uncertainty): POST /session with empty identifier/secret (identifier='', secret='') returns 401 with 'Invalid credentials.' \u2014 at least empty-string inputs are rejected. Non-empty wrong credentials return 200, so credential validation is broken rather than rate-limited. No rate-limit boundary was observed within 2 failed attempts."
+      }
+    ],
+    "off_path_fraction": 0.5,
+    "tokens_used": 24608,
+    "visited_urls": [
+      "/",
+      "/me",
+      "/login",
+      "/session",
+      "/me",
+      "/",
+      "/session",
+      "/session"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 8,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "REGRESSION (failure signal): GET /me with Cookie: session=ok (issued by POST /session on successful login) returns HTTP 401 with body {\"authenticated\": false, \"reason\": \"session cookie missing or invalid\"}. This matches the failure signal: 'GET /me with the just-issued session cookie returns 401 unauthorized even though POST /session returned 200 with the cookie'. The session cookie set by the server is not recognized as valid on authenticated endpoints \u2014 stale-session-cookie regression confirmed.",
+        "seed": 0,
+        "slug": "s1_oracle_lies",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "s1_oracle_lies",
+          "reason": "The observation explicitly describes GET /me returning 401 with an invalid-session error immediately after POST /session returned 200 with a cookie, matching s1_oracle_lies exactly."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "REGRESSION (behavioral): GET / with Cookie: session=ok does NOT show a 'Sign out' control \u2014 the home page body contains only the unauthenticated nav (<a href=\"/login\">login</a>). The success signal 'a Sign out control is present on the home page after successful login' is NOT satisfied; the session cookie is not honoured by the home page.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes the home page not recognizing a session cookie ('session=ok'), but no manifest entry covers this behavior, and the public rules do not specify that an arbitrary cookie value must be accepted as a valid session."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "REGRESSION (network): POST /session with invalid credentials (identifier=bad@example.com, secret=wrong) returns HTTP 200 and sets Set-Cookie: session=ok; Path=/ \u2014 identical response to a supposedly valid login. The authentication check is not enforcing credentials: any non-empty identifier/secret pair is accepted and issues the same fixed cookie value 'ok'.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes a credential-bypass bug (any credentials accepted) that is not listed in the manifest; the closest entry t1_login_500 expects a 500 error on login, not a 200 with a fixed cookie, so there is no manifest match."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "EXPLORATION (stale-session-cookie risk confirmed): The trigger 'HTTP GET /me with the just-issued session cookie' returned 401 with authenticated=false, confirming that POST /session issues a cookie (session=ok) that the server does not register as a valid session. The expect predicate 'returns 200 with authenticated=true' was NOT met \u2014 failure signal observed.",
+        "seed": 0,
+        "slug": "s1_oracle_lies",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "s1_oracle_lies",
+          "reason": "The observation explicitly describes GET /me with the just-issued session cookie returning 401 unauthorized, matching the expected_observation for s1_oracle_lies exactly."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "EXPLORATION (rate-limit uncertainty): POST /session with empty identifier/secret (identifier='', secret='') returns 401 with 'Invalid credentials.' \u2014 at least empty-string inputs are rejected. Non-empty wrong credentials return 200, so credential validation is broken rather than rate-limited. No rate-limit boundary was observed within 2 failed attempts.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes a credential-validation quirk (wrong non-empty credentials return 200) but this specific behavior is not listed in the manifest, and the core claim about empty credentials returning 401 is plausible expected behavior; the 'broken validation' inference is not grounded enough to match any manifest entry."
+        }
+      }
+    ],
+    "off_path_fraction": 0.5,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 24608
+  }
+}

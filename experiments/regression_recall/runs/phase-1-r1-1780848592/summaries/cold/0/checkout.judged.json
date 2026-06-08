@@ -1,0 +1,94 @@
+{
+  "arm": "cold",
+  "elapsed_seconds": 47.60456145904027,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 18,
+    "arm": "cold",
+    "elapsed_seconds": 47.604539082967676,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "POST /session with clearly invalid credentials (e.g. identifier='bad@bad.com', secret='wrongpassword' or identifier='admin', secret='admin') returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome' home page \u2014 identical to a successful login. Authentication is not enforced: any non-empty credential pair is accepted. Only an empty identifier+secret returns HTTP 401 'Invalid credentials.'"
+      },
+      {
+        "value": "POST /order with a short/invalid card number (e.g. card='1234') returns HTTP 200 'Order confirmed' (Order #A1024). Card validation is not enforced \u2014 any non-empty card value is accepted as payment."
+      },
+      {
+        "value": "GET /logout returns HTTP 404 Not Found. There is no logout endpoint, so authenticated sessions cannot be terminated."
+      }
+    ],
+    "off_path_fraction": 0.6666666666666666,
+    "tokens_used": 40989,
+    "visited_urls": [
+      "/",
+      "/cart",
+      "/login",
+      "/search",
+      "/session",
+      "/cart/checkout",
+      "/order",
+      "/search",
+      "/search?q=widget",
+      "/session",
+      "/cart/checkout",
+      "/order",
+      "/session",
+      "/logout",
+      "/session",
+      "/session",
+      "/order",
+      "/search?q="
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 18,
+    "arm": "cold",
+    "detections": [
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /session with clearly invalid credentials (e.g. identifier='bad@bad.com', secret='wrongpassword' or identifier='admin', secret='admin') returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome' home page \u2014 identical to a successful login. Authentication is not enforced: any non-empty credential pair is accepted. Only an empty identifier+secret returns HTTP 401 'Invalid credentials.'",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes broken authentication (any non-empty credentials accepted), which is not listed in the manifest and is a distinct bug from t1_login_500 (which expects a 500 error, not a 200 success on invalid credentials)."
+        }
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /order with a short/invalid card number (e.g. card='1234') returns HTTP 200 'Order confirmed' (Order #A1024). Card validation is not enforced \u2014 any non-empty card value is accepted as payment.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes missing card validation on POST /order, which does not match any manifest entry and is not listed as a regression in the planted manifest."
+        }
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "GET /logout returns HTTP 404 Not Found. There is no logout endpoint, so authenticated sessions cannot be terminated.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes a missing /logout endpoint returning 404, which is not listed in the manifest and is not defined as expected behavior by the public rules, making it a claimed regression not supported by any planted entry."
+        }
+      }
+    ],
+    "off_path_fraction": 0.6666666666666666,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 40989
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "arm": "cold",
+  "elapsed_seconds": 30.71348108293023,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 16,
+    "arm": "cold",
+    "elapsed_seconds": 30.71342016698327,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "Authentication bypass: POST /session with arbitrary non-empty credentials (e.g. identifier=bad@test.com, secret=badpass) returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome' page, instead of HTTP 401 with an error. Any non-empty credentials are accepted as valid."
+      },
+      {
+        "value": "POST /order with card=4111111111111111 (no session cookie) returns HTTP 200 'Order confirmed' with order number #A1024, instead of requiring authentication or at minimum a valid session. Orders can be placed without logging in."
+      },
+      {
+        "value": "POST /order with an empty card field (card=) returns HTTP 402 'Payment declined' as expected, but POST /order with a valid-looking card number always returns HTTP 200 'Order confirmed' (order #A1024) regardless of session state \u2014 the order number is identical on repeated calls, suggesting no real order is being created or the counter is not incrementing."
+      }
+    ],
+    "off_path_fraction": 0.5,
+    "tokens_used": 40142,
+    "visited_urls": [
+      "/",
+      "/checkout",
+      "/cart",
+      "/login",
+      "/cart/checkout",
+      "/session",
+      "/order",
+      "/order",
+      "/cart/checkout",
+      "/search",
+      "/order",
+      "/session",
+      "/session",
+      "/cart",
+      "/session",
+      "/order"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 1,
+  "summary": {
+    "actions_used": 16,
+    "arm": "cold",
+    "detections": [
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "Authentication bypass: POST /session with arbitrary non-empty credentials (e.g. identifier=bad@test.com, secret=badpass) returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome' page, instead of HTTP 401 with an error. Any non-empty credentials are accepted as valid.",
+        "seed": 1,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes a login-always-succeeds behavior, but none of the manifest entries cover an authentication bypass; the closest entry (t1_login_500) expects a 500 error on login, not a 200 with arbitrary credentials accepted."
+        }
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /order with card=4111111111111111 (no session cookie) returns HTTP 200 'Order confirmed' with order number #A1024, instead of requiring authentication or at minimum a valid session. Orders can be placed without logging in.",
+        "seed": 1,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes unauthenticated order placement returning 200, which is not listed in the manifest and guest checkout is not prohibited by the public rules, so this is not a planted regression."
+        }
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /order with an empty card field (card=) returns HTTP 402 'Payment declined' as expected, but POST /order with a valid-looking card number always returns HTTP 200 'Order confirmed' (order #A1024) regardless of session state \u2014 the order number is identical on repeated calls, suggesting no real order is being created or the counter is not incrementing.",
+        "seed": 1,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observed behavior (repeated calls returning identical order #A1024 with HTTP 200) does not match any manifest entry; the closest candidate k3_double_order concerns duplicate Idempotency-Key producing two distinct order_ids, which is the opposite pattern, and no manifest entry covers a non-incrementing order counter or stub response."
+        }
+      }
+    ],
+    "off_path_fraction": 0.5,
+    "release": "phase-1-r1",
+    "seed": 1,
+    "tokens_used": 40142
+  }
+}

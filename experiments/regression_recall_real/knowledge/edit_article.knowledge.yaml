@@ -1,0 +1,98 @@
+# Seeded knowledge for the Conduit `edit_article` goal.
+#
+# Parallels Phase-1 `admin_access` more directly than follow_user: the goal
+# is gated by ownership scope (only the article author may edit). Non-owner
+# edit succeeding is the canonical auth-scope regression.
+schema_version: "0"
+goal_id: edit_article
+goal: The owner of a Conduit article can edit its title or body; non-owners
+  (even authenticated ones) cannot.
+
+target:
+  app: conduit
+  environment: local
+  observed_app_versions: ["phase-2-r1-conduit"]
+
+success_signals:
+  - type: behavioral
+    value: navigating to the article detail page as the author renders an
+      "Edit Article" affordance in the article actions
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: PUT /api/articles/{slug} as the article author returns 200 with the
+      updated article object reflecting the new title and body
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: GET /api/articles/{slug} after the edit returns the updated title and body
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+failure_signals:
+  - type: network
+    value: PUT /api/articles/{slug} returns 200 when authenticated as a user
+      other than the article author (auth-scope check skipped)
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+risks:
+  - id: non-owner-edit-permitted
+    description: PUT /api/articles/{slug} may not check that the authenticated
+      caller's username matches the article's author.username, allowing any
+      authenticated user to edit any article. The believed success signal on
+      its own (owner edit returns 200) cannot detect this; only a non-owner
+      probe catches it.
+    trigger:
+      kind: http
+      method: PUT
+      path: /api/articles/{slug}
+      body_or_params: {"article": {"title": "hijacked"}}
+      expect: returns 403 forbidden when the bearer token is for a user other
+        than article.author.username, NOT 200
+    mitigation: include a non-owner edit probe in the edit_article verification step.
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+uncertainties:
+  - id: u-edit-slug-changes
+    question: When the title changes, does PUT /api/articles/{slug} regenerate
+      the slug (breaking the URL) or keep the original slug? The reference
+      docs do not specify.
+    raised_by: pablo-seed
+    raised_at: "2026-06-07T00:00:00Z"
+    resolved: false
+
+auth_state:
+  authenticated: true
+  scope: user
+
+meta:
+  created_at: "2026-06-07T00:00:00Z"
+  updated_at: "2026-06-07T00:00:00Z"
+  contributing_agents: []

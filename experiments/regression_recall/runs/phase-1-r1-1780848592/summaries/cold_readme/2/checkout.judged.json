@@ -1,0 +1,74 @@
+{
+  "arm": "cold_readme",
+  "elapsed_seconds": 31.736544416984543,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 13,
+    "arm": "cold_readme",
+    "elapsed_seconds": 31.7358321249485,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "POST /cart/apply with coupon=SAVE10&subtotal=100 returns a JSON response where the 'active' list contains duplicate entries of the same coupon (e.g., [\"SAVE10\",\"SAVE10\",\"SAVE10\",\"SAVE10\",\"SAVE10\"]) instead of listing it once. Each subsequent call adds another duplicate: first call returns 5 copies, second call returns 6 copies, third call returns 7 copies, etc. The coupon is being appended to the active list on every application rather than being recorded once."
+      },
+      {
+        "value": "POST /orders with header Idempotency-Key: test-key-abc returns a new order_id (A1013, then A1014) and 'idempotent: false' on every call with the same key, instead of returning the same order_id and 'idempotent: true' for repeat requests with the same Idempotency-Key. The idempotency-key deduplication is not functioning."
+      }
+    ],
+    "off_path_fraction": 0.6923076923076923,
+    "tokens_used": 40488,
+    "visited_urls": [
+      "/cart",
+      "/login",
+      "/session",
+      "/cart/checkout",
+      "/order",
+      "/cart/apply",
+      "/cart/apply",
+      "/orders",
+      "/orders",
+      "/order",
+      "/orders",
+      "/cart/apply",
+      "/cart/apply"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 2,
+  "summary": {
+    "actions_used": 13,
+    "arm": "cold_readme",
+    "detections": [
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "POST /cart/apply with coupon=SAVE10&subtotal=100 returns a JSON response where the 'active' list contains duplicate entries of the same coupon (e.g., [\"SAVE10\",\"SAVE10\",\"SAVE10\",\"SAVE10\",\"SAVE10\"]) instead of listing it once. Each subsequent call adds another duplicate: first call returns 5 copies, second call returns 6 copies, third call returns 7 copies, etc. The coupon is being appended to the active list on every application rather than being recorded once.",
+        "seed": 2,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes duplicate coupon entries accumulating in the active list, which does not match any manifest entry; k2_stack_codes concerns a second *different* coupon being accepted while the first is active, not duplicate entries of the same coupon, and no manifest entry covers this specific duplication bug."
+        }
+      },
+      {
+        "arm": "cold_readme",
+        "matched_manifest": true,
+        "observation_text": "POST /orders with header Idempotency-Key: test-key-abc returns a new order_id (A1013, then A1014) and 'idempotent: false' on every call with the same key, instead of returning the same order_id and 'idempotent: true' for repeat requests with the same Idempotency-Key. The idempotency-key deduplication is not functioning.",
+        "seed": 2,
+        "slug": "k3_double_order",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "k3_double_order",
+          "reason": "The observation explicitly describes POST /orders returning two distinct order_ids (A1013, then A1014) for the same Idempotency-Key, matching the manifest entry for k3_double_order which expects two distinct order_ids from repeated requests with the same key."
+        }
+      }
+    ],
+    "off_path_fraction": 0.6923076923076923,
+    "release": "phase-1-r1",
+    "seed": 2,
+    "tokens_used": 40488
+  }
+}

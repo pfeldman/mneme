@@ -1,0 +1,65 @@
+{
+  "arm": "cold_readme",
+  "elapsed_seconds": 38.64497270900756,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 14,
+    "arm": "cold_readme",
+    "elapsed_seconds": 38.644941166974604,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "POST /orders with Idempotency-Key header does not deduplicate requests. Two consecutive POST /orders requests with the same Idempotency-Key 'unique-key-xyz-999' (and same card body) returned different order_ids (A1010, A1011) and 'idempotent': false both times. The key is fully ignored \u2014 the endpoint should return the same order_id and 'idempotent': true on the second call."
+      },
+      {
+        "value": "POST /cart/apply with coupon=SAVE10 accumulates duplicate entries in the 'active' list on each call. First call returned 'active': ['SAVE10','SAVE10','SAVE10'] (3 entries), second call returned 4 entries, third call 5 entries. A single coupon code should appear at most once in the active list; instead it is appended without deduplication on every request."
+      }
+    ],
+    "off_path_fraction": 0.7142857142857143,
+    "tokens_used": 47497,
+    "visited_urls": [
+      "/cart",
+      "/login",
+      "/session",
+      "/cart/checkout",
+      "/order",
+      "/orders",
+      "/orders",
+      "/cart/apply",
+      "/orders",
+      "/cart/apply",
+      "/order",
+      "/orders",
+      "/orders",
+      "/orders"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 1,
+  "summary": {
+    "actions_used": 14,
+    "arm": "cold_readme",
+    "detections": [
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "POST /orders with Idempotency-Key header does not deduplicate requests. Two consecutive POST /orders requests with the same Idempotency-Key 'unique-key-xyz-999' (and same card body) returned different order_ids (A1010, A1011) and 'idempotent': false both times. The key is fully ignored \u2014 the endpoint should return the same order_id and 'idempotent': true on the second call.",
+        "seed": 1,
+        "slug": null
+      },
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "POST /cart/apply with coupon=SAVE10 accumulates duplicate entries in the 'active' list on each call. First call returned 'active': ['SAVE10','SAVE10','SAVE10'] (3 entries), second call returned 4 entries, third call 5 entries. A single coupon code should appear at most once in the active list; instead it is appended without deduplication on every request.",
+        "seed": 1,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.7142857142857143,
+    "release": "phase-1-r1",
+    "seed": 1,
+    "tokens_used": 47497
+  }
+}

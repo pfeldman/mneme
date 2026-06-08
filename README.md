@@ -1,7 +1,7 @@
 # Mneme
 
 > A shared **semantic-memory layer for QA agents.**
-> Codename — rename freely (`mneme` → your brand) in `pyproject.toml` and `src/`.
+> Codename — rename freely (`praxis` → your brand) in `pyproject.toml` and `src/`.
 
 Most testing tools store **procedures** (click A, fill B, assert C). Mneme stores
 **knowledge about the system under test** — goals, how to recognize states, what
@@ -34,7 +34,7 @@ which inverts that economics. The procedure is disposable; the knowledge is the 
 - `docs/` — the full design: vision, architecture, schema, MVP experiment, risks, roadmap.
 - `docs/adr/` — the load-bearing decisions and why.
 - `schema/` — the language-neutral knowledge schema (JSON Schema) + real examples.
-- `src/mneme/` — package skeleton (model, store, merge, oracle, adapters).
+- `src/praxis/` — package skeleton (model, store, merge, oracle, adapters).
 - `experiments/ui-mutation/` — the one experiment that validates or kills the idea.
 
 ## Start here

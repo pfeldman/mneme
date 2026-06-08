@@ -11,10 +11,15 @@ build/
 .ruff_cache/
 .mypy_cache/
 
-# Mneme local stores (never commit live memory or secrets)
+# Local stores (never commit live memory)
 *.mneme-store/
 .mneme/
+.praxis/
 local-memory/
+
+# Secrets + per-machine claude config (never commit API keys / tokens)
+.claude/secrets.env
+.claude/*.local.*
 
 # Generated experiment outputs (reproducible via harness.py / LOCAL_RUN.md)
 experiments/ui-mutation/results.json

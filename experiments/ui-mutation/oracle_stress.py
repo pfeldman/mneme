@@ -30,9 +30,9 @@ _SRC = Path(__file__).resolve().parents[2] / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from mneme.merge import project  # noqa: E402
-from mneme.model import Target  # noqa: E402
-from mneme.store import ObservationEvent, ObservedSignal  # noqa: E402
+from praxis.merge import project  # noqa: E402
+from praxis.model import Target  # noqa: E402
+from praxis.store import ObservationEvent, ObservedSignal  # noqa: E402
 
 NOW = datetime(2026, 6, 7, tzinfo=timezone.utc)
 CUR = "2.0"

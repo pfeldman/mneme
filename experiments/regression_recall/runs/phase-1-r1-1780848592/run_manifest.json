@@ -1,0 +1,33 @@
+{
+  "run_id": "phase-1-r1-1780848592",
+  "release": "phase-1-r1",
+  "started_at": "2026-06-07T16:09:52Z",
+  "praxis_git_sha": "07ee6dc1ab625d1569be8b6b0ebe0e2837fc8b69",
+  "manifest_sha": "17e441e180f02c73e175a56d9d9a1c4210656658",
+  "prompts_py_sha": "073af39a4f792aad21de4086ffaabd05dd55b941",
+  "model": "claude-sonnet-4-6",
+  "model_provider": "anthropic-api",
+  "budget_tokens_per_goal": 5000,
+  "n_seeds": 3,
+  "arms": [
+    "cold",
+    "cold_readme",
+    "memory"
+  ],
+  "planted": [
+    "k1_save10_at_49",
+    "k2_stack_codes",
+    "k3_double_order",
+    "k4_admin_settings",
+    "k5_filter_lost",
+    "s1_oracle_lies",
+    "t2_search_blank"
+  ],
+  "port": 8766,
+  "caveats": [
+    "single-model (same-model independence boundary per ADR-0005)",
+    "HTTP-only probing (no browser; testapp is http.server)",
+    "cold_readme README authored by same session as manifest",
+    "phase-1-r1 release excludes t1_login_500 (t1/s1 occlusion)"
+  ]
+}

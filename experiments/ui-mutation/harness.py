@@ -15,7 +15,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Make `mneme` importable and allow running as a plain script (the package dir name
+# Make `praxis` importable and allow running as a plain script (the package dir name
 # `ui-mutation` is not a valid module path, so we bootstrap sys.path here).
 _HERE = Path(__file__).resolve().parent
 _SRC = _HERE.parents[1] / "src"
@@ -34,7 +34,7 @@ except ImportError:  # plain-script execution
     import runtimes as R  # type: ignore[no-redef]
     import simapp  # type: ignore[no-redef]
 
-from mneme.store import FileEventStore
+from praxis.store import FileEventStore
 
 FLOWS = ["login", "search", "checkout"]
 MEASURE_REPS = 5  # deterministic sim; reps give the rates/averages real denominators
@@ -140,7 +140,7 @@ def setup() -> None:
     global _ADAPTER, _GOAL_IDS
     import tempfile
 
-    store = FileEventStore(tempfile.mkdtemp(prefix="mneme-exp-"))
+    store = FileEventStore(tempfile.mkdtemp(prefix="praxis-exp-"))
     _ADAPTER, _GOAL_IDS = R.make_adapter(store, app="acme-web")
     mutate.reset()
     for flow in FLOWS:

@@ -1,0 +1,58 @@
+{
+  "arm": "cold_readme",
+  "elapsed_seconds": 21.86262420809362,
+  "goal_id": "login",
+  "raw_output": {
+    "actions_used": 8,
+    "arm": "cold_readme",
+    "elapsed_seconds": 21.862594208098017,
+    "goal_id": "login",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "The login form at /login and the happy path (valid credentials) work correctly \u2014 POST /session with valid creds returns 200 with Set-Cookie and Sign out link.",
+      "The regression is that credential validation is skipped: any non-empty identifier/secret bypasses auth and gets a valid session cookie.",
+      "Empty credentials (identifier=&secret=) still correctly return 401 with error message."
+    ],
+    "observations": [
+      {
+        "value": "POST /session with invalid credentials (e.g., identifier=bad@user.com&secret=wrongpassword, or identifier=nobody&secret=incorrect, or identifier=x&secret=y) returns HTTP 200 with Set-Cookie: session=ok and a Home page containing 'Sign out', instead of the documented HTTP 401 with an inline error. Authentication is effectively bypassed for any non-empty credential pair. Only completely empty identifier and secret fields trigger the expected 401 'Invalid credentials' response."
+      }
+    ],
+    "off_path_fraction": 0.125,
+    "tokens_used": 21646,
+    "visited_urls": [
+      "/login",
+      "/",
+      "/session",
+      "/session",
+      "/session",
+      "/session",
+      "/session",
+      "/session"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 2,
+  "summary": {
+    "actions_used": 8,
+    "arm": "cold_readme",
+    "detections": [
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "POST /session with invalid credentials (e.g., identifier=bad@user.com&secret=wrongpassword, or identifier=nobody&secret=incorrect, or identifier=x&secret=y) returns HTTP 200 with Set-Cookie: session=ok and a Home page containing 'Sign out', instead of the documented HTTP 401 with an inline error. Authentication is effectively bypassed for any non-empty credential pair. Only completely empty identifier and secret fields trigger the expected 401 'Invalid credentials' response.",
+        "seed": 2,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes invalid credentials being accepted (auth bypass), which is not listed in the manifest; the closest entry t1_login_500 expects a 500 error on login, and s1_oracle_lies expects a 401 on a valid session, neither of which matches the reported behavior of 200 with Set-Cookie on bad credentials."
+        }
+      }
+    ],
+    "off_path_fraction": 0.125,
+    "release": "phase-1-r1",
+    "seed": 2,
+    "tokens_used": 21646
+  }
+}

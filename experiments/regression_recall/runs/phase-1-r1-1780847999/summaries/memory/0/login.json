@@ -1,0 +1,94 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 33.607968166004866,
+  "goal_id": "login",
+  "raw_output": {
+    "actions_used": 8,
+    "arm": "memory",
+    "elapsed_seconds": 33.606697457958944,
+    "goal_id": "login",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "The core regression is the stale/invalid session cookie: POST /session returns 200 + cookie but GET /me with that cookie returns 401. This breaks the authenticated flow completely.",
+      "Secondary finding: /session performs no credential validation \u2014 any username/password combination yields 200 and a session cookie.",
+      "The cookie value 'ok' is a static string, not a per-session token \u2014 this is both a security issue and likely the root cause of the /me 401 (server may not be registering the session server-side).",
+      "No rate limiting on /session observed across 4 attempts with wrong credentials."
+    ],
+    "observations": [
+      {
+        "value": "REGRESSION [network/stale-session-cookie]: POST /session returns 200 and sets `Set-Cookie: session=ok; Path=/`, but GET /me with `Cookie: session=ok` returns 401 {\"authenticated\": false, \"reason\": \"session cookie missing or invalid\"}. The session cookie issued by /session is not recognized as valid by the /me endpoint \u2014 authenticated follow-ups fail despite a 200 on /session."
+      },
+      {
+        "value": "REGRESSION [network]: POST /session accepts any credentials without validation. POST /session with body identifier=user@example.com&secret=wrongpassword returns HTTP 200 and sets `Set-Cookie: session=ok` (same response as with valid credentials). No credential checking is performed."
+      },
+      {
+        "value": "OBSERVATION [network]: The session cookie value is always the static literal string 'ok' (Set-Cookie: session=ok) regardless of which credentials are submitted, indicating the session token is not generated per-session and carries no user identity."
+      },
+      {
+        "value": "OBSERVATION [uncertainty-resolved/u-login-rate-limit]: No rate limiting detected on POST /session. Multiple consecutive failed login attempts (wrong passwords) all returned HTTP 200 with no lockout, delay, or error response."
+      },
+      {
+        "value": "REGRESSION [behavioral]: The home page response body after POST /session contains a 'Sign out' link (<a href=\"/logout\">Sign out</a>) \u2014 success signal 1 is structurally satisfied \u2014 but this is misleading because the underlying session is not actually authenticated (GET /me returns 401 with the issued cookie)."
+      }
+    ],
+    "off_path_fraction": 0.125,
+    "tokens_used": 20481,
+    "visited_urls": [
+      "/",
+      "/me",
+      "/login",
+      "/session",
+      "/me",
+      "/session",
+      "/session",
+      "/session"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 8,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "REGRESSION [network/stale-session-cookie]: POST /session returns 200 and sets `Set-Cookie: session=ok; Path=/`, but GET /me with `Cookie: session=ok` returns 401 {\"authenticated\": false, \"reason\": \"session cookie missing or invalid\"}. The session cookie issued by /session is not recognized as valid by the /me endpoint \u2014 authenticated follow-ups fail despite a 200 on /session.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "REGRESSION [network]: POST /session accepts any credentials without validation. POST /session with body identifier=user@example.com&secret=wrongpassword returns HTTP 200 and sets `Set-Cookie: session=ok` (same response as with valid credentials). No credential checking is performed.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "OBSERVATION [network]: The session cookie value is always the static literal string 'ok' (Set-Cookie: session=ok) regardless of which credentials are submitted, indicating the session token is not generated per-session and carries no user identity.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "OBSERVATION [uncertainty-resolved/u-login-rate-limit]: No rate limiting detected on POST /session. Multiple consecutive failed login attempts (wrong passwords) all returned HTTP 200 with no lockout, delay, or error response.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "REGRESSION [behavioral]: The home page response body after POST /session contains a 'Sign out' link (<a href=\"/logout\">Sign out</a>) \u2014 success signal 1 is structurally satisfied \u2014 but this is misleading because the underlying session is not actually authenticated (GET /me returns 401 with the issued cookie).",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.125,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 20481
+  }
+}

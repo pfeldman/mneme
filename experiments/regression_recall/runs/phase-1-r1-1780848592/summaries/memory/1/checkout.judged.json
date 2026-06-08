@@ -1,0 +1,105 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 28.165428542066365,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 8,
+    "arm": "memory",
+    "elapsed_seconds": 28.165396166965365,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "Coupon SAVE10 at subtotal=49 should be rejected (min is 50) but is accepted \u2014 subtotal predicate regression confirmed.",
+      "Coupon stacking: repeated POST /cart/apply with SAVE10 keeps appending to the active list \u2014 no single-coupon enforcement.",
+      "Idempotency-Key on POST /orders does not deduplicate: two calls with key 'test-idem-key-001' produced order_ids A1017 and A1018 both with idempotent=false.",
+      "SAVE20 coupon returned 404 unknown coupon \u2014 only SAVE10 was found as a valid coupon code.",
+      "GET /orders/{id} returns 404 \u2014 no confirmation page route found at that path."
+    ],
+    "observations": [
+      {
+        "value": "REGRESSION [coupon-min-subtotal-bypass]: POST /cart/apply with body {coupon: SAVE10, subtotal: 49} returns HTTP 200 with applied=true and discount=10, instead of expected 422 with applied=false. The minimum subtotal predicate (>=50) is NOT enforced. Response body: {\"applied\": true, \"coupon\": \"SAVE10\", \"discount\": 10, \"subtotal\": 49, \"active\": [\"SAVE10\", ...]}."
+      },
+      {
+        "value": "REGRESSION [coupon-stack]: POST /cart/apply with the same coupon (SAVE10) applied repeatedly accumulates stacked entries in the active list. Each call returns 200 with applied=true and the active list grows ([\"SAVE10\", \"SAVE10\", \"SAVE10\", ...]), instead of returning 409 with applied=false after the first application. Coupon stacking is allowed and unbounded."
+      },
+      {
+        "value": "REGRESSION [idempotent-orders]: POST /orders with the same Idempotency-Key 'test-idem-key-001' and identical body submitted twice returns two DISTINCT order_ids (A1017 then A1018), both with idempotent=false. The idempotency cache is not working \u2014 this is a double-order / double-charge regression. Expected: second call returns same order_id with idempotent=true."
+      },
+      {
+        "value": "OBSERVATION [order-confirmation-page]: GET /orders/{order_id} (e.g. GET /orders/A1017) returns HTTP 404 \u2014 no order confirmation page exists at this path. The behavioral success signal (order confirmation page after payment) could not be verified via this route."
+      }
+    ],
+    "off_path_fraction": 0.875,
+    "tokens_used": 19038,
+    "visited_urls": [
+      "/cart/apply",
+      "/orders",
+      "/orders",
+      "/cart/apply",
+      "/cart/apply",
+      "/orders/A1017",
+      "/cart",
+      "/cart/apply"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 1,
+  "summary": {
+    "actions_used": 8,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "REGRESSION [coupon-min-subtotal-bypass]: POST /cart/apply with body {coupon: SAVE10, subtotal: 49} returns HTTP 200 with applied=true and discount=10, instead of expected 422 with applied=false. The minimum subtotal predicate (>=50) is NOT enforced. Response body: {\"applied\": true, \"coupon\": \"SAVE10\", \"discount\": 10, \"subtotal\": 49, \"active\": [\"SAVE10\", ...]}.",
+        "seed": 1,
+        "slug": "k1_save10_at_49",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "k1_save10_at_49",
+          "reason": "The observation exactly describes POST /cart/apply with coupon SAVE10 and subtotal 49 returning 200 with applied=true, matching the manifest entry for k1_save10_at_49."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "REGRESSION [coupon-stack]: POST /cart/apply with the same coupon (SAVE10) applied repeatedly accumulates stacked entries in the active list. Each call returns 200 with applied=true and the active list grows ([\"SAVE10\", \"SAVE10\", \"SAVE10\", ...]), instead of returning 409 with applied=false after the first application. Coupon stacking is allowed and unbounded.",
+        "seed": 1,
+        "slug": "k2_stack_codes",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "k2_stack_codes",
+          "reason": "The observation describes POST /cart/apply accepting repeated coupon applications and accumulating stacked entries, which matches the manifest entry for k2_stack_codes where a second coupon is accepted while the first is still active (unbounded stacking of the same coupon is a superset of that bug)."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "REGRESSION [idempotent-orders]: POST /orders with the same Idempotency-Key 'test-idem-key-001' and identical body submitted twice returns two DISTINCT order_ids (A1017 then A1018), both with idempotent=false. The idempotency cache is not working \u2014 this is a double-order / double-charge regression. Expected: second call returns same order_id with idempotent=true.",
+        "seed": 1,
+        "slug": "k3_double_order",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "k3_double_order",
+          "reason": "The observation explicitly reports POST /orders with the same Idempotency-Key returning two distinct order_ids (A1017 and A1018), which directly matches the k3_double_order manifest entry's expected observation."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "OBSERVATION [order-confirmation-page]: GET /orders/{order_id} (e.g. GET /orders/A1017) returns HTTP 404 \u2014 no order confirmation page exists at this path. The behavioral success signal (order confirmation page after payment) could not be verified via this route.",
+        "seed": 1,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "A 404 response for GET /orders/{order_id} is not listed in the manifest, and the observation describes a missing endpoint rather than any of the planted regressions; no manifest entry covers order confirmation page retrieval failing with 404."
+        }
+      }
+    ],
+    "off_path_fraction": 0.875,
+    "release": "phase-1-r1",
+    "seed": 1,
+    "tokens_used": 19038
+  }
+}

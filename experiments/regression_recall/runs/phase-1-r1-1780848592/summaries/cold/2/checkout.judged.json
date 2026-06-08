@@ -1,0 +1,93 @@
+{
+  "arm": "cold",
+  "elapsed_seconds": 39.05688079202082,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 17,
+    "arm": "cold",
+    "elapsed_seconds": 39.056851082947105,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "POST /session with invalid credentials (e.g., identifier=notauser, secret=badpassword123) returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome' home page \u2014 authentication is not validated; any credentials are accepted and a valid session cookie is issued."
+      },
+      {
+        "value": "POST /order with a non-empty card number (e.g., card=1234, which is not a valid card number) returns HTTP 200 'Order confirmed' \u2014 card number validation is absent; any non-empty string is accepted as a valid payment card."
+      },
+      {
+        "value": "POST /order without a session cookie (unauthenticated) and with a valid-looking card number (card=4111111111111111) returns HTTP 200 'Order #A1024 confirmed' \u2014 the order endpoint does not require authentication; unauthenticated users can place orders."
+      }
+    ],
+    "off_path_fraction": 0.4117647058823529,
+    "tokens_used": 40808,
+    "visited_urls": [
+      "/",
+      "/checkout",
+      "/cart",
+      "/login",
+      "/cart/checkout",
+      "/session",
+      "/order",
+      "/order",
+      "/order",
+      "/cart/checkout",
+      "/order",
+      "/search",
+      "/session",
+      "/cart",
+      "/session",
+      "/order",
+      "/order"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 2,
+  "summary": {
+    "actions_used": 17,
+    "arm": "cold",
+    "detections": [
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /session with invalid credentials (e.g., identifier=notauser, secret=badpassword123) returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome' home page \u2014 authentication is not validated; any credentials are accepted and a valid session cookie is issued.",
+        "seed": 2,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes a credential-validation bypass (any credentials accepted), which is not listed in the manifest and is a distinct bug from t1_login_500 (which expects a 500 error on login, not a 200 success with invalid credentials)."
+        }
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /order with a non-empty card number (e.g., card=1234, which is not a valid card number) returns HTTP 200 'Order confirmed' \u2014 card number validation is absent; any non-empty string is accepted as a valid payment card.",
+        "seed": 2,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes missing card-number validation, which is not listed in the manifest and is not covered by the testapp's public rules as a planted regression."
+        }
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /order without a session cookie (unauthenticated) and with a valid-looking card number (card=4111111111111111) returns HTTP 200 'Order #A1024 confirmed' \u2014 the order endpoint does not require authentication; unauthenticated users can place orders.",
+        "seed": 2,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes an unauthenticated user successfully placing an order, which is not listed in the manifest as a planted regression, and the public rules do not explicitly require authentication for order placement, so this cannot be confirmed as a known bug."
+        }
+      }
+    ],
+    "off_path_fraction": 0.4117647058823529,
+    "release": "phase-1-r1",
+    "seed": 2,
+    "tokens_used": 40808
+  }
+}

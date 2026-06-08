@@ -1,0 +1,84 @@
+{
+  "arm": "cold",
+  "elapsed_seconds": 18.990385374985635,
+  "goal_id": "login",
+  "raw_output": {
+    "actions_used": 8,
+    "arm": "cold",
+    "elapsed_seconds": 18.989350749994628,
+    "goal_id": "login",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "POST /session with arbitrary non-empty credentials (e.g. identifier=wrong@example.com&secret=wrongpassword, or identifier=a&secret=b) returns HTTP 200 with Set-Cookie: session=ok and the authenticated home page. Credential validation is not enforced \u2014 any non-empty identifier/secret pair is accepted as a valid login."
+      },
+      {
+        "value": "POST /session with empty identifier and empty secret returns HTTP 401 with 'Invalid credentials', but this is the only rejection case \u2014 the credential check only gates on non-empty input, not on actual credential correctness."
+      },
+      {
+        "value": "GET /logout returns HTTP 404 \u2014 the logout endpoint referenced in the authenticated home page body (<a href='/logout'>Sign out</a>) does not exist."
+      }
+    ],
+    "off_path_fraction": 0.25,
+    "tokens_used": 13626,
+    "visited_urls": [
+      "/",
+      "/login",
+      "/session",
+      "/session",
+      "/session",
+      "/session",
+      "/session",
+      "/logout"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 8,
+    "arm": "cold",
+    "detections": [
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /session with arbitrary non-empty credentials (e.g. identifier=wrong@example.com&secret=wrongpassword, or identifier=a&secret=b) returns HTTP 200 with Set-Cookie: session=ok and the authenticated home page. Credential validation is not enforced \u2014 any non-empty identifier/secret pair is accepted as a valid login.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes POST /session accepting arbitrary credentials and returning 200 with a session cookie, which is not listed in the manifest (t1_login_500 expects a 500 error, not permissive auth), and the public rules do not document this permissive-login behavior as a planted regression."
+        }
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /session with empty identifier and empty secret returns HTTP 401 with 'Invalid credentials', but this is the only rejection case \u2014 the credential check only gates on non-empty input, not on actual credential correctness.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes a suspected flaw in credential validation logic (non-empty input accepted regardless of correctness), but this behavior is not listed in the manifest, and the public rules do not specify what constitutes valid credentials or how the server must validate them beyond rejecting empty input."
+        }
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "GET /logout returns HTTP 404 \u2014 the logout endpoint referenced in the authenticated home page body (<a href='/logout'>Sign out</a>) does not exist.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "A missing /logout endpoint returning 404 is not listed in the manifest, and the public rules do not specify that /logout must exist or return any particular status code."
+        }
+      }
+    ],
+    "off_path_fraction": 0.25,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 13626
+  }
+}

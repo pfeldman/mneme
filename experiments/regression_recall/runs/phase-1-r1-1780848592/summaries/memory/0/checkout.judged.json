@@ -1,0 +1,106 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 36.049218375002965,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 10,
+    "arm": "memory",
+    "elapsed_seconds": 36.0491918749176,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "Coupon SAVE20 and TAKE5 both return 404 unknown coupon \u2014 only SAVE10 is a known coupon in this environment.",
+      "Coupon stacking was tested by applying SAVE10 twice; the active array grew to [SAVE10, SAVE10] confirming stacking is allowed when it should not be.",
+      "Idempotency-Key is clearly not being honoured: both POST /orders calls with key 'test-idem-key-001' created new orders (A1015, A1016) with idempotent=false.",
+      "u-receipt-window: No receipt/expiry URL was observed in the confirmation page \u2014 only an order number in plain text. Receipt URL lifetime could not be tested as no URL was returned."
+    ],
+    "observations": [
+      {
+        "value": "REGRESSION [coupon-min-subtotal-bypass]: POST /cart/apply with body {coupon: 'SAVE10', subtotal: 49} returns HTTP 200 with applied=true and discount=10 (body: {\"applied\": true, \"coupon\": \"SAVE10\", \"discount\": 10, \"subtotal\": 49, \"active\": [\"SAVE10\"]}). Expected: 422 with applied=false. The minimum-subtotal predicate (>=50) is not enforced."
+      },
+      {
+        "value": "REGRESSION [idempotent-orders / double-order]: Two sequential POST /orders requests with the same Idempotency-Key header ('test-idem-key-001') and identical body returned two DISTINCT order_ids (A1015 then A1016), both with idempotent=false. Expected: second response returns the same order_id with idempotent=true. This is the double-charge regression."
+      },
+      {
+        "value": "REGRESSION [coupon-stack]: POST /cart/apply with coupon SAVE10 at subtotal 100 applied twice returns HTTP 200 with active=[\"SAVE10\",\"SAVE10\"] (body: {\"applied\": true, \"coupon\": \"SAVE10\", \"discount\": 10, \"subtotal\": 100, \"active\": [\"SAVE10\", \"SAVE10\"]}). The same coupon was stacked; expected 409 with applied=false on the second application."
+      },
+      {
+        "value": "CONFIRMED [behavioral - order confirmation]: POST /cart/checkout returns 200 with a Payment page (form at /order), and POST /order with a card number returns HTTP 200 with an 'Order confirmed' page containing a confirmation number (e.g. Order #A1024). The happy-path checkout flow is operational."
+      }
+    ],
+    "off_path_fraction": 0.7,
+    "tokens_used": 25167,
+    "visited_urls": [
+      "/",
+      "/cart/apply",
+      "/orders",
+      "/orders",
+      "/cart/apply",
+      "/cart/apply",
+      "/cart",
+      "/cart/checkout",
+      "/cart/apply",
+      "/order"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 10,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "REGRESSION [coupon-min-subtotal-bypass]: POST /cart/apply with body {coupon: 'SAVE10', subtotal: 49} returns HTTP 200 with applied=true and discount=10 (body: {\"applied\": true, \"coupon\": \"SAVE10\", \"discount\": 10, \"subtotal\": 49, \"active\": [\"SAVE10\"]}). Expected: 422 with applied=false. The minimum-subtotal predicate (>=50) is not enforced.",
+        "seed": 0,
+        "slug": "k1_save10_at_49",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "k1_save10_at_49",
+          "reason": "The observation exactly matches the manifest entry: POST /cart/apply with coupon SAVE10 and subtotal 49 returns 200 with applied=true, which is the registered regression for k1_save10_at_49."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "REGRESSION [idempotent-orders / double-order]: Two sequential POST /orders requests with the same Idempotency-Key header ('test-idem-key-001') and identical body returned two DISTINCT order_ids (A1015 then A1016), both with idempotent=false. Expected: second response returns the same order_id with idempotent=true. This is the double-charge regression.",
+        "seed": 0,
+        "slug": "k3_double_order",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "k3_double_order",
+          "reason": "The observation explicitly describes two sequential POST /orders requests with the same Idempotency-Key returning two distinct order_ids (A1015, A1016), matching the manifest entry for k3_double_order exactly."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "REGRESSION [coupon-stack]: POST /cart/apply with coupon SAVE10 at subtotal 100 applied twice returns HTTP 200 with active=[\"SAVE10\",\"SAVE10\"] (body: {\"applied\": true, \"coupon\": \"SAVE10\", \"discount\": 10, \"subtotal\": 100, \"active\": [\"SAVE10\", \"SAVE10\"]}). The same coupon was stacked; expected 409 with applied=false on the second application.",
+        "seed": 0,
+        "slug": "k2_stack_codes",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "k2_stack_codes",
+          "reason": "The observation describes POST /cart/apply accepting a second coupon application while the first is still active, matching k2_stack_codes; the arm applied SAVE10 twice and received HTTP 200 with the coupon duplicated in the active list."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "CONFIRMED [behavioral - order confirmation]: POST /cart/checkout returns 200 with a Payment page (form at /order), and POST /order with a card number returns HTTP 200 with an 'Order confirmed' page containing a confirmation number (e.g. Order #A1024). The happy-path checkout flow is operational.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "noise",
+          "slug": null,
+          "reason": "The observation describes a successfully functioning checkout flow with no regression claimed; it is a report of expected behavior working correctly, not a bug."
+        }
+      }
+    ],
+    "off_path_fraction": 0.7,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 25167
+  }
+}

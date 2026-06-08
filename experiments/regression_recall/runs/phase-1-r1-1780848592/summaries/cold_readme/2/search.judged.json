@@ -1,0 +1,56 @@
+{
+  "arm": "cold_readme",
+  "elapsed_seconds": 18.102191249956377,
+  "goal_id": "search",
+  "raw_output": {
+    "actions_used": 6,
+    "arm": "cold_readme",
+    "elapsed_seconds": 18.1021530830767,
+    "goal_id": "search",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "The /_state endpoint confirms 't2_search_blank' is among the planted regressions, consistent with the observed behavior.",
+      "Empty query GET /search?q= correctly re-shows the search form as documented.",
+      "Tested queries: 'shirt', 'a', 'test' \u2014 all return the same error response with no results list."
+    ],
+    "observations": [
+      {
+        "value": "GET /search?q=shirt (and any non-empty query) returns HTTP 200 with body containing '<p class=\"error\">No results found.</p>' and no '<ul class=\"results\">' element. According to the README, submitting a query should return a results list rendered as <li> items inside a <ul class=\"results\">. The search results list is entirely missing for all non-empty queries \u2014 every search returns 'No results found' instead of a populated results list."
+      }
+    ],
+    "off_path_fraction": 0.8333333333333334,
+    "tokens_used": 15647,
+    "visited_urls": [
+      "/search",
+      "/_state",
+      "/search?q=shirt",
+      "/search?q=",
+      "/search?q=a",
+      "/search?q=test"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 2,
+  "summary": {
+    "actions_used": 6,
+    "arm": "cold_readme",
+    "detections": [
+      {
+        "arm": "cold_readme",
+        "matched_manifest": true,
+        "observation_text": "GET /search?q=shirt (and any non-empty query) returns HTTP 200 with body containing '<p class=\"error\">No results found.</p>' and no '<ul class=\"results\">' element. According to the README, submitting a query should return a results list rendered as <li> items inside a <ul class=\"results\">. The search results list is entirely missing for all non-empty queries \u2014 every search returns 'No results found' instead of a populated results list.",
+        "seed": 2,
+        "slug": "t2_search_blank",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "t2_search_blank",
+          "reason": "The observation describes search results being empty/absent for any non-empty query, matching the manifest entry that the search results list is empty with no items rendered."
+        }
+      }
+    ],
+    "off_path_fraction": 0.8333333333333334,
+    "release": "phase-1-r1",
+    "seed": 2,
+    "tokens_used": 15647
+  }
+}

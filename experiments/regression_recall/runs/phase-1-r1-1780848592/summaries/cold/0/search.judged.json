@@ -1,0 +1,80 @@
+{
+  "arm": "cold",
+  "elapsed_seconds": 40.72535079205409,
+  "goal_id": "search",
+  "raw_output": {
+    "actions_used": 19,
+    "arm": "cold",
+    "elapsed_seconds": 40.72532345901709,
+    "goal_id": "search",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "GET /search?q=<any term> always returns HTTP 200 with 'No results found.' regardless of the query. Tested with q=test, q=widget, q=apple, q=a, q=phone, q=* \u2014 all return the same body: '<p class=\"error\">No results found.</p>'. Search is completely broken and returns no results for any input."
+      },
+      {
+        "value": "POST /session accepts any credentials without validation. Submitting completely bogus credentials (identifier=wrong@bad.com, secret=wrong) returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome' home page, just like valid credentials. Authentication is not enforced."
+      }
+    ],
+    "off_path_fraction": 0.8947368421052632,
+    "tokens_used": 46438,
+    "visited_urls": [
+      "/",
+      "/search",
+      "/search?q=test",
+      "/search?q=",
+      "/search?q=widget",
+      "/search?q=apple",
+      "/search?q=a",
+      "/login",
+      "/session",
+      "/session",
+      "/search?q=widget",
+      "/search?q=a",
+      "/products",
+      "/api/search?q=a",
+      "/cart",
+      "/search?q=phone",
+      "/search?q=*",
+      "/search",
+      "/session"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 19,
+    "arm": "cold",
+    "detections": [
+      {
+        "arm": "cold",
+        "matched_manifest": true,
+        "observation_text": "GET /search?q=<any term> always returns HTTP 200 with 'No results found.' regardless of the query. Tested with q=test, q=widget, q=apple, q=a, q=phone, q=* \u2014 all return the same body: '<p class=\"error\">No results found.</p>'. Search is completely broken and returns no results for any input.",
+        "seed": 0,
+        "slug": "t2_search_blank",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "t2_search_blank",
+          "reason": "The observation reports that search results are always empty ('No results found.' for every query tested), which directly matches the manifest entry describing the search results list being empty with no items rendered."
+        }
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /session accepts any credentials without validation. Submitting completely bogus credentials (identifier=wrong@bad.com, secret=wrong) returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome' home page, just like valid credentials. Authentication is not enforced.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes authentication accepting bogus credentials and returning 200 with a session cookie, which is not listed in the manifest and is a separate behavior from the planted t1_login_500 regression (which expects a 500 error, not a permissive 200)."
+        }
+      }
+    ],
+    "off_path_fraction": 0.8947368421052632,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 46438
+  }
+}

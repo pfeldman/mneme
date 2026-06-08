@@ -1,0 +1,99 @@
+{
+  "arm": "cold",
+  "elapsed_seconds": 46.88574029202573,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 18,
+    "arm": "cold",
+    "elapsed_seconds": 46.88572308293078,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "POST /session with any non-empty identifier and secret returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome' home page, regardless of credential validity. E.g., POST /session with identifier=wrong@example.com&secret=wrongpassword returns 200 and sets session=ok. Only completely empty credentials (identifier=&secret=) are rejected with 401. This means authentication accepts any non-empty credential pair as valid."
+      },
+      {
+        "value": "POST /order with a valid card number always returns HTTP 200 with 'Order #A1024 confirmed.' \u2014 the order confirmation number is always the same static value (#A1024) rather than a unique per-order identifier. Multiple successive POST /order requests all produce 'Order #A1024 confirmed.'"
+      },
+      {
+        "value": "POST /order with a valid card number (e.g. card=4111111111111111) succeeds (HTTP 200 'Order confirmed') without requiring any session cookie or authentication. The /order endpoint does not enforce authentication."
+      },
+      {
+        "value": "GET /logout returns HTTP 404 (Not Found). The page rendered after a successful login at GET /session response shows a 'Sign out' link pointing to /logout, but that route does not exist."
+      },
+      {
+        "value": "GET /search?q= (empty query string) returns HTTP 200 with the blank search form rather than showing 'No results found.' \u2014 only GET /search?q=<non-empty> triggers the results page (e.g. /search?q=test returns 200 with 'No results found.'). An empty-string query silently shows the form instead of results."
+      }
+    ],
+    "off_path_fraction": 0.6111111111111112,
+    "tokens_used": 41394,
+    "visited_urls": [
+      "/",
+      "/checkout",
+      "/cart",
+      "/login",
+      "/cart/checkout",
+      "/session",
+      "/order",
+      "/order",
+      "/order",
+      "/search",
+      "/search?q=test",
+      "/session",
+      "/order",
+      "/cart/checkout",
+      "/session",
+      "/logout",
+      "/logout",
+      "/search?q="
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 18,
+    "arm": "cold",
+    "detections": [
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /session with any non-empty identifier and secret returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome' home page, regardless of credential validity. E.g., POST /session with identifier=wrong@example.com&secret=wrongpassword returns 200 and sets session=ok. Only completely empty credentials (identifier=&secret=) are rejected with 401. This means authentication accepts any non-empty credential pair as valid.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /order with a valid card number always returns HTTP 200 with 'Order #A1024 confirmed.' \u2014 the order confirmation number is always the same static value (#A1024) rather than a unique per-order identifier. Multiple successive POST /order requests all produce 'Order #A1024 confirmed.'",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /order with a valid card number (e.g. card=4111111111111111) succeeds (HTTP 200 'Order confirmed') without requiring any session cookie or authentication. The /order endpoint does not enforce authentication.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "GET /logout returns HTTP 404 (Not Found). The page rendered after a successful login at GET /session response shows a 'Sign out' link pointing to /logout, but that route does not exist.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "GET /search?q= (empty query string) returns HTTP 200 with the blank search form rather than showing 'No results found.' \u2014 only GET /search?q=<non-empty> triggers the results page (e.g. /search?q=test returns 200 with 'No results found.'). An empty-string query silently shows the form instead of results.",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.6111111111111112,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 41394
+  }
+}

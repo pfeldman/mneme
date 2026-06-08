@@ -1,0 +1,146 @@
+{
+  "arm": "cold",
+  "elapsed_seconds": 60.42140529199969,
+  "goal_id": "search",
+  "raw_output": {
+    "actions_used": 31,
+    "arm": "cold",
+    "elapsed_seconds": 60.42138441698626,
+    "goal_id": "search",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "App is MnemeTestApp/0 on Python/3.13.5.",
+      "Discovered routes: GET / (home), GET /login (sign-in form), POST /session (authenticate), GET /search (search form), GET /search?q=... (results), GET /cart (cart), POST /cart/checkout (payment form), POST /order (place order). 404s on: GET /logout, GET /session, POST /search, GET /cart/checkout, GET /products.",
+      "The session cookie value is always the static string 'session=ok' regardless of which user authenticated."
+    ],
+    "observations": [
+      {
+        "value": "GET /search?q=<non-empty> always returns HTTP 200 with 'No results found.' regardless of query content (tried: 'test', 'widget', 'a', 'shoe', 'product', 'acme', 'order', '<script>alert(1)</script>', '%25'). The search function appears to return zero results for all queries."
+      },
+      {
+        "value": "GET /search?q= (empty string) returns HTTP 200 with the search form page (title 'Search', Content-Length 324) rather than a results page, meaning empty-q is treated as no query submitted."
+      },
+      {
+        "value": "POST /search returns HTTP 404. The search endpoint only accepts GET requests; a POST to /search is not found."
+      },
+      {
+        "value": "POST /session with any non-empty identifier and secret (e.g. identifier='bad@bad.com' secret='wrongpass', or identifier='admin' secret='admin', or identifier='x' secret='x') returns HTTP 200, sets 'Set-Cookie: session=ok; Path=/' and logs the user in. Authentication accepts arbitrary credentials as long as both fields are non-empty \u2014 there is no real credential validation."
+      },
+      {
+        "value": "POST /session with empty identifier and empty secret returns HTTP 401 with 'Invalid credentials.' This is the only case that rejects login, confirming only blank-field inputs are rejected."
+      },
+      {
+        "value": "POST /cart/checkout (the checkout form action) returns HTTP 200 with a Payment page (title 'Payment', card input, action='/order') without requiring a session cookie. The checkout flow is accessible to unauthenticated users."
+      },
+      {
+        "value": "POST /order with card='4111111111111111' (no session cookie, no prior cart state) returns HTTP 200 with 'Order #A1024 confirmed.' The order placement endpoint accepts orders from unauthenticated users with no cart items."
+      },
+      {
+        "value": "GET /logout returns HTTP 404 \u2014 there is no logout endpoint accessible via GET (even with a valid session cookie), though the home page links to /logout after login."
+      }
+    ],
+    "off_path_fraction": 0.9354838709677419,
+    "tokens_used": 70297,
+    "visited_urls": [
+      "/",
+      "/search",
+      "/search?q=test",
+      "/login",
+      "/cart",
+      "/search?q=",
+      "/search?q=widget",
+      "/search?q=a",
+      "/session",
+      "/search?q=shoe",
+      "/search?q=product",
+      "/search?q=test",
+      "/search?q=%25",
+      "/products",
+      "/search?q=acme",
+      "/search?category=all",
+      "/search",
+      "/search?q=<script>alert(1)</script>",
+      "/logout",
+      "/cart/checkout",
+      "/logout",
+      "/cart/checkout",
+      "/session",
+      "/cart/checkout",
+      "/session",
+      "/order",
+      "/search?q=confirmed",
+      "/session",
+      "/session",
+      "/session",
+      "/search?q=order"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 31,
+    "arm": "cold",
+    "detections": [
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "GET /search?q=<non-empty> always returns HTTP 200 with 'No results found.' regardless of query content (tried: 'test', 'widget', 'a', 'shoe', 'product', 'acme', 'order', '<script>alert(1)</script>', '%25'). The search function appears to return zero results for all queries.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "GET /search?q= (empty string) returns HTTP 200 with the search form page (title 'Search', Content-Length 324) rather than a results page, meaning empty-q is treated as no query submitted.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /search returns HTTP 404. The search endpoint only accepts GET requests; a POST to /search is not found.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /session with any non-empty identifier and secret (e.g. identifier='bad@bad.com' secret='wrongpass', or identifier='admin' secret='admin', or identifier='x' secret='x') returns HTTP 200, sets 'Set-Cookie: session=ok; Path=/' and logs the user in. Authentication accepts arbitrary credentials as long as both fields are non-empty \u2014 there is no real credential validation.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /session with empty identifier and empty secret returns HTTP 401 with 'Invalid credentials.' This is the only case that rejects login, confirming only blank-field inputs are rejected.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /cart/checkout (the checkout form action) returns HTTP 200 with a Payment page (title 'Payment', card input, action='/order') without requiring a session cookie. The checkout flow is accessible to unauthenticated users.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /order with card='4111111111111111' (no session cookie, no prior cart state) returns HTTP 200 with 'Order #A1024 confirmed.' The order placement endpoint accepts orders from unauthenticated users with no cart items.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "GET /logout returns HTTP 404 \u2014 there is no logout endpoint accessible via GET (even with a valid session cookie), though the home page links to /logout after login.",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.9354838709677419,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 70297
+  }
+}

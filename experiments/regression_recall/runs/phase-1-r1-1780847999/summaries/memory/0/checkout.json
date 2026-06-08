@@ -1,0 +1,89 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 46.48271741694771,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 13,
+    "arm": "memory",
+    "elapsed_seconds": 46.48270191706251,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "R-mode: All three failure signals were observed (coupon min subtotal bypass, coupon stacking, double-order on same idempotency key). The behavioral success signal (order confirmation page) was also verified.",
+      "E-mode: All three risk triggers were executed. Coupon stacking is reproducible with the same coupon code (SAVE10) repeatedly; a different coupon (SAVE20, SAVE5) returned 404 unknown coupon, so only SAVE10 is known valid.",
+      "POST /orders is at /orders (API, returns JSON); the HTML form-based order placement is at POST /order (returns HTML confirmation). Idempotency regression is on the /orders API endpoint.",
+      "Uncertainty [u-receipt-window]: The confirmation page (POST /order) does not include a receipt URL or expiry information \u2014 only an order number is shown. No receipt URL was found to test expiry semantics."
+    ],
+    "observations": [
+      {
+        "value": "REGRESSION [coupon-min-subtotal-bypass]: POST /cart/apply with body {\"coupon\": \"SAVE10\", \"subtotal\": 49} returns HTTP 200 with {\"applied\": true, \"coupon\": \"SAVE10\", \"discount\": 10, \"subtotal\": 49, \"active\": [\"SAVE10\"]}. Expected: 422 with applied=false. The subtotal minimum predicate (>= 50) is not enforced."
+      },
+      {
+        "value": "REGRESSION [coupon-stack]: POST /cart/apply accepts a second (and third) application of SAVE10 while it is already active in the cart. Successive calls with {\"coupon\": \"SAVE10\", \"subtotal\": 100} return 200 with active=[\"SAVE10\",\"SAVE10\"] and then active=[\"SAVE10\",\"SAVE10\",\"SAVE10\"]. Only one coupon per cart should be allowed; a 409 with applied=false was expected on the second call."
+      },
+      {
+        "value": "REGRESSION [idempotent-orders]: POST /orders with the same Idempotency-Key header returns distinct order_ids on every call. First call with Idempotency-Key: test-idem-key-abc123 returned {\"order_id\": \"A1005\", \"idempotent\": false}; second identical call returned {\"order_id\": \"A1006\", \"idempotent\": false}. Similarly, Idempotency-Key: test-idem-key-xyz999 returned A1007 then A1008. Both responses have idempotent=false. This is the double-order regression."
+      },
+      {
+        "value": "SUCCESS [behavioral]: POST /cart/checkout followed by POST /order with body {\"card\": \"4111111111111111\"} returns HTTP 200 with an order confirmation page containing <p class=\"confirmation\">Order #A1024 confirmed.</p>. The happy-path checkout flow works."
+      }
+    ],
+    "off_path_fraction": 0.07692307692307693,
+    "tokens_used": 36943,
+    "visited_urls": [
+      "/",
+      "/cart/apply",
+      "/cart/apply",
+      "/orders",
+      "/cart/apply",
+      "/orders",
+      "/cart",
+      "/cart/apply",
+      "/cart/checkout",
+      "/cart/apply",
+      "/order",
+      "/orders",
+      "/orders"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 13,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "REGRESSION [coupon-min-subtotal-bypass]: POST /cart/apply with body {\"coupon\": \"SAVE10\", \"subtotal\": 49} returns HTTP 200 with {\"applied\": true, \"coupon\": \"SAVE10\", \"discount\": 10, \"subtotal\": 49, \"active\": [\"SAVE10\"]}. Expected: 422 with applied=false. The subtotal minimum predicate (>= 50) is not enforced.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "REGRESSION [coupon-stack]: POST /cart/apply accepts a second (and third) application of SAVE10 while it is already active in the cart. Successive calls with {\"coupon\": \"SAVE10\", \"subtotal\": 100} return 200 with active=[\"SAVE10\",\"SAVE10\"] and then active=[\"SAVE10\",\"SAVE10\",\"SAVE10\"]. Only one coupon per cart should be allowed; a 409 with applied=false was expected on the second call.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "REGRESSION [idempotent-orders]: POST /orders with the same Idempotency-Key header returns distinct order_ids on every call. First call with Idempotency-Key: test-idem-key-abc123 returned {\"order_id\": \"A1005\", \"idempotent\": false}; second identical call returned {\"order_id\": \"A1006\", \"idempotent\": false}. Similarly, Idempotency-Key: test-idem-key-xyz999 returned A1007 then A1008. Both responses have idempotent=false. This is the double-order regression.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": false,
+        "observation_text": "SUCCESS [behavioral]: POST /cart/checkout followed by POST /order with body {\"card\": \"4111111111111111\"} returns HTTP 200 with an order confirmation page containing <p class=\"confirmation\">Order #A1024 confirmed.</p>. The happy-path checkout flow works.",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.07692307692307693,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 36943
+  }
+}

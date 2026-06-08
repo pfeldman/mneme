@@ -1,0 +1,98 @@
+{
+  "arm": "cold",
+  "elapsed_seconds": 41.06546354095917,
+  "goal_id": "checkout",
+  "raw_output": {
+    "actions_used": 17,
+    "arm": "cold",
+    "elapsed_seconds": 41.06544266699348,
+    "goal_id": "checkout",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "POST /session with any non-empty credentials (e.g. identifier=x, secret=y or identifier=wrong@example.com, secret=wrongpassword) returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome' home page instead of HTTP 401 with an error \u2014 the login endpoint accepts any non-empty credentials as valid, bypassing authentication entirely."
+      },
+      {
+        "value": "POST /session with identifier=admin, secret=hunter2 (arbitrary credentials) returns HTTP 200 OK with Set-Cookie: session=ok, confirming no credential validation is performed whatsoever."
+      },
+      {
+        "value": "GET /logout returns HTTP 404 Not Found, meaning there is no logout endpoint accessible via GET; the page at /login shows 'Sign out' linking to /logout but neither GET nor POST /logout works (both return 404), so users cannot sign out."
+      },
+      {
+        "value": "POST /cart/checkout (the 'Proceed to checkout' action) returns HTTP 200 with the Payment page without requiring any authentication \u2014 no login or session cookie is needed to reach the payment step."
+      },
+      {
+        "value": "POST /order with card=4111111111111111 returns HTTP 200 'Order confirmed' without any session or authentication cookie required \u2014 the order placement endpoint is fully unauthenticated and accepts orders without login."
+      }
+    ],
+    "off_path_fraction": 0.7058823529411765,
+    "tokens_used": 40361,
+    "visited_urls": [
+      "/",
+      "/checkout",
+      "/cart",
+      "/login",
+      "/cart/checkout",
+      "/session",
+      "/order",
+      "/order",
+      "/session",
+      "/search",
+      "/search?q=test",
+      "/logout",
+      "/logout",
+      "/session",
+      "/session",
+      "/cart/checkout",
+      "/session"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 17,
+    "arm": "cold",
+    "detections": [
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /session with any non-empty credentials (e.g. identifier=x, secret=y or identifier=wrong@example.com, secret=wrongpassword) returns HTTP 200 with Set-Cookie: session=ok and a 'Welcome' home page instead of HTTP 401 with an error \u2014 the login endpoint accepts any non-empty credentials as valid, bypassing authentication entirely.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /session with identifier=admin, secret=hunter2 (arbitrary credentials) returns HTTP 200 OK with Set-Cookie: session=ok, confirming no credential validation is performed whatsoever.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "GET /logout returns HTTP 404 Not Found, meaning there is no logout endpoint accessible via GET; the page at /login shows 'Sign out' linking to /logout but neither GET nor POST /logout works (both return 404), so users cannot sign out.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /cart/checkout (the 'Proceed to checkout' action) returns HTTP 200 with the Payment page without requiring any authentication \u2014 no login or session cookie is needed to reach the payment step.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "POST /order with card=4111111111111111 returns HTTP 200 'Order confirmed' without any session or authentication cookie required \u2014 the order placement endpoint is fully unauthenticated and accepts orders without login.",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.7058823529411765,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 40361
+  }
+}

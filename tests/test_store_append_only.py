@@ -6,9 +6,9 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timedelta, timezone
 
-from mneme.merge import project
-from mneme.model import Target
-from mneme.store import FileEventStore, ObservationEvent, ObservedSignal
+from praxis.merge import project
+from praxis.model import Target
+from praxis.store import FileEventStore, ObservationEvent, ObservedSignal
 
 
 def _sig(value: str, type_: str = "behavioral") -> ObservedSignal:
@@ -34,7 +34,9 @@ def test_one_file_per_event(tmp_path) -> None:
     store = FileEventStore(tmp_path)
     for i in range(5):
         store.append(ObservationEvent(agent_id="a", goal_id="g", signals=[_sig(f"s{i}")]))
-    assert len(list(tmp_path.glob("*.json"))) == 5
+    # Per ADR-0012 events live under `<root>/<tenant_id>/events/`; the default
+    # tenant id is "local" when none is specified on the constructor.
+    assert len(list((tmp_path / "local" / "events").glob("*.json"))) == 5
 
 
 def test_read_filters_by_goal_and_orders_by_time(tmp_path) -> None:

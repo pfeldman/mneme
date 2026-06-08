@@ -1,0 +1,68 @@
+{
+  "arm": "cold",
+  "elapsed_seconds": 18.22549533296842,
+  "goal_id": "login",
+  "raw_output": {
+    "actions_used": 7,
+    "arm": "cold",
+    "elapsed_seconds": 18.22447170794476,
+    "goal_id": "login",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "Authentication bypass: POST /session with any non-empty identifier and secret is accepted with HTTP 200 and sets session=ok cookie. For example, POST /session with identifier=wrong@example.com&secret=wrongpassword returns 200 and a valid session. Credential validation is not enforced \u2014 only empty/missing values produce a 401."
+      },
+      {
+        "value": "Session cookie is trivially forgeable: Set-Cookie header from POST /session always sets 'session=ok; Path=/', a static, unsigned, non-secret token with no HttpOnly or Secure flags."
+      }
+    ],
+    "off_path_fraction": 0.2857142857142857,
+    "tokens_used": 13125,
+    "visited_urls": [
+      "/",
+      "/login",
+      "/session",
+      "/session",
+      "/session",
+      "/session",
+      "/logout"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 7,
+    "arm": "cold",
+    "detections": [
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "Authentication bypass: POST /session with any non-empty identifier and secret is accepted with HTTP 200 and sets session=ok cookie. For example, POST /session with identifier=wrong@example.com&secret=wrongpassword returns 200 and a valid session. Credential validation is not enforced \u2014 only empty/missing values produce a 401.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes a credential-validation policy (any non-empty credentials succeed), but this behavior is not listed in the manifest as a planted regression, and the testapp's public rules do not specify strict credential validation as a requirement \u2014 this appears to be the testapp's intended (if permissive) authentication design."
+        }
+      },
+      {
+        "arm": "cold",
+        "matched_manifest": false,
+        "observation_text": "Session cookie is trivially forgeable: Set-Cookie header from POST /session always sets 'session=ok; Path=/', a static, unsigned, non-secret token with no HttpOnly or Secure flags.",
+        "seed": 0,
+        "slug": null,
+        "judge_verdict": {
+          "label": "false_positive",
+          "slug": null,
+          "reason": "The observation describes a security design concern (static/unsigned session cookie without HttpOnly/Secure flags) that is not listed in the manifest and is not a functional regression under the testapp's public rules; the testapp is a regression-testing fixture, not a production-security benchmark."
+        }
+      }
+    ],
+    "off_path_fraction": 0.2857142857142857,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 13125
+  }
+}

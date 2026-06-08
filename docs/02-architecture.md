@@ -22,31 +22,31 @@ Six components, with a hard line between the **runtime-agnostic core** and the
                                 └─────────────────┘
 ```
 
-### 1. Model (`src/mneme/model`)
+### 1. Model (`src/praxis/model`)
 Typed representation of a knowledge entry, mirroring
 `schema/knowledge.schema.json`. Validates that every assertion carries
 provenance + confidence. Round-trips YAML ↔ objects.
 
-### 2. Store (`src/mneme/store`) — source of truth
+### 2. Store (`src/praxis/store`) — source of truth
 Append-only event log. Each agent observation is one immutable event (one file
 per event for lock-free concurrency, CORAL-style). No update, no delete.
 Backend is pluggable: `FileEventStore` for the MVP → SQLite → Postgres + pgvector
 at scale. See ADR-0001.
 
-### 3. Merge (`src/mneme/merge`) — truth engine
+### 3. Merge (`src/praxis/merge`) — truth engine
 Folds events into the *believed* knowledge state: aggregates repeated
 observations into confidence, marks each assertion `believed` / `contested` /
 `stale` / `quarantined`, applies recency decay, and **preserves contradictions
 rather than silently choosing a winner.** This is where multi-agent conflict
 resolution lives (docs/05).
 
-### 4. Oracle (`src/mneme/oracle`) — the guardrail
+### 4. Oracle (`src/praxis/oracle`) — the guardrail
 Scores success/failure signals for trustworthiness using independence,
 redundancy, recency, and agreement. Gates promotion to `believed` (≥2
 independent sources). Quarantines flip-flopping signals. This is the hardest and
 most important module; the product is really a trust layer (docs/06).
 
-### 5. Adapters (`src/mneme/adapters`) — the only runtime code
+### 5. Adapters (`src/praxis/adapters`) — the only runtime code
 Two responsibilities: hydrate an agent with believed knowledge for a goal, and
 translate observations back into store events. Redact secrets/PII at this
 boundary. Adapters are optional install extras. See ADR-0003.

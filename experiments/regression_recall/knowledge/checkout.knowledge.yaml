@@ -1,0 +1,117 @@
+schema_version: "0"
+goal_id: checkout
+goal: A user can apply a coupon to their cart, submit payment, and place an order with predictable side effects.
+
+target:
+  app: praxis-testapp
+  environment: local
+  observed_app_versions: ["phase-1-r1"]
+
+success_signals:
+  - type: behavioral
+    value: an order confirmation page appears after a successful payment submission
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: POST /orders with an Idempotency-Key returns the same order_id on retry (idempotent=true on the second response)
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+failure_signals:
+  - type: network
+    value: POST /cart/apply with coupon SAVE10 at subtotal 49 returns 200 with applied=true (the subtotal predicate failed)
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: POST /cart/apply accepts a second coupon while another is still active in the cart (stacking allowed)
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: POST /orders with the same Idempotency-Key returns two distinct order_ids (double-order regression)
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+risks:
+  - id: coupon-min-subtotal-bypass
+    description: SAVE10 should require subtotal >= 50, but a prior release shipped a regression that accepted SAVE10 at subtotal 49.
+    trigger:
+      kind: http
+      method: POST
+      path: /cart/apply
+      body_or_params: { "coupon": "SAVE10", "subtotal": 49 }
+      expect: response status 422 with applied=false (the predicate enforces the minimum)
+    mitigation: probe every coupon at its documented minimum minus 1.
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - id: coupon-stack
+    description: Only one coupon should apply per cart. A prior incident allowed stacking; probe the second-coupon path.
+    trigger:
+      kind: sequence
+      n: 2
+      action: POST /cart/apply with a valid coupon at high subtotal, then POST /cart/apply with a different valid coupon
+      expect: second response is 409 with applied=false (only one coupon per cart)
+    mitigation: track the active coupon set; reject second-coupon requests.
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - id: idempotent-orders
+    description: POST /orders must be idempotent on the Idempotency-Key header. A prior release double-charged.
+    trigger:
+      kind: sequence
+      n: 2
+      action: POST /orders with the same Idempotency-Key and card body
+      expect: both responses return the SAME order_id (idempotent flag flips to true on retry)
+    mitigation: cache Idempotency-Key -> order_id for at least 24h.
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+uncertainties:
+  - id: u-receipt-window
+    question: How long is a successful order's receipt URL valid? Is there a "view receipt" expiry semantic we should test?
+    raised_by: pablo-seed
+    raised_at: "2026-06-07T00:00:00Z"
+    resolved: false
+
+meta:
+  created_at: "2026-06-07T00:00:00Z"
+  updated_at: "2026-06-07T00:00:00Z"
+  contributing_agents: []

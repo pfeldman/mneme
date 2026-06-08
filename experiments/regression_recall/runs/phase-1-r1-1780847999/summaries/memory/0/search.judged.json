@@ -1,0 +1,67 @@
+{
+  "arm": "memory",
+  "elapsed_seconds": 17.9080337920459,
+  "goal_id": "search",
+  "raw_output": {
+    "actions_used": 6,
+    "arm": "memory",
+    "elapsed_seconds": 17.908014166983776,
+    "goal_id": "search",
+    "model": "claude-sonnet-4-6",
+    "notes": [],
+    "observations": [
+      {
+        "value": "R-mode regression (success signal 1 violated): GET /search?q=item returns HTTP 200 but body contains '<p class=\"error\">No results found.</p>' with no results list rendered \u2014 a non-empty search query ('item') returns zero results, matching the failure signal 'search results list is empty for a non-empty query'."
+      },
+      {
+        "value": "R-mode regression + E-mode filter-lost-on-page-change confirmed: GET /list?filter=item&page=2 returns HTTP 200 with data-filter=\"item\" but data-effective-filter=\"\" (body: 'page 2, filter=\\'item\\', effective_filter=\\'\\''), while GET /list?filter=item&page=1 correctly shows data-effective-filter=\"item\". The filter parameter is accepted on page 1 but silently dropped (not applied) on page 2. This matches the failure signal 'GET /list page=2 with filter applied returns items without the filter (filter dropped)'."
+      }
+    ],
+    "off_path_fraction": 0.6666666666666666,
+    "tokens_used": 12718,
+    "visited_urls": [
+      "/",
+      "/list",
+      "/search",
+      "/list?filter=item&page=1",
+      "/list?filter=item&page=2",
+      "/search?q=item"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 6,
+    "arm": "memory",
+    "detections": [
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "R-mode regression (success signal 1 violated): GET /search?q=item returns HTTP 200 but body contains '<p class=\"error\">No results found.</p>' with no results list rendered \u2014 a non-empty search query ('item') returns zero results, matching the failure signal 'search results list is empty for a non-empty query'.",
+        "seed": 0,
+        "slug": "t2_search_blank",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "t2_search_blank",
+          "reason": "The observation reports that GET /search?q=item returns HTTP 200 but renders no results list (only an error paragraph), directly matching the manifest's expected_observation that 'search results list is empty (no items rendered)'."
+        }
+      },
+      {
+        "arm": "memory",
+        "matched_manifest": true,
+        "observation_text": "R-mode regression + E-mode filter-lost-on-page-change confirmed: GET /list?filter=item&page=2 returns HTTP 200 with data-filter=\"item\" but data-effective-filter=\"\" (body: 'page 2, filter=\\'item\\', effective_filter=\\'\\''), while GET /list?filter=item&page=1 correctly shows data-effective-filter=\"item\". The filter parameter is accepted on page 1 but silently dropped (not applied) on page 2. This matches the failure signal 'GET /list page=2 with filter applied returns items without the filter (filter dropped)'.",
+        "seed": 0,
+        "slug": "k5_filter_lost",
+        "judge_verdict": {
+          "label": "match",
+          "slug": "k5_filter_lost",
+          "reason": "The observation explicitly shows GET /list?filter=item&page=2 returning data-effective-filter='' while page=1 correctly applies the filter, directly matching the manifest entry for filter being dropped on page 2."
+        }
+      }
+    ],
+    "off_path_fraction": 0.6666666666666666,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 12718
+  }
+}

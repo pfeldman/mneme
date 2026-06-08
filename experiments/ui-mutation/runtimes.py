@@ -13,15 +13,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from mneme.adapters import BrowserUseAdapter
-from mneme.model import (
+from praxis.adapters import BrowserUseAdapter
+from praxis.model import (
     KnowledgeFile,
     Meta,
     Provenance,
     Signal,
     Target,
 )
-from mneme.store import FileEventStore, ObservedSignal
+from praxis.store import FileEventStore, ObservedSignal
 
 try:
     from . import simapp

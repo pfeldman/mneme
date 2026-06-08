@@ -12,7 +12,7 @@ for.
   Playwright MCP  ──drives──▶  testapp.py  (login / search / checkout + mutations)
         │
         ▼  observes signals, writes events back through the Mneme store
-  mneme.adapters.BrowserUseAdapter  (store → merge → oracle)
+  praxis.adapters.BrowserUseAdapter  (store → merge → oracle)
 ```
 
 > Why not Browser Use here? Browser Use is a separate agent that needs its OWN LLM
@@ -31,7 +31,7 @@ to actions when tokens are 0 (`cost_unit` in the output tells you which it used)
 
 ## 1. Prerequisites (on your machine, NOT this sandbox)
 ```bash
-git clone <your fork> && cd mneme
+git clone <your fork> && cd praxis
 git checkout claude/mneme-phase-0-core-ZfmKT
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"            # core + pytest/ruff/mypy (no browser-use needed)
@@ -58,7 +58,7 @@ seeds the runtime already defines:
 python - <<'PY'
 import sys; sys.path[:0] = ["src", "experiments/ui-mutation"]
 import runtimes
-from mneme.model import dump
+from praxis.model import dump
 for flow in ("login", "search", "checkout"):
     seed = runtimes.seed_for(flow)
     dump(seed, f"experiments/ui-mutation/seed_{flow}.knowledge.yaml")
@@ -120,7 +120,7 @@ Emit a real Playwright script per flow from the recorded coordinates:
 pip install playwright && playwright install chromium   # only for this arm
 python - <<'PY'
 import sys; sys.path[:0] = ["src", "experiments/ui-mutation"]
-from mneme.adapters.playwright import RecordedScript, RecordedStep
+from praxis.adapters.playwright import RecordedScript, RecordedStep
 login = RecordedScript("login", [
     RecordedStep("goto", value="http://127.0.0.1:8000/login"),
     RecordedStep("fill", 'input[name="identifier"]', "alice"),

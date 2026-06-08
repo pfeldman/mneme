@@ -1,0 +1,122 @@
+# Seeded knowledge for the Conduit `publish_article` goal.
+#
+# Parallels Phase-1 `checkout`: multi-step mutating flow with a checkable
+# post-condition (the published article appears on the author's profile and
+# in the global feed). auth_state asserts the goal cannot be completed
+# unauthenticated.
+schema_version: "0"
+goal_id: publish_article
+goal: An authenticated Conduit user can create and publish an article that
+  becomes visible on their profile and in the global feed.
+
+target:
+  app: conduit
+  environment: local
+  observed_app_versions: ["phase-2-r1-conduit"]
+
+success_signals:
+  - type: behavioral
+    value: after submitting the article editor, the user is redirected to the
+      article detail page with the title and body rendered
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: POST /api/articles returns 200 (or 201) with an article object whose
+      slug matches the just-submitted title
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: GET /api/articles?author={username} returns the just-published article
+      in the articles array
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+failure_signals:
+  - type: network
+    value: POST /api/articles returns 422 with validation errors when the title
+      is non-empty (false-negative validation)
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - type: network
+    value: GET /api/articles returns articles array empty when at least one
+      article was just published
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+risks:
+  - id: tag-list-dropped-on-publish
+    description: POST /api/articles may accept a tagList but not persist any
+      tags; the article exists but is missing from tag-filtered listings.
+    trigger:
+      kind: http
+      method: GET
+      path: /api/articles?tag={tag}
+      expect: returns 200 with an articles array that includes the just-published
+        article when the published article was submitted with that tag
+    mitigation: assert tagList round-trips in the post-publish verification step.
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+  - id: slug-collision-overwrites
+    description: Two articles with the same title (after slugification) may
+      collide and silently overwrite each other, dropping content.
+    trigger:
+      kind: sequence
+      n: 2
+      action: publish an article with the same title twice in a row
+      expect: both articles exist with distinct slugs (slug collision is resolved,
+        not silently overwritten)
+    mitigation: assert distinct slugs in the post-publish verification step.
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo-seed
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+
+uncertainties:
+  - id: u-publish-rate-limit
+    question: Is there a per-user rate limit on POST /api/articles? The
+      reference backend does not document one.
+    raised_by: pablo-seed
+    raised_at: "2026-06-07T00:00:00Z"
+    resolved: false
+
+auth_state:
+  authenticated: true
+  scope: user
+
+meta:
+  created_at: "2026-06-07T00:00:00Z"
+  updated_at: "2026-06-07T00:00:00Z"
+  contributing_agents: []

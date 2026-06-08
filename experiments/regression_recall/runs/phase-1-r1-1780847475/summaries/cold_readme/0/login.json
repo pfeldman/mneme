@@ -1,0 +1,74 @@
+{
+  "arm": "cold_readme",
+  "elapsed_seconds": 26.06763862504158,
+  "goal_id": "login",
+  "raw_output": {
+    "actions_used": 9,
+    "arm": "cold_readme",
+    "elapsed_seconds": 26.066552874981426,
+    "goal_id": "login",
+    "model": "claude-sonnet-4-6",
+    "notes": [
+      "Empty credentials (identifier='', secret='') correctly return 401 with 'Invalid credentials.' \u2014 only the empty-string guard is working.",
+      "The session cookie has no HttpOnly or Secure flags set: Set-Cookie: session=ok; Path=/",
+      "POST /logout also returns 404, suggesting logout is unimplemented on both GET and POST."
+    ],
+    "observations": [
+      {
+        "value": "POST /session with completely invalid/nonexistent credentials (e.g., identifier='wrong@example.com', secret='wrongpassword' or identifier='notauser@nowhere.com', secret='abc') returns HTTP 200 with Set-Cookie: session=ok; Path=/ and a 'Welcome' home page, instead of HTTP 401 with an 'Invalid credentials' error page. Authentication is not actually validating credentials \u2014 any non-empty identifier/secret pair is accepted and a session is granted."
+      },
+      {
+        "value": "POST /session with a valid-looking username but wrong password (identifier='alice@example.com', secret='wrongpassword') returns HTTP 200 with Set-Cookie: session=ok; Path=/ and a successful login page, confirming that password verification is completely bypassed."
+      },
+      {
+        "value": "GET /logout returns HTTP 404 (Not Found) instead of a valid response. The logout link shown after login points to /logout but that route does not exist."
+      }
+    ],
+    "off_path_fraction": 0.3333333333333333,
+    "tokens_used": 17483,
+    "visited_urls": [
+      "/",
+      "/login",
+      "/session",
+      "/session",
+      "/session",
+      "/logout",
+      "/logout",
+      "/session",
+      "/session"
+    ]
+  },
+  "release": "phase-1-r1",
+  "seed": 0,
+  "summary": {
+    "actions_used": 9,
+    "arm": "cold_readme",
+    "detections": [
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "POST /session with completely invalid/nonexistent credentials (e.g., identifier='wrong@example.com', secret='wrongpassword' or identifier='notauser@nowhere.com', secret='abc') returns HTTP 200 with Set-Cookie: session=ok; Path=/ and a 'Welcome' home page, instead of HTTP 401 with an 'Invalid credentials' error page. Authentication is not actually validating credentials \u2014 any non-empty identifier/secret pair is accepted and a session is granted.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "POST /session with a valid-looking username but wrong password (identifier='alice@example.com', secret='wrongpassword') returns HTTP 200 with Set-Cookie: session=ok; Path=/ and a successful login page, confirming that password verification is completely bypassed.",
+        "seed": 0,
+        "slug": null
+      },
+      {
+        "arm": "cold_readme",
+        "matched_manifest": false,
+        "observation_text": "GET /logout returns HTTP 404 (Not Found) instead of a valid response. The logout link shown after login points to /logout but that route does not exist.",
+        "seed": 0,
+        "slug": null
+      }
+    ],
+    "off_path_fraction": 0.3333333333333333,
+    "release": "phase-1-r1",
+    "seed": 0,
+    "tokens_used": 17483
+  }
+}
