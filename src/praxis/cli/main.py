@@ -125,6 +125,18 @@ class ProjectContext:
     def observed_app_version(self) -> str | None:
         return self.config.get("observed_app_version")
 
+    @property
+    def mcp_config(self) -> str | None:
+        """Default Playwright MCP config path for the claude -p console brain
+        (ADR-0027), resolved absolute against the project root so it works from
+        any cwd. A `--mcp-config` flag overrides this. None when the project
+        declares no default (a run then needs the flag, or uses --from-file)."""
+        raw = self.config.get("mcp_config")
+        if not raw:
+            return None
+        p = Path(raw)
+        return str(p if p.is_absolute() else (self.root / p))
+
     def target(self) -> Target:
         return Target(app=self.app, environment=self.environment)
 
@@ -293,6 +305,11 @@ def _cmd_init(args: argparse.Namespace) -> int:
         "environment": args.env,
         "agent_id": args.agent_id,
         "observed_app_version": None,
+        # Default Playwright MCP config for the claude -p console brain
+        # (ADR-0027). Set this to a JSON file path (relative to the project root)
+        # so `praxis regress` / `praxis explore` need no --mcp-config flag; the
+        # flag overrides it. None until the project wires its browser MCP.
+        "mcp_config": getattr(args, "mcp_config", None),
     }
     (pdir / CONFIG_NAME).write_text(
         yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
@@ -371,7 +388,9 @@ def _cmd_learn(args: argparse.Namespace) -> int:
     return 0
 
 
-def _select_console_brain(args: argparse.Namespace) -> Any:
+def _select_console_brain(
+    args: argparse.Namespace, *, default_mcp_config: str | None = None,
+) -> Any:
     """Pick the brain that drives a console regress / explore run (ADR-0027
     decision 7).
 
@@ -384,6 +403,10 @@ def _select_console_brain(args: argparse.Namespace) -> Any:
     of hanging on stdin: a console run with no brain is an error, not a wait.
     The CI API-key brain (ADR-0019, ADR-0024) is unchanged and is wired by CI
     through its own path, not here.
+
+    The Playwright MCP config resolves `--mcp-config` first, else the project's
+    `mcp_config` default (`default_mcp_config`, from `.praxis/config.yaml`), so a
+    project can declare its MCP once and runs need no flag.
     """
     if args.from_file:
         return _executor_from_file(Path(args.from_file))
@@ -397,7 +420,7 @@ def _select_console_brain(args: argparse.Namespace) -> Any:
     return make_claude_brain(
         headed=getattr(args, "headed", False),
         timeout_seconds=args.budget_wall_seconds,
-        mcp_config_path=getattr(args, "mcp_config", None),
+        mcp_config_path=getattr(args, "mcp_config", None) or default_mcp_config,
     )
 
 
@@ -416,7 +439,7 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     proj = discover_project()
     adapter = proj.adapter()
 
-    brain = _select_console_brain(args)
+    brain = _select_console_brain(args, default_mcp_config=proj.mcp_config)
 
     # Default-all aggregate (ADR-0023 decision 2): no `--goal` runs EVERY
     # believed goal under .praxis/knowledge/ and emits ONE aggregate
@@ -620,7 +643,7 @@ def _explore_aggregate(
 def _cmd_explore(args: argparse.Namespace) -> int:
     proj = discover_project()
     adapter = proj.adapter()
-    brain = _select_console_brain(args)
+    brain = _select_console_brain(args, default_mcp_config=proj.mcp_config)
 
     # Default-all aggregate (ADR-0023 decision 2): no `--goal` hunts off-happy-
     # path across EVERY believed goal under .praxis/knowledge/, writes candidate
@@ -824,6 +847,10 @@ def _build_parser() -> argparse.ArgumentParser:
     init.add_argument("--app", help="App name (default: cwd directory name).")
     init.add_argument("--env", default=None, help="Environment label.")
     init.add_argument("--agent-id", default="praxis-cli")
+    init.add_argument("--mcp-config", default=None,
+                       help="Default Playwright MCP config path for the claude -p "
+                            "console brain (ADR-0027); a run's --mcp-config "
+                            "overrides it.")
     init.add_argument("--force", action="store_true",
                        help="Overwrite an existing config (keeps knowledge + events).")
     init.set_defaults(func=_cmd_init)

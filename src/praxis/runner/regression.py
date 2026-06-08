@@ -246,13 +246,26 @@ class _RunContext:
     authenticated: bool
 
 
-def _parse_executor_result(raw: ExecutorResult) -> _RunContext:
+def _parse_executor_result(
+    raw: ExecutorResult, *, agent_id: str = "praxis-agent",
+) -> _RunContext:
     obs_raw = raw.get("observations", [])
     obs: list[ObservedSignal] = []
     for o in obs_raw:
         if isinstance(o, ObservedSignal):
             obs.append(o)
         else:
+            # Provenance is stamped by the SYSTEM, not supplied by the agent: a
+            # brain (claude -p, the skill, the API-key agent) emits what it saw
+            # (kind / type / value / present), and the runner attributes it to
+            # the run's agent identity. source_id = agent_identity is the ADR-0008
+            # rule, and AGENTS.md forbids the agent inventing a generated id. So
+            # default source_type=agent and source_id=agent_id when the
+            # observation omits them; an explicit value (the --from-file fixtures,
+            # a seeded human observation) still wins.
+            o = dict(o)
+            o.setdefault("source_type", "agent")
+            o.setdefault("source_id", agent_id)
             obs.append(ObservedSignal.model_validate(o))
     return _RunContext(
         observations=obs,
@@ -305,7 +318,7 @@ class RegressionRunner:
         wall = time.monotonic() - t0
         ended_at = datetime.now(timezone.utc)
 
-        ctx = _parse_executor_result(raw)
+        ctx = _parse_executor_result(raw, agent_id=self.agent_id)
 
         if persist_observations and ctx.observations:
             self.adapter.write_observations(
