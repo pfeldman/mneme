@@ -1,6 +1,6 @@
 # ADR-0025: Landing page and docs site
 
-Status: Proposed
+Status: Accepted (2026-06-08)
 
 ## Context
 

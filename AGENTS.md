@@ -77,9 +77,17 @@ all converge on the happy path and silently shrink coverage (docs/05,
 docs/06). Also: real-app generalization (move off `testapp.py`),
 `refuted` status + auditor-as-input revisited with proper diversity.
 
-**Phase 3 - trust/product layer.** Governance, secret redaction,
-provenance dashboards, poisoning detection, hosted shared memory,
-retention policy. The moat.
+**Phase 3 - library plus git, no SaaS (reframed 2026-06-08, ADR-0018
+through ADR-0025).** Ship Praxis as a pip-installable library (`praxis-qa`)
+plus a `.praxis/` git convention, not a hosted service. Knowledge is shared
+through git (one repo per project, git permissions, git log as the audit
+trail). The reasoning brain is pluggable: local Claude Code skills (no API
+key), CI an API-key agent the team wires into its own CI. The authoring loop
+is the `praxis teach` skill; `praxis regress` and `praxis explore` run on a
+console-plus-skill dual surface with an OK / REGRESSED / STALE report. The
+hosted trust-layer items the earlier roadmap listed (governance, dashboards,
+hosted shared memory, monetization) are replaced by git-native equivalents
+per ADR-0018.
 
 ## Conventions
 - Python 3.11+, pydantic v2 for the model, `ruff` + `mypy` clean, `pytest`.

@@ -1,6 +1,6 @@
 # ADR-0023: praxis regress and explore - dual surface, aggregate default, break-vs-drift report
 
-Status: Proposed
+Status: Accepted (2026-06-08)
 
 ## Context
 

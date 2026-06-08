@@ -1,6 +1,6 @@
 # ADR-0024: CI integration by invoking the console commands; Praxis owns no CI machinery
 
-Status: Proposed
+Status: Accepted (2026-06-08)
 
 ## Context
 

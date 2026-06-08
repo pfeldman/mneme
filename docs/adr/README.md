@@ -22,3 +22,11 @@ per decision; never edit a superseded one (mark it `Superseded by ADR-XXXX`).
 | 0015 | Exploration reward pre-registered, observability-only in Phase 2, paired with adversarial Goodhart review and random-walk baseline (Accepted) |
 | 0016 | Real-app SUT selection: pre-registered criteria, Conduit recommended (Saleor fallback), new run dir parallel to Phase 1 (Accepted) |
 | 0017 | Additive auth_state projected field (authenticated + scope), adapter-boundary redaction, no tokens/cookies/PII in knowledge (Accepted) |
+| 0018 | Phase 3 scope and the library-plus-git reframe: no SaaS, git is the shared memory, Claude Code is the local brain (Accepted) |
+| 0019 | Brain pluggability and execution surfaces: deterministic vs agentic, local Claude Code skill vs CI API-key agent, teach is skill-only (Accepted) |
+| 0020 | PyPI packaging and distribution: dist name praxis-qa, one universal wheel, schema and skills as package data, stable public API surface (Accepted) |
+| 0021 | The .praxis/ repository convention: git as shared memory, committed knowledge/candidates, gitignored runs and .praxis.secrets, one file per candidate observation (Accepted) |
+| 0022 | The teach operation as a Claude Code skill: human-in-the-loop seed, typed prompts, credentials never persisted, no silent overwrite of a believed goal (Accepted) |
+| 0023 | praxis regress and explore dual surface: console CLI plus skill, aggregate default, OK/REGRESSED/STALE break-vs-drift report, candidate dedup by trigger (Accepted) |
+| 0024 | CI integration by invoking the console commands: Praxis owns no CI machinery, the team owns push/PR/auth, promotion stays a human merge (Accepted) |
+| 0025 | Landing page and docs site: minimal non-engineer story, no analytics/signup/SaaS funnel, mkdocs from docs/, documented example CI workflow (Accepted) |

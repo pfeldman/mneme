@@ -1,6 +1,6 @@
 # ADR-0022: The teach operation as a Claude Code skill
 
-Status: Proposed
+Status: Accepted (2026-06-08)
 
 ## Context
 

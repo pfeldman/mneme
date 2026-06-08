@@ -6,11 +6,12 @@
 - **Open-source library + schema (adoption).** The only way to seed adoption and
   give the format a chance to become de-facto. Position as a pluggable memory
   backend *for runtimes people already use*, not a competitor to them.
-- **Hosted trust layer (the product / the moat).** Provenance, conflict
-  resolution, poisoning detection, secret redaction, governance, dashboards,
-  retention/decay policy, hosted shared memory. Nobody pays for a YAML schema;
-  they pay for someone to guarantee the shared memory doesn't rot or lie. The
-  hard parts in docs/05–06 *are* the product.
+- **The trust layer, shipped as library plus git (the product).** Provenance,
+  conflict resolution, decay, secret redaction, and the believed-vs-contested
+  oracle are the hard parts (docs/05-06) and they ARE the product, but Phase 3
+  ships them in the library and the git convention, not as a hosted service
+  (ADR-0018). Knowledge is shared through git; there is no hosted backend and
+  no monetization layer.
 - **Standard (a consequence, never the opening move).** Standards capture little
   value directly; value accrues to whoever runs the trusted memory service. If
   the format wins, it standardizes itself.
@@ -30,10 +31,18 @@ Concurrent writers, contradiction detection, recency decay, quarantine, and an
 explicit exploration incentive against coverage collapse. MCP memory-server
 surface for cross-agent sharing.
 
-### Phase 3 — Trust / product layer
-Governance, secret redaction, provenance graph + dashboards, poisoning
-detection, hosted shared memory, per-tenant scoping, retention policies. Begin
-monetization here.
+### Phase 3 - Library plus git, no SaaS
+Ship Praxis as a pip-installable library (`pip install praxis-qa`) plus a git
+convention, not a hosted service (ADR-0018). A repo's knowledge lives under
+`.praxis/` and is shared through git (`git pull` / `git push`), with one repo
+per project, git permissions, and git log as the audit trail. The reasoning
+brain is pluggable: local is Claude Code via skills (no API key), CI is an
+API-key agent the team wires into its own CI (ADR-0019, ADR-0024). The
+authoring loop is the `praxis teach` skill, regression is `praxis regress`
+with an OK / REGRESSED / STALE report, and exploration is `praxis explore`.
+The hosted trust-layer items the earlier roadmap listed (governance,
+dashboards, hosted shared memory, monetization) are replaced by git-native
+equivalents per ADR-0018 through ADR-0025; there is no SaaS.
 
 ### Phase 4 — Interop / de-facto standard
 Stabilize the schema and adapter SPI; grow community adapters across runtimes;

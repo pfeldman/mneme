@@ -1,6 +1,6 @@
 # ADR-0019: Brain pluggability and execution surfaces
 
-Status: Proposed
+Status: Accepted (2026-06-08)
 
 ## Context
 

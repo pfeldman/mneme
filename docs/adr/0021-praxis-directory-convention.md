@@ -1,6 +1,6 @@
 # ADR-0021: The `.praxis/` repository convention and git as shared memory
 
-Status: Proposed
+Status: Accepted (2026-06-08)
 
 ## Context
 

@@ -1,6 +1,6 @@
 # ADR-0018: Phase 3 scope and the library-plus-git reframe
 
-Status: Proposed
+Status: Accepted (2026-06-08)
 
 ## Context
 

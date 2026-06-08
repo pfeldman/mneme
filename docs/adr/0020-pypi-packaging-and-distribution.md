@@ -1,6 +1,6 @@
 # ADR-0020: PyPI packaging and distribution
 
-Status: Proposed
+Status: Accepted (2026-06-08)
 
 ## Context
 
