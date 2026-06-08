@@ -253,6 +253,60 @@ def write_aggregate_markdown(reports: list[GoalReport], path: str | Path) -> Pat
     return p
 
 
+def format_console_summary(reports: list[GoalReport]) -> str:
+    """The pytest-style terminal summary for an aggregate regress run (ADR-0027
+    decision 6).
+
+    A human runs the console runner and reads this; they do not watch the
+    browser. The summary leads with a loud PASSED / FAILED banner, gives a
+    pytest-style one-line tally (`N passed, N failed, N stale`), and never buries
+    a regression behind a green count: every goal that fails the run (REGRESSED /
+    AUTH-EXPIRED / ERROR, ADR-0023 decision 4, ADR-0026 decision 5) is named with
+    its evidence. STALE goals are listed separately because they do not make the
+    run red but still route to a re-seed. The verdict contract, the exit code,
+    and the markdown report are unchanged; this is presentation only.
+    """
+    if not reports:
+        return "no goals run.\n"
+    n_ok = sum(1 for r in reports if r.verdict == AggregateVerdict.OK)
+    n_reg = sum(1 for r in reports if r.verdict == AggregateVerdict.REGRESSED)
+    n_stale = sum(1 for r in reports if r.verdict == AggregateVerdict.STALE)
+    n_err = sum(1 for r in reports if r.verdict == AggregateVerdict.ERROR)
+    n_auth = sum(1 for r in reports if r.verdict == AggregateVerdict.AUTH_EXPIRED)
+    n_fail = sum(1 for r in reports if r.fails_run)
+    total = len(reports)
+
+    lines: list[str] = [""]
+    tally = f"{n_ok} passed, {n_fail} failed"
+    if n_stale:
+        tally += f", {n_stale} stale"
+    banner = "RUN FAILED" if n_fail else "RUN PASSED"
+    lines.append(f"==== {banner}: {tally} ({total} goal(s)) ====")
+    lines.append(
+        f"  {n_ok} OK / {n_reg} REGRESSED / {n_stale} STALE / "
+        f"{n_auth} AUTH-EXPIRED / {n_err} ERROR"
+    )
+    failing = [r for r in reports if r.fails_run]
+    if failing:
+        lines.append("")
+        lines.append("goals that need action:")
+        for r in failing:
+            named = ", ".join(r.signals) if r.signals else "-"
+            label = "expired role" if r.verdict == AggregateVerdict.AUTH_EXPIRED \
+                else "signal(s)"
+            lines.append(
+                f"  {r.verdict.value:<12} {r.goal_id}: {r.evidence} "
+                f"[{label}: {named}]"
+            )
+    stale = [r for r in reports if r.verdict == AggregateVerdict.STALE]
+    if stale:
+        lines.append("")
+        lines.append("stale (knowledge outdated; propose a re-seed):")
+        for r in stale:
+            lines.append(f"  STALE        {r.goal_id}: {r.evidence}")
+    return "\n".join(lines) + "\n"
+
+
 # --- the explore candidate report, grouped by trigger (ADR-0023 decision 8) -
 
 

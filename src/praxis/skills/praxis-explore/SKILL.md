@@ -33,6 +33,14 @@ failure-signal watch-list. The engine logs `off_path_fraction` as the floor
 against E-mode collapsing into R-mode; keep that floor in the report and call
 it out if it is low.
 
+The bare console `praxis explore` now self-drives: it runs the goals headless on
+the user's subscription via `claude -p` (no API key, no paste) and exits
+(ADR-0027). Flags a human may use there: `--headed` to watch the browser,
+`--jobs N` for concurrency (default 1; auth-subject login goals run serially),
+and `--from-file PATH` for a scripted run. THIS skill surface is the
+human-present surface where AUTH-EXPIRED and an email 2FA re-auth are handled
+interactively.
+
 ## What you must never do
 
 - NEVER auto-mutate committed knowledge. A fresh finding earns `believed` ONLY
@@ -54,10 +62,15 @@ it out if it is low.
    `.praxis/knowledge/`. If there are no seeds, tell the user to seed a goal
    with `/praxis:teach` first and stop.
 
-2. If a run must authenticate, LOAD the saved session for the role BEFORE
-   driving the browser and inject it into the browser context, so the goal runs
-   authenticated WITHOUT a fresh login, hence without a fresh 2FA. Load it with
-   this one-liner (you do not need to read any library code):
+2. If a run must authenticate, reuse the saved session ONLY when the goal's
+   `auth_state.being_tested` is false (the login is a precondition, the common
+   case for an explore run). When `being_tested` is true the login is the subject
+   under test (ADR-0027 decision 2): perform a REAL login, do NOT reuse a session.
+
+   To reuse, LOAD the saved session for the role BEFORE driving the browser and
+   inject it into the browser context, so the goal runs authenticated WITHOUT a
+   fresh login, hence without a fresh 2FA. Load it with this one-liner (you do
+   not need to read any library code):
 
        python -c "import json,sys; from praxis.auth_session import load_session_for_role; json.dump(load_session_for_role(sys.argv[1]), open('session.json','w'))" <role>
 

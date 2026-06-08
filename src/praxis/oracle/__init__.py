@@ -37,6 +37,7 @@ from .trust import (
     is_flip_flop,
     is_stale,
     oracle_believed,
+    summary_corroborated,
 )
 
 __all__ = [
@@ -50,4 +51,5 @@ __all__ = [
     "is_flip_flop",
     "is_stale",
     "oracle_believed",
+    "summary_corroborated",
 ]

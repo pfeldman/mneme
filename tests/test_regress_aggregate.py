@@ -730,6 +730,38 @@ def test_auth_session_seam_save_then_load_round_trips(tmp_path: Path) -> None:
     assert got == env_state
 
 
+# --- ADR-0027 decision 2: session reuse is gated on auth_state.being_tested ---
+
+
+def test_session_reuse_gate_precondition_reuses_subject_forces_login() -> None:
+    """A PRECONDITION auth goal (being_tested false) may reuse the saved session
+    for its role; an auth-SUBJECT goal (being_tested true) must NOT, so the run
+    performs a real login and exercises the flow under test (ADR-0027 decision
+    2). `role_for_session_reuse` is distinct from `role_for_auth_state`: the
+    subject goal still authenticates as its scope, it just may not reuse a
+    session."""
+    from praxis import auth_session
+
+    precondition = AuthState(authenticated=True, scope="user")
+    subject = AuthState(authenticated=True, scope="user", being_tested=True)
+
+    # Precondition: reuse the role's session (login is setup, not the test).
+    assert auth_session.role_for_session_reuse(precondition) == "user"
+    # Subject: no reuse -> force a real login (the login IS the test).
+    assert auth_session.role_for_session_reuse(subject) is None
+    # The role a session is SAVED under / the classifier expects is unchanged:
+    # the subject goal still authenticates as "user".
+    assert auth_session.role_for_auth_state(subject) == "user"
+    # Anonymous / unauthenticated / no auth_state: nothing to reuse either way.
+    assert auth_session.role_for_session_reuse(
+        AuthState(authenticated=True, scope="anonymous")
+    ) is None
+    assert auth_session.role_for_session_reuse(
+        AuthState(authenticated=False, scope=None)
+    ) is None
+    assert auth_session.role_for_session_reuse(None) is None
+
+
 # --- ADR-0026 Step 5: ORGANIC AUTH-EXPIRED through the real read path --------
 
 
@@ -838,6 +870,32 @@ def test_cli_regress_exit_code_unchanged_for_ok_run(tmp_path: Path) -> None:
     finally:
         os.chdir(old)
     assert rc == 0
+
+
+def test_cli_regress_prints_pytest_style_summary(
+    tmp_path: Path, capsys: Any,
+) -> None:
+    """The console aggregate run prints the pytest-style experience (ADR-0027
+    decision 6): a `running N goal(s)...` header before the run and a final
+    `RUN PASSED: N passed, ...` summary banner with the verdict tally. This is
+    presentation only; the exit code (0 here) is unchanged."""
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["a"])
+    obs_file = root / "pass.json"
+    obs_file.write_text(json.dumps(_PASS_OBS))
+    old = Path.cwd()
+    os.chdir(root)
+    try:
+        rc = cli_run(["regress", "--from-file", str(obs_file)])
+    finally:
+        os.chdir(old)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "running 1 goal(s)..." in out
+    assert "RUN PASSED" in out
+    assert "passed" in out
+    assert "1 OK /" in out
 
 
 # --- decision 2 + 4: default-all aggregate, loud single regression ---------
@@ -984,6 +1042,97 @@ def test_errored_goal_is_not_counted_ok_in_rollup(tmp_path: Path) -> None:
     assert "1 OK" in md and "1 ERROR" in md
     assert "RUN FAILED" in md
     assert aggregate_run_failed([a, b])
+
+
+# --- ADR-0027 decision 4: bounded concurrency with a --jobs cap ------------
+
+
+def test_jobs_gt_1_matches_sequential_goals_order_and_verdicts(tmp_path: Path) -> None:
+    """Concurrency changes only the scheduling: `jobs=4` returns the same goals
+    in the same order with the same verdicts as `jobs=1` (ADR-0027 decision 4).
+    A REGRESSED goal among OK goals stays a loud failure either way."""
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["a", "b", "c", "d"])
+    proj = discover_project(root)
+    runner = RegressionRunner(proj.adapter(), agent_id=proj.agent_id)
+
+    def mixed_brain(prompt: str) -> dict[str, Any]:
+        if "GOAL (c)" in prompt:
+            return json.loads(json.dumps(_FAIL_OBS))
+        return json.loads(json.dumps(_PASS_OBS))
+
+    seq = run_aggregate(runner, ["a", "b", "c", "d"], mixed_brain, jobs=1)
+    par = run_aggregate(runner, ["a", "b", "c", "d"], mixed_brain, jobs=4)
+
+    assert [r.goal_id for r in seq] == ["a", "b", "c", "d"]
+    assert [r.goal_id for r in par] == ["a", "b", "c", "d"]
+    assert [r.verdict for r in seq] == [r.verdict for r in par]
+    by_goal = {r.goal_id: r for r in par}
+    assert by_goal["c"].verdict == AggregateVerdict.REGRESSED
+    assert aggregate_run_failed(par)
+
+
+def test_jobs_gt_1_a_raising_goal_is_a_loud_error_and_does_not_abort_siblings(
+    tmp_path: Path,
+) -> None:
+    """Under `jobs > 1`, a goal whose brain raises is still boxed into a loud
+    ERROR and the sibling goals still reach their verdicts (ADR-0027 decision 4:
+    failure isolation is per goal, independent of scheduling)."""
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["a", "b", "c"])
+    proj = discover_project(root)
+    runner = RegressionRunner(proj.adapter(), agent_id=proj.agent_id)
+
+    def exploding_brain(prompt: str) -> dict[str, Any]:
+        if "GOAL (b)" in prompt:
+            raise RuntimeError("adapter could not load the app")
+        return json.loads(json.dumps(_PASS_OBS))
+
+    reports = run_aggregate(runner, ["a", "b", "c"], exploding_brain, jobs=3)
+    by_goal = {r.goal_id: r for r in reports}
+    assert by_goal["a"].verdict == AggregateVerdict.OK
+    assert by_goal["c"].verdict == AggregateVerdict.OK
+    assert by_goal["b"].verdict == AggregateVerdict.ERROR
+    assert {r.goal_id for r in reports} == {"a", "b", "c"}
+
+
+def test_run_partitioned_runs_auth_subject_goals_serially(tmp_path: Path) -> None:
+    """`run_partitioned` never runs two auth-SUBJECT goals concurrently even at
+    `jobs > 1` (ADR-0027 decision 4: two real logins must not collide on one
+    test account), while feature goals do fan out. Asserted with a concurrency
+    counter: the subject goals' peak concurrency is 1; the feature goals' peak
+    is greater than 1."""
+    import threading
+    import time
+
+    from praxis.runner._parallel import run_partitioned
+
+    subjects = {"login_a", "login_b", "login_c"}
+    lock = threading.Lock()
+    active = {"now": 0, "peak_subject": 0, "peak_feature": 0}
+
+    def run_one(gid: str) -> str:
+        with lock:
+            active["now"] += 1
+            key = "peak_subject" if gid in subjects else "peak_feature"
+            active[key] = max(active[key], active["now"])
+        time.sleep(0.02)
+        with lock:
+            active["now"] -= 1
+        return gid
+
+    goals = ["f1", "login_a", "f2", "login_b", "f3", "login_c", "f4"]
+    out = run_partitioned(
+        goals, run_one,
+        is_subject=lambda g: g in subjects, jobs=4,
+    )
+    # Order preserved regardless of completion order.
+    assert out == goals
+    # Subject logins never overlap; feature goals did run concurrently.
+    assert active["peak_subject"] == 1
+    assert active["peak_feature"] > 1
 
 
 # --- decision 7: per-goal budget slice; exhaustion is a loud ERROR ---------

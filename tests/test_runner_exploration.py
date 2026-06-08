@@ -289,3 +289,58 @@ def test_exploration_does_not_persist_when_disabled() -> None:
         runner = ExplorationRunner(adapter)
         runner.run_one("checkout", executor, persist_observations=False)
         assert list(adapter.store.read("checkout")) == []
+
+
+def test_explore_candidate_success_observation_stays_contested_until_corroborated() -> None:
+    """ADR-0014 + ADR-0008 + ADR-0029: an E-mode candidate observation is WRITTEN to
+    the promotable store (that is E-mode's job, unlike R-mode regress) but it enters
+    as `contested` and is promoted ONLY by genuine independent-diverse corroboration,
+    never by a single explorer self-certifying.
+
+    The new candidate here is of the SAME type as the goal's only seeded success
+    signal (network), so it has NO different-type partner to ride: one explorer
+    observing it once leaves it contested. A SECOND explorer observing a
+    DIFFERENT-type (behavioral) signal of the same claim is genuine 2-source /
+    2-type evidence and promotes it (the positive control, not the inherent
+    seed-rides-single-agent case which needs a DIFFERENT type from the seed)."""
+    kf = _kf_with_risks()  # the only seeded success signal is NETWORK
+    new_value = "GET /orders/{id} returns the persisted order after checkout"
+    with tempfile.TemporaryDirectory() as td:
+        adapter = _seeded_adapter(kf, Path(td))
+
+        def explorer_one(_: str) -> dict:
+            return {
+                "candidate_observations": [
+                    ObservedSignal(
+                        kind="success", type=SignalType.NETWORK, value=new_value,
+                        source_type=SourceType.AGENT, source_id="praxis-explore",
+                    ),
+                ],
+                "actions": 1, "tokens": 0, "visited_urls": [],
+            }
+
+        runner = ExplorationRunner(adapter)
+        runner.run_one("checkout", explorer_one, budget_actions=10)
+
+        # The candidate WAS persisted (E-mode writes), but a single explorer with no
+        # different-type partner cannot self-promote: the new value reads as
+        # contested, never believed.
+        statuses = {
+            s.value: s.status for s in adapter.read_knowledge("checkout").success_signals  # type: ignore[union-attr]
+        }
+        assert statuses[new_value] == Status.CONTESTED
+
+        # A second, DISTINCT explorer observes a DIFFERENT-type signal for the same
+        # new claim -> genuine 2-source / 2-type corroboration promotes it (ADR-0008).
+        adapter.write_observations(
+            goal_id="checkout", agent_id="praxis-explore-2",
+            observations=[ObservedSignal(
+                kind="success", type=SignalType.BEHAVIORAL, value=new_value,
+                source_type=SourceType.AGENT, source_id="praxis-explore-2",
+            )],
+        )
+        promoted = [
+            s.status for s in adapter.read_knowledge("checkout").success_signals  # type: ignore[union-attr]
+            if s.value == new_value
+        ]
+        assert promoted and all(st == Status.BELIEVED for st in promoted)

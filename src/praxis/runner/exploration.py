@@ -30,6 +30,7 @@ from ..adapters.spi import KnowledgeAdapter
 from ..model import Risk, Status, Uncertainty
 from ..model.trigger_validator import validate_risk
 from ..store import ObservedSignal
+from ._parallel import run_partitioned
 from .prompts import render_exploration_prompt
 
 
@@ -250,6 +251,7 @@ def run_explore_aggregate(
     budget_tokens_per_goal: int | None = None,
     budget_actions_per_goal: int | None = None,
     budget_wall_seconds_per_goal: float | None = None,
+    jobs: int = 1,
 ) -> list[ExploreGoalOutcome]:
     """Hunt off-happy-path across EVERY believed goal (ADR-0023 decision 2).
 
@@ -280,8 +282,12 @@ def run_explore_aggregate(
     exhausted goal's candidate files are not mirrored to the shared tree as a
     clean success; the budget verdict is loud and traceable, not convenient.
     """
-    outcomes: list[ExploreGoalOutcome] = []
-    for gid in goal_ids:
+    # Read each goal's believed knowledge once for the auth-subject partition
+    # (ADR-0027 decision 4): a subject login goal runs serially so two real
+    # logins do not collide on one test account.
+    kfs = {gid: runner.adapter.read_knowledge(gid) for gid in goal_ids}
+
+    def _one(gid: str) -> ExploreGoalOutcome:
         happy = happy_path_urls_for(gid) if happy_path_urls_for else None
         try:
             result = runner.run_one(
@@ -291,16 +297,15 @@ def run_explore_aggregate(
                 budget_actions=budget_actions_per_goal,
             )
         except Exception as exc:  # noqa: BLE001 - a thrown goal is surfaced, not dropped
-            outcomes.append(ExploreGoalOutcome(
+            return ExploreGoalOutcome(
                 goal_id=gid,
                 error=f"could not explore: {type(exc).__name__}: {exc}",
-            ))
-            continue
+            )
 
         # Per-goal budget enforcement (ADR-0023 decision 7): a goal that
         # exhausted its token or wall slice is a loud ERROR, not a trusted
         # success. Same post-hoc cap and same two dimensions the regress
-        # aggregate applies (regression.run_aggregate ~lines 588-612).
+        # aggregate applies (regression.run_aggregate).
         exhausted: list[str] = []
         if (budget_tokens_per_goal is not None and result.tokens is not None
                 and result.tokens > budget_tokens_per_goal):
@@ -314,11 +319,16 @@ def run_explore_aggregate(
                 f"{budget_wall_seconds_per_goal:.2f}s"
             )
         if exhausted:
-            outcomes.append(ExploreGoalOutcome(
+            return ExploreGoalOutcome(
                 goal_id=gid,
                 error="per-goal budget exhausted: " + "; ".join(exhausted),
-            ))
-            continue
+            )
 
-        outcomes.append(ExploreGoalOutcome(goal_id=gid, result=result))
-    return outcomes
+        return ExploreGoalOutcome(goal_id=gid, result=result)
+
+    def _is_subject(gid: str) -> bool:
+        kf = kfs[gid]
+        return kf is not None and kf.auth_state is not None \
+            and kf.auth_state.being_tested
+
+    return run_partitioned(goal_ids, _one, is_subject=_is_subject, jobs=jobs)

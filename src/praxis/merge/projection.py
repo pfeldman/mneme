@@ -155,7 +155,8 @@ def project(
     independent = independent_diverse(fresh_success)
     agreeing = agreeing_types(fresh_success)
 
-    def build(summaries_subset: list[SignalSummary]) -> list[Signal]:
+    def build(summaries_subset: list[SignalSummary],
+              peers: list[SignalSummary] | None) -> list[Signal]:
         out: list[Signal] = []
         for s in summaries_subset:
             status = classify(
@@ -165,6 +166,7 @@ def project(
                 now=at,
                 current_version=current_version,
                 config=cfg,
+                peers=peers,
             )
             out.append(
                 Signal(
@@ -181,7 +183,11 @@ def project(
                                   sig.value))
         return out
 
-    success_signals = build(success)
+    # Per-signal corroboration (ADR-0029) is judged over the FRESH success set,
+    # the same set the goal-level flag came from: a stale peer must lend no
+    # corroboration to a fresh claim. Failure signals keep the legacy goal-level
+    # fallback (peers=None); the per-signal success rule does not touch them.
+    success_signals = build(success, fresh_success)
     if not success_signals:
         raise ValueError(
             f"cannot project goal {goal_id!r}: no success signals (seed the oracle first, "
@@ -202,7 +208,7 @@ def project(
         goal=goal,
         target=target,
         success_signals=success_signals,
-        failure_signals=build(failure) or None,
+        failure_signals=build(failure, None) or None,
         meta=meta,
     )
 

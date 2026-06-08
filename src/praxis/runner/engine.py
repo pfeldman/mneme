@@ -141,6 +141,8 @@ def regress_aggregate_engine(
     budget_tokens_per_goal: int | None = None,
     budget_actions_per_goal: int | None = None,
     budget_wall_seconds_per_goal: float | None = None,
+    jobs: int = 1,
+    on_goal_done: "Callable[[GoalReport], None] | None" = None,
 ) -> list[GoalReport]:
     """Run the default-all break-vs-drift aggregate (ADR-0023 decisions 2-4, 7).
 
@@ -168,6 +170,8 @@ def regress_aggregate_engine(
         budget_tokens_per_goal=budget_tokens_per_goal,
         budget_actions_per_goal=budget_actions_per_goal,
         budget_wall_seconds_per_goal=budget_wall_seconds_per_goal,
+        jobs=jobs,
+        on_goal_done=on_goal_done,
     )
 
 
@@ -261,6 +265,7 @@ def explore_aggregate_engine(
     budget_actions_per_goal: int | None = None,
     budget_wall_seconds_per_goal: float | None = None,
     committed_sink: CommittedSink | None = None,
+    jobs: int = 1,
 ) -> ExploreAggregateOutcome:
     """Hunt off-happy-path across EVERY believed goal, surface-independent
     (ADR-0023 decisions 1, 2, 7, 8).
@@ -295,6 +300,7 @@ def explore_aggregate_engine(
         budget_tokens_per_goal=budget_tokens_per_goal,
         budget_actions_per_goal=budget_actions_per_goal,
         budget_wall_seconds_per_goal=budget_wall_seconds_per_goal,
+        jobs=jobs,
     )
     committed: list[Any] = []
     if committed_sink is not None:

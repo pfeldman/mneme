@@ -47,6 +47,7 @@ from .regression import (
 )
 from .report import (
     CandidateGroup,
+    format_console_summary,
     group_candidates_by_trigger,
     to_aggregate_markdown,
     to_candidate_markdown,
@@ -78,6 +79,7 @@ __all__ = [
     "compute_off_path_fraction",
     "explore_aggregate_engine",
     "explore_engine",
+    "format_console_summary",
     "group_candidates_by_trigger",
     "is_agentic",
     "regress_aggregate_engine",

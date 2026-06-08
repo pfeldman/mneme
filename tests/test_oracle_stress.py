@@ -34,3 +34,12 @@ def test_seed_plus_single_agent_is_the_inherent_trust_boundary() -> None:
     # legitimate cold-start corroboration; indistinguishable from honest observation.
     # Documented as inherent (ADR-0008), mitigated temporally, not at promotion.
     assert stress.s_seed_rides_single_agent() == 1
+
+
+def test_seed_plus_same_type_paraphrase_stream_does_not_self_certify() -> None:
+    # ADR-0029 defect B: a seed plus a stream of same-type single-agent paraphrases
+    # must promote NONE of the paraphrases (no different-type partner from a
+    # different source). The believed set stays the seed only.
+    assert stress.s_seed_plus_paraphrase_stream() == 0
+    # And the fix must not over-correct: the seed itself stays believed.
+    assert stress.s_seed_survives_paraphrase_stream() == 1

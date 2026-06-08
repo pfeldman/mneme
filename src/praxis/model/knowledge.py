@@ -219,6 +219,13 @@ class AuthState(_Base):
     # is too thin). Pydantic `... = Field(...)` mirrors the schema's required
     # list; the field still accepts `None`.
     scope: str | None = Field(...)
+    # `being_tested` declares whether authentication is the SUBJECT under test
+    # (the login flow itself is what the goal verifies) or merely a PRECONDITION
+    # (ADR-0027 decision 1). Optional, defaults False (precondition), so existing
+    # knowledge files with no `being_tested` key still validate. When True, a run
+    # performs a real login and does NOT reuse a saved session (ADR-0027
+    # decision 2), because reusing a session would skip the flow under test.
+    being_tested: bool = False
 
     @field_validator("scope")
     @classmethod
