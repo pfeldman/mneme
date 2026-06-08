@@ -26,6 +26,16 @@ You run the SAME engine the console `praxis regress` runs, then you add
 break-vs-drift triage on top of the verdict. You do not change the verdict; you
 explain it and propose a next step for a human.
 
+The bare console `praxis regress` now self-drives: it runs the goals headless on
+the user's subscription via `claude -p` (no API key, no paste), prints a
+pytest-style "X / N passed" summary, and exits with a code (ADR-0027). Flags a
+human may use there: `--headed` to watch the browser, `--jobs N` to run goals
+concurrently (default 1; auth-subject login goals run serially), and
+`--from-file PATH` to feed pre-collected observations for a scripted run. THIS
+skill surface is the human-present surface: it is where AUTH-EXPIRED and an email
+2FA re-auth are handled interactively (a headless console run cannot pass an
+emailed code and surfaces it loudly instead).
+
 This is R-mode (ADR-0009): the inputs are the believed `success_signals` and
 `failure_signals` only. Auditor scenarios are NEVER an input on this surface;
 feeding them in would let regress pass by reading the answer key instead of
@@ -52,10 +62,17 @@ not load, read, or reference any auditor scenario while regressing.
    `.praxis/knowledge/`. If there are no seeds, tell the user to seed a goal
    with `/praxis:teach` first and stop.
 
-2. If a run must authenticate, LOAD the saved session for the role BEFORE
-   driving the browser and inject it into the browser context, so the goal runs
-   authenticated WITHOUT a fresh login, hence without a fresh 2FA. Load it with
-   this one-liner (you do not need to read any library code):
+2. If a run must authenticate, decide FIRST whether the login is the test or
+   just setup (ADR-0027 decisions 1, 2). When the goal's `auth_state.being_tested`
+   is true, the login IS the subject under test: do NOT reuse a saved session,
+   perform a REAL login every run so the flow is actually exercised. When
+   `being_tested` is false or absent (the common case: the login is a
+   precondition), reuse the saved session below.
+
+   To reuse, LOAD the saved session for the role BEFORE driving the browser and
+   inject it into the browser context, so the goal runs authenticated WITHOUT a
+   fresh login, hence without a fresh 2FA. Load it with this one-liner (you do
+   not need to read any library code):
 
        python -c "import json,sys; from praxis.auth_session import load_session_for_role; json.dump(load_session_for_role(sys.argv[1]), open('session.json','w'))" <role>
 
