@@ -1,4 +1,4 @@
-"""`FileEventStore`: one immutable JSON file per event (ADR-0001, ADR-0012).
+"""`FileEventStore`: one immutable JSON file per event (ADR-0001, ADR-0012, ADR-0013).
 
 Append-only by construction: every event lands in its own uniquely-named file,
 so concurrent writers never collide and never need a lock. There is no
@@ -18,6 +18,15 @@ Phase 2 (ADR-0012) extends this with:
   at read time. Two readers reading the same on-disk set get the same
   projection regardless of the order writers landed.
 
+Phase 2 (ADR-0013) extends this with:
+
+- `DecayEvent`s are stored in a sibling `decay/` subdirectory under the same
+  tenant root (`<root>/<tenant_id>/decay/`), so the existing observation-event
+  `*.json` glob continues to read ObservationEvents only and the two event
+  kinds never deserialize against the wrong model. The store stays
+  append-only for both event kinds; the projection driver decides when to
+  write a decay event by re-running the surviving-set diversity check.
+
 The "no consensus synthetic entry" clause from ADR-0012 lives at the merge
 layer (`merge/projection.py`); the store just keeps every writer's event as
 its own row with its own `source_id`.
@@ -28,7 +37,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
 
-from .events import ObservationEvent
+from .events import DecayEvent, ObservationEvent
 
 # The default tenant id used when the caller does not specify one. ADR-0012
 # names `local` as the conventional default for Phase 2 single-tenant
@@ -38,10 +47,11 @@ from .events import ObservationEvent
 # explicit `tenant_id` is the recommended call shape.
 DEFAULT_TENANT_ID: str = "local"
 
-# Path subcomponent under `<root>/<tenant_id>/`. Kept as a constant rather than
+# Path subcomponents under `<root>/<tenant_id>/`. Kept as constants rather than
 # inlined so a Phase 3 packed-segment backend that supersedes the file layout
 # behind the SPI can reuse the same tenant root.
 _EVENTS_SUBDIR: str = "events"
+_DECAY_SUBDIR: str = "decay"
 
 
 def _validate_tenant_id(tenant_id: str) -> str:
@@ -91,8 +101,24 @@ class EventStore(ABC):
     ) -> list[ObservationEvent]:
         """Return events strictly newer than `ts`, in (ts, event_id) order."""
 
+    @abstractmethod
+    def append_decay(
+        self, event: DecayEvent, *, tenant_id: str | None = None
+    ) -> None:
+        """Persist one immutable decay event (ADR-0013). Append-only contract
+        is identical to `append()`: the file is unique by event id and never
+        overwritten."""
 
-def _filename(event: ObservationEvent) -> str:
+    @abstractmethod
+    def read_decay(
+        self, goal_id: str | None = None, *, tenant_id: str | None = None
+    ) -> list[DecayEvent]:
+        """Return all decay events (optionally for one goal), in (ts, event_id)
+        order. Decay events are stored separately from observation events but
+        live in the same logical log."""
+
+
+def _filename(event: ObservationEvent | DecayEvent) -> str:
     # Sortable ts prefix keeps files roughly time-ordered on disk; the event
     # id guarantees uniqueness (lock-free concurrency). The event_id itself is
     # a uuid4 hex; collisions are impossible by construction so the filesystem
@@ -107,6 +133,11 @@ class FileEventStore(EventStore):
     Layout::
 
         <root>/<tenant_id>/events/<ts>__<event_id>.json
+        <root>/<tenant_id>/decay/<ts>__<event_id>.json   (ADR-0013)
+
+    Observation events live under `events/`; decay events live under a sibling
+    `decay/` subdirectory so the two event kinds never deserialize against
+    the wrong model.
 
     The constructor accepts an optional `default_tenant_id` that callers
     targeting a single tenant can rely on without threading the id through
@@ -130,6 +161,14 @@ class FileEventStore(EventStore):
     def _events_dir(self, tenant_id: str | None) -> Path:
         tenant = self._resolve_tenant(tenant_id)
         d = self.root / tenant / _EVENTS_SUBDIR
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _decay_dir(self, tenant_id: str | None) -> Path:
+        tenant = self._resolve_tenant(tenant_id)
+        d = self.root / tenant / _DECAY_SUBDIR
+        # Lazily create the subdir on first decay event so legacy stores that
+        # never see a decay flip stay byte-equivalent on disk.
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -172,3 +211,37 @@ class FileEventStore(EventStore):
         self, ts: datetime, goal_id: str | None = None, *, tenant_id: str | None = None
     ) -> list[ObservationEvent]:
         return [e for e in self.read(goal_id, tenant_id=tenant_id) if e.ts > ts]
+
+    def append_decay(
+        self, event: DecayEvent, *, tenant_id: str | None = None
+    ) -> None:
+        decay_dir = self._decay_dir(tenant_id)
+        path = decay_dir / _filename(event)
+        if path.exists():
+            raise FileExistsError(
+                f"decay event already exists, refusing to overwrite: {path}"
+            )
+        # Same atomic-rename commit as `append()`. Salt the tmp name with the
+        # event id so concurrent decay writers do not stomp each other.
+        tmp = decay_dir / f".{event.event_id}.tmp"
+        tmp.write_text(event.model_dump_json(indent=2), encoding="utf-8")
+        tmp.rename(path)
+
+    def _load_all_decay(self, tenant_id: str | None) -> list[DecayEvent]:
+        tenant = self._resolve_tenant(tenant_id)
+        decay_dir = self.root / tenant / _DECAY_SUBDIR
+        events: list[DecayEvent] = []
+        if not decay_dir.exists():
+            return events
+        for f in decay_dir.glob("*.json"):
+            events.append(DecayEvent.model_validate_json(f.read_text(encoding="utf-8")))
+        events.sort(key=lambda e: (e.ts, e.event_id))
+        return events
+
+    def read_decay(
+        self, goal_id: str | None = None, *, tenant_id: str | None = None
+    ) -> list[DecayEvent]:
+        events = self._load_all_decay(tenant_id)
+        if goal_id is not None:
+            events = [e for e in events if e.goal_id == goal_id]
+        return events

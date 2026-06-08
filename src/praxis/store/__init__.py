@@ -19,9 +19,19 @@ Phase 2 (ADR-0012):
   `session_id`, or any per-process token. `AgentIdentity` / `source_id_for`
   are the canonical way to construct that string.
 
+Phase 2 (ADR-0013):
+
+- `DecayEvent` is a sibling immutable event kind written by the projection
+  driver when recency decay flips a signal's status. Stored in a sibling
+  `decay/` subdirectory under each tenant so the existing `*.json` glob
+  for observation events stays unaffected.
+
 Public API:
     ObservedSignal, ObservationEvent  -- the immutable event model
-    EventStore                        -- backend interface (append/read/since)
+    DecayEvent                        -- projection-driven status-flip event
+                                         (ADR-0013, Phase 2)
+    EventStore                        -- backend interface (append/read/since
+                                         + append_decay/read_decay)
     FileEventStore                    -- per-tenant one-file-per-event backend
     DEFAULT_TENANT_ID                 -- the Phase 2 conventional default
     AgentIdentity, source_id_for      -- the multi-writer source_id contract
@@ -34,13 +44,14 @@ from .agent_identity import (
     AgentIdentity,
     source_id_for,
 )
-from .events import ObservationEvent, ObservedSignal
+from .events import DecayEvent, ObservationEvent, ObservedSignal
 from .file_store import DEFAULT_TENANT_ID, EventStore, FileEventStore
 
 __all__ = [
     "DEFAULT_TENANT_ID",
     "FORBIDDEN_SOURCE_TOKEN_KINDS",
     "AgentIdentity",
+    "DecayEvent",
     "EventStore",
     "FileEventStore",
     "ObservationEvent",

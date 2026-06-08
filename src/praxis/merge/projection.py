@@ -3,13 +3,18 @@
 How a believed state is built (never last-write-wins):
   1. Collect every raw `ObservedSignal` from every event for the goal, plus any
      seeded signals from a seed knowledge file.
-  2. Group by (kind, type, value) into one `SignalSummary` each, ordered by time.
-  3. Ask the oracle the goal-level diversity-or-seed question once.
-  4. Classify each summary's Status and compute its confidence.
-  5. Emit a `KnowledgeFile` whose signals carry aggregated provenance.
+  2. Run the ADR-0013 decay evaluation: drop observations staled by version or
+     wall-clock anchors; carry forward unidirectional decay from prior
+     `DecayEvent`s in the log; emit new `DecayEvent`s for status flips.
+  3. Group by (kind, type, value) into one `SignalSummary` each, ordered by time.
+  4. Ask the oracle the goal-level diversity-or-seed question once over the
+     SURVIVING set.
+  5. Classify each summary's Status and compute its confidence; signals that
+     decayed mid-projection are forced to `stale`.
+  6. Emit a `KnowledgeFile` whose signals carry aggregated provenance.
 
 Contradictions are kept as separate `contested` signals; oscillation is
-`quarantined`; nothing is dropped. The store stays the source of truth — re-running
+`quarantined`; nothing is dropped. The store stays the source of truth - re-running
 `project` on the same events always yields the same believed state.
 """
 from __future__ import annotations
@@ -21,7 +26,9 @@ from ..model import (
     Meta,
     Provenance,
     Signal,
+    SignalType,
     SourceType,
+    Status,
     Target,
 )
 from ..oracle import (
@@ -33,7 +40,8 @@ from ..oracle import (
     independent_diverse,
     is_stale,
 )
-from ..store import ObservationEvent, ObservedSignal
+from ..store import DecayEvent, ObservationEvent, ObservedSignal
+from .decay import DecayConfig, evaluate_decay, select_current_version
 
 
 def _utcnow() -> datetime:
@@ -255,3 +263,329 @@ def project_with_seed(
         config=config,
     )
     return _passthrough_risks_uncertainties(seed, projected)
+
+
+def project_with_decay(
+    events: list[ObservationEvent],
+    *,
+    goal_id: str,
+    goal: str,
+    target: Target,
+    seeded: list[ObservedSignal] | None = None,
+    now: datetime | None = None,
+    current_version: str | None = None,
+    config: TrustConfig | None = None,
+    decay_config: DecayConfig | None = None,
+    prior_decay_events: list[DecayEvent] | None = None,
+) -> tuple[KnowledgeFile, list[DecayEvent]]:
+    """Phase 2 projection with explicit recency decay (ADR-0013).
+
+    Returns:
+      - `KnowledgeFile`: the believed projection over the SURVIVING set.
+      - `list[DecayEvent]`: new decay events the caller (runner) must append
+        to the store. Decay events are written ONLY for status flips
+        (`believed` -> `stale`, `contested` with no live evidence -> `stale`).
+        Pure confidence drift does NOT emit an event.
+
+    The caller is responsible for:
+      - Selecting `current_version` (typically passed by the runner; the
+        projection falls back to `select_current_version()` over the supporting
+        set when `None`).
+      - Appending the returned decay events to the store in the same operation
+        as reading the projection; otherwise the next projection re-derives
+        them. Replaying the log after the append yields the same status
+        without re-reading the clock (ADR-0013 section 1).
+
+    The diversity check (`independent_diverse`) is re-run over the surviving
+    set, so:
+      - Same-type repeats from the same `source_id` cannot keep `believed`
+        alive after the diverse signal stales (ADR-0013 section 2).
+      - Decay is unidirectional: a signal staled by a prior decay event does
+        not un-stale on a same-type repeat; re-promotion goes through the
+        ADR-0008 cold-start gate (ADR-0013 section 4).
+    """
+    cfg = config or TrustConfig()
+    dcfg = decay_config or DecayConfig()
+    at = now or _utcnow()
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+
+    # Resolve the anchor per ADR-0013 section 5. Caller-supplied wins; else
+    # highest-semver across the supporting set; else None (wall-clock only).
+    all_observations: list[ObservedSignal] = list(seeded or [])
+    for ev in events:
+        if ev.goal_id != goal_id:
+            continue
+        all_observations.extend(ev.signals)
+    anchor_version = select_current_version(
+        caller_supplied=current_version,
+        observations=all_observations,
+    )
+
+    # Seeded observations are stamped at `now`, matching the existing
+    # `project()` semantics.
+    seeded_pairs: list[tuple[ObservedSignal, datetime]] = []
+    for s in seeded or []:
+        seeded_pairs.append((s, at))
+
+    evaluation = evaluate_decay(
+        events=events,
+        goal_id=goal_id,
+        current_version=anchor_version,
+        now=at,
+        config=dcfg,
+        prior_decay_events=prior_decay_events,
+        seeded_observations=seeded_pairs,
+    )
+
+    # Rebuild an "events view" that drops retired observations. This lets us
+    # reuse `project()` unchanged (and keep its full classification path) over
+    # the surviving set. We synthesize one event per surviving observation;
+    # the source_id and ts are preserved so the projection's grouping is
+    # equivalent. Seeded surviving observations are carried via the `seeded`
+    # argument.
+    surviving_events: list[ObservationEvent] = []
+    surviving_seeded: list[ObservedSignal] = []
+    seed_value_set = {(s.kind, s.type, s.value) for s in seeded or []}
+    for obs, ts, event_id in evaluation.surviving_observations:
+        key = (obs.kind, obs.type, obs.value)
+        if event_id.startswith("seed:") and key in seed_value_set:
+            surviving_seeded.append(obs)
+            continue
+        surviving_events.append(
+            ObservationEvent(
+                event_id=event_id,
+                ts=ts,
+                agent_id=obs.source_id,
+                goal_id=goal_id,
+                observed_app_version=obs.observed_app_version,
+                signals=[obs],
+            )
+        )
+
+    try:
+        projected = project(
+            surviving_events,
+            goal_id=goal_id,
+            goal=goal,
+            target=target,
+            seeded=surviving_seeded,
+            now=at,
+            current_version=anchor_version,
+            config=cfg,
+        )
+    except ValueError:
+        # All success observations were retired by decay. Build a stale-only
+        # projection from the retired representatives so `praxis status` and
+        # `praxis review` still see the goal frame and the flip is visible.
+        projected = _build_stale_only_projection(
+            events=events,
+            goal_id=goal_id,
+            goal=goal,
+            target=target,
+            staled_keys=evaluation.staled_signal_keys,
+            now=at,
+            anchor_version=anchor_version,
+        )
+
+    # Force `stale` status on any signal the decay evaluation flipped, even if
+    # the projection-over-surviving-set classification would have computed
+    # something else. The retired observations still need to surface in the
+    # output (so `praxis review` sees them) - but their status is the flip.
+    if evaluation.staled_signal_keys:
+        projected = _apply_decay_flips(
+            projected,
+            events=events,
+            goal_id=goal_id,
+            staled_keys=evaluation.staled_signal_keys,
+            now=at,
+            anchor_version=anchor_version,
+        )
+
+    return projected, evaluation.new_decay_events
+
+
+def _build_stale_only_projection(
+    *,
+    events: list[ObservationEvent],
+    goal_id: str,
+    goal: str,
+    target: Target,
+    staled_keys: set[tuple[str, SignalType, str]],
+    now: datetime,
+    anchor_version: str | None,
+) -> KnowledgeFile:
+    """Construct a KnowledgeFile from retired observations alone, with every
+    signal forced to `stale`. Used when recency decay retires every success
+    observation: the projection still has to expose the goal frame + the
+    stale rows so the audit trail is visible in `praxis status`."""
+    representative: dict[
+        tuple[str, SignalType, str], tuple[ObservedSignal, datetime]
+    ] = {}
+    for ev in events:
+        if ev.goal_id != goal_id:
+            continue
+        for obs in ev.signals:
+            key = (obs.kind, obs.type, obs.value)
+            if key in staled_keys:
+                cur = representative.get(key)
+                if cur is None or ev.ts > cur[1]:
+                    representative[key] = (obs, ev.ts)
+
+    success: list[Signal] = []
+    failure: list[Signal] = []
+    all_ts: list[datetime] = []
+    for (kind, sig_type, value), (obs, ts) in representative.items():
+        all_ts.append(ts)
+        stale_signal = Signal(
+            type=sig_type,
+            value=value,
+            provenance=Provenance(
+                source_type=obs.source_type,
+                source_id=obs.source_id,
+                observed_app_version=obs.observed_app_version or anchor_version,
+                last_verified=ts,
+                observation_count=1,
+            ),
+            confidence=0.0,
+            status=Status.STALE,
+        )
+        if kind == "success":
+            success.append(stale_signal)
+        else:
+            failure.append(stale_signal)
+
+    if not success:
+        # No success representatives either - synthesize a single stale row
+        # so the schema's min_length=1 success_signals constraint holds. The
+        # row is loud (status=stale) so the operator immediately sees the
+        # projection has no live oracle.
+        success.append(
+            Signal(
+                type=SignalType.BEHAVIORAL,
+                value="oracle fully decayed - no surviving success evidence",
+                provenance=Provenance(
+                    source_type=SourceType.AGENT,
+                    source_id="projection-driver",
+                    observed_app_version=anchor_version,
+                    last_verified=now,
+                    observation_count=1,
+                ),
+                confidence=0.0,
+                status=Status.STALE,
+            )
+        )
+
+    meta = Meta(
+        created_at=min(all_ts) if all_ts else now,
+        updated_at=max(all_ts) if all_ts else now,
+    )
+    return KnowledgeFile(
+        schema_version="0",
+        goal_id=goal_id,
+        goal=goal,
+        target=target,
+        success_signals=success,
+        failure_signals=failure or None,
+        meta=meta,
+    )
+
+
+def _apply_decay_flips(
+    kf: KnowledgeFile,
+    *,
+    events: list[ObservationEvent],
+    goal_id: str,
+    staled_keys: set[tuple[str, SignalType, str]],
+    now: datetime,
+    anchor_version: str | None,
+) -> KnowledgeFile:
+    """Inject `stale` rows into `kf` for each signal key the decay evaluation
+    flipped that did not survive into the projected output, and force
+    `Status.STALE` on any rows that did survive but were retired."""
+
+    def _existing_keys(signals: list[Signal]) -> set[tuple[SignalType, str]]:
+        return {(s.type, s.value) for s in signals}
+
+    # Force STALE on present rows.
+    new_success = [
+        s.model_copy(update={"status": Status.STALE})
+        if ("success", s.type, s.value) in staled_keys else s
+        for s in kf.success_signals
+    ]
+    new_failure = (
+        [
+            s.model_copy(update={"status": Status.STALE})
+            if ("failure", s.type, s.value) in staled_keys else s
+            for s in kf.failure_signals
+        ]
+        if kf.failure_signals else None
+    )
+
+    # Inject phantom STALE rows for signal groups that were fully retired
+    # (no surviving observation remained so the projection dropped them).
+    existing_success_keys = _existing_keys(new_success)
+    existing_failure_keys = _existing_keys(new_failure or [])
+
+    # Collect a representative observation for each retired key so we can
+    # build a Signal with provenance.
+    representative: dict[
+        tuple[str, SignalType, str], tuple[ObservedSignal, datetime]
+    ] = {}
+    for ev in events:
+        if ev.goal_id != goal_id:
+            continue
+        for obs in ev.signals:
+            key = (obs.kind, obs.type, obs.value)
+            if key in staled_keys:
+                cur = representative.get(key)
+                if cur is None or ev.ts > cur[1]:
+                    representative[key] = (obs, ev.ts)
+
+    extra_success: list[Signal] = []
+    extra_failure: list[Signal] = []
+    for (kind, sig_type, value), (obs, ts) in representative.items():
+        type_value = (sig_type, value)
+        if kind == "success" and type_value in existing_success_keys:
+            continue
+        if kind == "failure" and type_value in existing_failure_keys:
+            continue
+        stale_signal = Signal(
+            type=sig_type,
+            value=value,
+            provenance=Provenance(
+                source_type=obs.source_type,
+                source_id=obs.source_id,
+                observed_app_version=obs.observed_app_version or anchor_version,
+                last_verified=ts,
+                observation_count=1,
+            ),
+            confidence=0.0,
+            status=Status.STALE,
+        )
+        if kind == "success":
+            extra_success.append(stale_signal)
+        else:
+            extra_failure.append(stale_signal)
+
+    success_signals = new_success + extra_success
+    failure_signals: list[Signal] | None
+    if new_failure or extra_failure:
+        failure_signals = (new_failure or []) + extra_failure
+    else:
+        failure_signals = None
+
+    # Re-sort to keep determinism (durability order, then value).
+    type_order = list(type(success_signals[0].type).__members__.values()) if success_signals else []
+    success_signals.sort(
+        key=lambda sig: (type_order.index(sig.type) if sig.type in type_order else 99, sig.value)
+    )
+    if failure_signals:
+        failure_signals.sort(
+            key=lambda sig: (type_order.index(sig.type) if sig.type in type_order else 99, sig.value)
+        )
+
+    return kf.model_copy(update={
+        "success_signals": success_signals,
+        "failure_signals": failure_signals,
+    })
