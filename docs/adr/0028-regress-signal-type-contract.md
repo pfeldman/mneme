@@ -1,6 +1,6 @@
 # ADR-0028: The regress agent confirms every believed success signal in its declared type
 
-Status: Proposed
+Status: Accepted (2026-06-08)
 
 ## Context
 

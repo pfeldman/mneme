@@ -1,6 +1,6 @@
 # ADR-0029: Agent self-observations cannot self-certify the oracle
 
-Status: Proposed
+Status: Accepted (2026-06-08)
 
 ## Context
 
