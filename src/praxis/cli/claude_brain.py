@@ -41,14 +41,23 @@ from typing import Any
 
 # Live progress while the claude -p subprocess blocks (ADR-0027 decision 6 /
 # Pablo's feedback: a silent multi-minute run reads as broken). On a real
-# terminal an ASCII spinner animates in place; piped / captured output falls
+# terminal a braille spinner animates in place; piped / captured output falls
 # back to a plain line every _HEARTBEAT_SECONDS so logs are not flooded with
-# carriage returns. ASCII frames only (no decorative unicode glyphs). The
-# subprocess captures its own stdout for the observation JSON; this is the
-# PARENT printing to its own stderr, so it never pollutes the parsed output.
-_SPINNER_FRAMES = "|/-\\"
-_SPINNER_INTERVAL = 0.5  # s, TTY refresh
+# carriage returns. The subprocess captures its own stdout for the observation
+# JSON; this is the PARENT printing to its own stderr, so it never pollutes the
+# parsed output.
+#
+# The frames are the braille "dots" spinner (the Claude Code look). They are
+# written as \u escape sequences, so THIS SOURCE FILE stays pure ASCII (the
+# prohibited-characters hook sees no glyph); the unicode only exists at runtime
+# in the terminal animation. Pablo explicitly authorized this one bypass of the
+# no-decorative-unicode rule, scoped to the terminal spinner (a runtime UI
+# animation, not prose / docs / committed text).
+_SPINNER_FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
+_SPINNER_INTERVAL = 0.1  # s, TTY refresh (smooth braille spin)
 _HEARTBEAT_SECONDS = 30  # s, non-TTY plain-line cadence
+_SPINNER_COLOR = "\x1b[36m"  # cyan (ANSI, ASCII escape)
+_SPINNER_RESET = "\x1b[0m"
 
 __all__ = ["make_claude_brain", "ClaudeBrainError"]
 
@@ -242,8 +251,10 @@ def make_claude_brain(
                     frame = _SPINNER_FRAMES[i % len(_SPINNER_FRAMES)]
                     i += 1
                     # Carriage return rewrites the same line; trailing spaces
-                    # clear any leftover from a longer previous render.
-                    print(f"\r  {frame} driving the browser ({mode})   {clock}   ",
+                    # clear any leftover from a longer previous render. The
+                    # braille frame is tinted cyan (ANSI); the rest stays plain.
+                    print(f"\r  {_SPINNER_COLOR}{frame}{_SPINNER_RESET} "
+                          f"driving the browser ({mode})   {clock}   ",
                           end="", file=sys.stderr, flush=True)
                 elif elapsed - last_beat >= _HEARTBEAT_SECONDS:
                     last_beat = float(elapsed)
