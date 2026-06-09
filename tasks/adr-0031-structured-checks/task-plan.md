@@ -77,7 +77,7 @@ verify.sh` ends ALL GREEN before every commit, gh PR merged on Pablo's OK.
     survives onto the believed signal) in step 7. This is the hard-won lesson:
     a field dropped by the projection is silently dead end-to-end.
 
-- [ ] Step 6: Surface the check in the regress prompt + carry `observed` from the executor
+- [x] Step 6: Surface the check in the regress prompt + carry `observed` from the executor
   - `prompts._format_signal`: when `sig.check` is present, render a line
     telling the agent which structured fields to report (before/after counts,
     or the identifier to track + whether it is present after the action).
@@ -90,7 +90,7 @@ verify.sh` ends ALL GREEN before every commit, gh PR merged on Pablo's OK.
   - Verification: prompt test asserts the check line renders; executor-parse
     test asserts `observed` survives.
 
-- [ ] Step 7: Tests + verify.sh ALL GREEN
+- [x] Step 7: Tests + verify.sh ALL GREEN
   - Unit: `tests/test_check.py` (evaluate for both kinds, fail-closed on
     None/missing/empty/wrong-type, validation rejects bad kind / non-int delta
     / empty slot / bad expect).
