@@ -126,6 +126,23 @@ def test_regress_and_explore_skills_are_scaffolded_by_init(tmp_path: Path) -> No
         assert (skills_dir / rel).read_bytes() == by_rel[rel].read_bytes()
 
 
+def test_teach_skill_documents_structured_checks() -> None:
+    # ADR-0031 teach-UX follow-up: the teach skill must instruct the authoring
+    # agent to emit a typed `check` for relational / after-action facts instead
+    # of prose, or a check can only reach a seed by hand-editing YAML (off the
+    # normal authoring flow). The guidance must name both check kinds so it
+    # cannot silently regress out.
+    text = _skills_by_rel()[TEACH_SKILL_REL].read_text(encoding="utf-8")
+    lower = text.lower()
+    assert "list_count_delta" in text, "teach must document the count-delta check"
+    assert "element_membership" in text, "teach must document the membership check"
+    # The trigger: a relational / after-action fact, not a fixed phrase.
+    assert "count delta" in lower or "count_delta" in lower
+    assert "relation" in lower
+    # The non-leak rule: the abstract slot is seeded, never the concrete id.
+    assert "abstract" in lower and "never a concrete" in lower
+
+
 def test_regress_skill_states_triage_is_advisory_and_never_mutates() -> None:
     # ADR-0023 decision 5: the regress skill triage is advisory and NEVER
     # mutates committed knowledge on its own; a STALE update is a human seed

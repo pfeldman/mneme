@@ -41,7 +41,7 @@ before each commit; PR + merge on Pablo's OK.
     data; without it the check would fail closed (a false REGRESSED) even with a
     correct seed.
 
-- [ ] Step 2: Teach the teach skill to AUTHOR structured checks
+- [x] Step 2: Teach the teach skill to AUTHOR structured checks
   - Extend `src/praxis/skills/praxis-teach/SKILL.md` with a section on
     structured checks: when a success/failure fact is RELATIONAL (a count delta,
     "exactly one fewer") or an AFTER-ACTION ABSENCE (an id that disappears),
