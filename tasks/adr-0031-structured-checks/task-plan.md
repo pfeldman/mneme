@@ -50,7 +50,7 @@ verify.sh` ends ALL GREEN before every commit, gh PR merged on Pablo's OK.
   - Verification: `tests/test_model_schema_agree.py` and
     `tests/test_schema_examples_validate.py` stay green.
 
-- [ ] Step 3: Carry the structured observation on `ObservedSignal`
+- [x] Step 3: Carry the structured observation on `ObservedSignal`
   - Add optional `observed: dict[str, Any] | None = None` to `ObservedSignal`
     (`store/events.py`) to carry the per-run payload (before/after counts, or
     identifier+present). `extra="forbid"` already declared; the new field is
@@ -58,7 +58,7 @@ verify.sh` ends ALL GREEN before every commit, gh PR merged on Pablo's OK.
   - Files: `src/praxis/store/events.py`.
   - Verification: existing store/projection tests stay green.
 
-- [ ] Step 4: Matcher dispatch `check -> value_predicate -> Jaccard`
+- [x] Step 4: Matcher dispatch `check -> value_predicate -> Jaccard`
   - In `regression._value_matches`, add a `check` branch BEFORE the
     `value_predicate` branch: exact-type equality still gates first (ADR-0028,
     unchanged); if `target.check is not None` -> `return
