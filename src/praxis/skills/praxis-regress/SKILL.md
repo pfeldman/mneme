@@ -55,6 +55,12 @@ not load, read, or reference any auditor scenario while regressing.
   app would not load, the adapter threw, the per-goal budget slice was
   exhausted) is a loud non-OK outcome that fails the run.
 - NEVER feed auditor scenarios in as an input.
+- NEVER self-certify a structured `check`. A signal that carries a `check` (a
+  count delta, or whether an id is present/absent after the action) is confirmed
+  by REPORTING THE DATA you observed (the before/after counts, the concrete id
+  and whether it is present), never by deciding for yourself that it passed. The
+  runner evaluates the check over your reported data; report the raw numbers and
+  let the verdict be computed.
 
 ## Protocol
 

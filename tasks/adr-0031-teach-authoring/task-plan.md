@@ -59,7 +59,7 @@ before each commit; PR + merge on Pablo's OK.
   - Verification: a light test asserting the skill text names the check kinds, so
     the guidance cannot silently regress out.
 
-- [ ] Step 3: Note structured-check confirmation on the regress skill surface
+- [x] Step 3: Note structured-check confirmation on the regress skill surface
   - Small addition to `src/praxis/skills/praxis-regress/SKILL.md`: a check signal
     is confirmed by REPORTING THE DATA (the counts, the membership), never by the
     agent deciding it passed; the runner evaluates the check. Mirrors the
@@ -67,7 +67,7 @@ before each commit; PR + merge on Pablo's OK.
   - Files: `src/praxis/skills/praxis-regress/SKILL.md`.
   - Verification: consistent with step 1's envelope; doc-only.
 
-- [ ] Step 4: verify.sh ALL GREEN (the offline gate)
+- [x] Step 4: verify.sh ALL GREEN (the offline gate)
   - Run `bash verify.sh`; fix any drift. The skill files are markdown (no unit
     tests beyond the light guards in steps 1-2); this is the final offline sweep
     before the live proof.
