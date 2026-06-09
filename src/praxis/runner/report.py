@@ -308,7 +308,28 @@ def write_aggregate_markdown(reports: list[GoalReport], path: str | Path) -> Pat
     return p
 
 
-def format_console_summary(reports: list[GoalReport]) -> str:
+_AGG_ANSI = {
+    AggregateVerdict.OK: "\x1b[32m",          # green
+    AggregateVerdict.REGRESSED: "\x1b[31m",   # red
+    AggregateVerdict.STALE: "\x1b[33m",       # yellow
+    AggregateVerdict.AUTH_EXPIRED: "\x1b[33m",  # yellow
+    AggregateVerdict.ERROR: "\x1b[31m",       # red
+}
+_AGG_GREEN = "\x1b[32m"
+_AGG_RED = "\x1b[31m"
+_AGG_RESET = "\x1b[0m"
+
+
+def color_agg_verdict(verdict: "AggregateVerdict", text: str, *, color: bool) -> str:
+    """Wrap `text` in the ANSI color for an aggregate verdict when `color` (TTY):
+    green OK, red REGRESSED / ERROR, yellow STALE / AUTH-EXPIRED. ASCII escapes
+    only; off when piped so captured output stays plain."""
+    if not color or verdict not in _AGG_ANSI:
+        return text
+    return f"{_AGG_ANSI[verdict]}{text}{_AGG_RESET}"
+
+
+def format_console_summary(reports: list[GoalReport], *, color: bool = False) -> str:
     """The pytest-style terminal summary for an aggregate regress run (ADR-0027
     decision 6).
 
@@ -336,7 +357,10 @@ def format_console_summary(reports: list[GoalReport]) -> str:
     if n_stale:
         tally += f", {n_stale} stale"
     banner = "RUN FAILED" if n_fail else "RUN PASSED"
-    lines.append(f"==== {banner}: {tally} ({total} goal(s)) ====")
+    banner_line = f"==== {banner}: {tally} ({total} goal(s)) ===="
+    if color:
+        banner_line = f"{(_AGG_RED if n_fail else _AGG_GREEN)}{banner_line}{_AGG_RESET}"
+    lines.append(banner_line)
     lines.append(
         f"  {n_ok} OK / {n_reg} REGRESSED / {n_stale} STALE / "
         f"{n_auth} AUTH-EXPIRED / {n_err} ERROR"
@@ -349,8 +373,10 @@ def format_console_summary(reports: list[GoalReport]) -> str:
             named = ", ".join(r.signals) if r.signals else "-"
             label = "expired role" if r.verdict == AggregateVerdict.AUTH_EXPIRED \
                 else "signal(s)"
+            verdict_tag = color_agg_verdict(
+                r.verdict, f"{r.verdict.value:<12}", color=color)
             lines.append(
-                f"  {r.verdict.value:<12} {r.goal_id}: {r.evidence} "
+                f"  {verdict_tag} {r.goal_id}: {r.evidence} "
                 f"[{label}: {named}]"
             )
     stale = [r for r in reports if r.verdict == AggregateVerdict.STALE]
