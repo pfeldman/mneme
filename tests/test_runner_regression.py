@@ -258,6 +258,51 @@ def test_parse_executor_result_stamps_missing_provenance() -> None:
     assert ctx2.observations[0].source_id == "pablo"
 
 
+def test_parse_executor_result_carries_structured_observed_payload() -> None:
+    """ADR-0031: an observation's `observed` payload (the raw before/after counts
+    or identifier+membership the agent self-reports) rides through the executor
+    parse onto ObservedSignal, so the matcher can evaluate the check over it."""
+    from praxis.runner.regression import _parse_executor_result
+
+    raw = {"observations": [{
+        "kind": "success", "type": "network",
+        "value": "the list went from 15 to 14", "present": True,
+        "observed": {"before_count": 15, "after_count": 14},
+    }]}
+    ctx = _parse_executor_result(raw, agent_id="praxis-cli")
+    assert ctx.observations[0].observed == {"before_count": 15, "after_count": 14}
+
+
+def test_regression_prompt_renders_structured_check_instructions() -> None:
+    """ADR-0031: a check signal surfaces a `structured check (...)` line telling
+    the agent to emit the raw `observed` payload, not free prose."""
+    from praxis.model import ElementMembershipCheck, ListCountDeltaCheck
+
+    now = datetime(2026, 6, 9, tzinfo=timezone.utc)
+    prov = Provenance(source_type=SourceType.HUMAN, source_id="pablo-seed",
+                      last_verified=now, observation_count=1)
+    kf = KnowledgeFile(
+        schema_version="0", goal_id="delete-a-campaign",
+        goal="a user can archive a campaign", target=Target(app="digioh"),
+        success_signals=[
+            Signal(type=SignalType.NETWORK, value="one fewer campaign",
+                   check=ListCountDeltaCheck(expect_delta=-1),
+                   provenance=prov, confidence=1.0, status=Status.BELIEVED),
+            Signal(type=SignalType.NETWORK, value="archived id gone",
+                   check=ElementMembershipCheck(identifier_slot="campaign_id",
+                                                expect="absent"),
+                   provenance=prov, confidence=1.0, status=Status.BELIEVED),
+        ],
+        meta=Meta(created_at=now, updated_at=now),
+    )
+    p = render_regression_prompt(kf, budget_tokens=5000)
+    assert "structured check" in p
+    assert "before_count" in p and "after_count" in p
+    assert "campaign_id" in p and "present" in p
+    # The emit contract tells the agent not to self-judge the check.
+    assert "the runner evaluates the check" in p
+
+
 def test_exploration_prompt_includes_risks_with_structured_triggers() -> None:
     kf = _login_kf()
     p = render_exploration_prompt(kf, budget_tokens=5000)

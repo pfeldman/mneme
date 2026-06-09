@@ -16,8 +16,10 @@ from __future__ import annotations
 import json
 
 from ..model import (
+    ElementMembershipCheck,
     HttpTrigger,
     KnowledgeFile,
+    ListCountDeltaCheck,
     Risk,
     SequenceTrigger,
     Signal,
@@ -26,21 +28,51 @@ from ..model import (
 )
 
 
+def _format_check(sig: Signal) -> str:
+    # When a signal carries a structured check (ADR-0031), tell the agent which
+    # STRUCTURED FIELDS to report in its observation `observed` payload. The body
+    # evaluates the check over those raw numbers (it never trusts the agent's
+    # judgement that "it passed"), so a genuinely-passing run must report the
+    # data, not prose. A check supersedes the value_predicate line; the two are
+    # mutually exclusive in practice (a signal uses one structured path).
+    check = sig.check
+    if isinstance(check, ListCountDeltaCheck):
+        return (
+            f"\n     structured check (report counts, do NOT paraphrase): observe "
+            f"the list size BEFORE the action and AFTER it, and emit "
+            f'observed={{"before_count": <int>, "after_count": <int>}}. The '
+            f"expected change is {check.expect_delta:+d}."
+        )
+    if isinstance(check, ElementMembershipCheck):
+        return (
+            f"\n     structured check (report membership, do NOT paraphrase): "
+            f"track the concrete per-run {check.identifier_slot} and, AFTER the "
+            f'action, emit observed={{"identifier": "<the concrete '
+            f'{check.identifier_slot} you saw>", "present": <true|false>}}. The '
+            f"expected state is {check.expect}."
+        )
+    return ""
+
+
 def _format_signal(sig: Signal, idx: int) -> str:
-    # When a signal carries a structured predicate (ADR-0030), surface it so the
-    # agent can confirm IN that exact shape. The matcher fullmatches the
-    # observation against the predicate (invariant exact, {slots} filled), so the
-    # agent must report the observation as the predicate with each {slot} replaced
-    # by the concrete value it saw; otherwise a genuinely-passing check cannot
-    # match. Without this line the agent only sees the prose value and emits free
-    # prose that can never fullmatch the predicate.
-    predicate = (
-        f"\n     fact (confirm in THIS exact shape, fill each {{slot}} with the "
-        f"concrete value you saw): {sig.value_predicate}"
-        if sig.value_predicate is not None else ""
-    )
+    # A structured check (ADR-0031) takes precedence over a value_predicate
+    # (ADR-0030); both take precedence over free prose. Surface whichever the
+    # signal carries so the agent confirms IN the shape the matcher evaluates.
+    if sig.check is not None:
+        structured = _format_check(sig)
+    elif sig.value_predicate is not None:
+        # The matcher matches the observation against the predicate by
+        # containment (invariant exact, {slots} filled), so the agent must report
+        # the observation as the predicate with each {slot} replaced by the
+        # concrete value it saw; otherwise a genuinely-passing check cannot match.
+        structured = (
+            f"\n     fact (confirm in THIS exact shape, fill each {{slot}} with "
+            f"the concrete value you saw): {sig.value_predicate}"
+        )
+    else:
+        structured = ""
     return (
-        f"  {idx}. [{sig.type.value}] {sig.value}{predicate}"
+        f"  {idx}. [{sig.type.value}] {sig.value}{structured}"
         f"  (status={sig.status.value}, confidence={sig.confidence:.2f})"
     )
 
@@ -114,8 +146,11 @@ def render_regression_prompt(kf: KnowledgeFile, *, budget_actions: int | None = 
         f"because a false confirmation is the worst possible outcome. For a signal that shows a\n"
         f"`fact (confirm in THIS exact shape...)` line, your observation value MUST match that\n"
         f"template exactly, with each {{slot}} replaced by the concrete value you actually\n"
-        f"observed and everything outside the slots kept verbatim. Match a failure signal\n"
-        f"-> regression."
+        f"observed and everything outside the slots kept verbatim. For a signal that shows a\n"
+        f"`structured check (...)` line, emit the exact `observed` object it asks for (the raw\n"
+        f"counts, or the concrete identifier and its membership) - report the data you saw, do\n"
+        f"NOT decide yourself whether it passed; the runner evaluates the check. Match a failure\n"
+        f"signal -> regression."
         f"\n{budget_line}"
     )
 

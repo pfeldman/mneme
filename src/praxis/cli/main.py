@@ -19,7 +19,7 @@ import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .claude_brain import make_claude_brain
 
@@ -392,6 +392,7 @@ def _cmd_learn(args: argparse.Namespace) -> int:
 
 def _select_console_brain(
     args: argparse.Namespace, *, default_mcp_config: str | None = None,
+    progress: "Callable[[], tuple[str, str] | None] | None" = None,
 ) -> Any:
     """Pick the brain that drives a console regress / explore run (ADR-0027
     decision 7).
@@ -423,6 +424,7 @@ def _select_console_brain(
         headed=getattr(args, "headed", False),
         timeout_seconds=args.budget_wall_seconds,
         mcp_config_path=getattr(args, "mcp_config", None) or default_mcp_config,
+        progress=progress,
     )
 
 
@@ -441,7 +443,21 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     proj = discover_project()
     adapter = proj.adapter()
 
-    brain = _select_console_brain(args, default_mcp_config=proj.mcp_config)
+    # Live progress label the claude -p spinner reads so the running line reads
+    # pytest-style `[i/total] (spin) Running   <goal>   <clock>`. The CLI owns
+    # this mutable holder; `on_goal_start` (sequential only) sets the goal, the
+    # getter returns None until a goal starts so the brain falls back to its
+    # generic line for the from-file / concurrent paths.
+    _prog: dict[str, Any] = {"idx": 0, "total": 0, "label": None}
+
+    def _progress_label() -> "tuple[str, str] | None":
+        if _prog["label"] is None:
+            return None
+        return (f"[{_prog['idx']}/{_prog['total']}]", str(_prog["label"]))
+
+    brain = _select_console_brain(
+        args, default_mcp_config=proj.mcp_config, progress=_progress_label,
+    )
 
     # Default-all aggregate (ADR-0023 decision 2): no `--goal` runs EVERY
     # believed goal under .praxis/knowledge/ and emits ONE aggregate
@@ -458,12 +474,18 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         # The callback fires in the calling thread (engine -> run_partitioned),
         # so the lines never interleave even under `--jobs > 1`.
         total = len(goals)
-        if args.jobs and args.jobs > 1:
+        concurrent = bool(args.jobs and args.jobs > 1)
+        if concurrent:
             print(f"running {total} goal(s) ({args.jobs} at a time)...")
         else:
             print(f"running {total} goal(s)...")
         progress = {"done": 0, "passed": 0}
+        _prog["total"] = total
         use_color = sys.stdout.isatty()
+
+        def _on_goal_start(gid: str) -> None:
+            _prog["idx"] += 1
+            _prog["label"] = gid
 
         def _on_goal_done(r: Any) -> None:
             progress["done"] += 1
@@ -489,6 +511,10 @@ def _cmd_regress(args: argparse.Namespace) -> int:
             budget_actions_per_goal=args.budget_actions,
             budget_wall_seconds_per_goal=args.budget_wall_seconds,
             jobs=args.jobs,
+            # The rich single in-place running line only makes sense
+            # sequentially; under `--jobs > 1` concurrent goals would clobber it,
+            # so the label stays off and the brain shows its generic line.
+            on_goal_start=None if concurrent else _on_goal_start,
             on_goal_done=_on_goal_done,
         )
         run_dir = proj.run_dir()
@@ -511,6 +537,11 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     # Single-goal pass/fail path (unchanged verdict contract).
     goals = [args.goal]
     print(f"running 1 goal: {args.goal}...")
+    # One goal: set the running label directly (no aggregate loop / start hook),
+    # so the spinner reads `[1/1] Running <goal>` like the aggregate path.
+    _prog["total"] = 1
+    _prog["idx"] = 1
+    _prog["label"] = args.goal
     # The console surface drives the SAME engine a skill driver calls
     # (ADR-0019 decision 4); the only difference is which brain the seam
     # carries (here: the file/claude-p executor; in a skill: the local Claude

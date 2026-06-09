@@ -146,6 +146,73 @@ dual end condition holds:
    review and commit it. You NEVER commit on their behalf: the seed lands only
    when the human commits it.
 
+## Structured checks for relational and after-action facts
+
+Some success/failure facts are NOT a fixed phrase and cannot be written as prose
+a later run matches by wording. They are RELATIONS or AFTER-ACTION states:
+
+- a COUNT DELTA: "the list comes back with exactly one fewer row", "the cart
+  total goes up by one".
+- an AFTER-ACTION ABSENCE/PRESENCE: "the archived id is no longer in the list",
+  "the new row is now present".
+
+For these, author a typed `check` on the signal instead of prose, the SAME way a
+risk carries a STRUCTURED `trigger` rather than free text. A prose signal for a
+relation cannot be confirmed by a later run (the wording varies every run), so it
+comes back inconclusive and then a FALSE regression. The `check` is evaluated by
+the runner over raw data the regress agent reports, so it matches the FACT, not
+the phrasing.
+
+There are exactly two check kinds (keep to these; do not invent others):
+
+- `list_count_delta` with `expect_delta: <signed int>` (e.g. `-1` for "one
+  fewer"). The regress agent reports the BEFORE and AFTER counts it saw; the
+  runner checks `after - before == expect_delta`.
+- `element_membership` with `identifier_slot: <name>` and `expect: present` or
+  `expect: absent`. The slot names the per-run id to track (an abstract name like
+  `campaign_id`, NEVER a concrete number). The regress agent reports the concrete
+  id it saw and whether it is present after the action; the runner checks the
+  membership equals `expect`.
+
+When you teach a goal whose success involves a relation, you must still OBSERVE
+both sides live (count the list before and after the action; note the id
+disappear) and have the human CONFIRM it, exactly as for any seeded signal. Then
+write the check. Split a compound prose fact into one signal per check.
+
+Concrete shape (the archive/delete case, two structured signals replacing one
+prose sentence):
+
+    success_signals:
+    - type: network
+      value: a fresh list load after archiving returns one fewer campaign
+      check:
+        kind: list_count_delta
+        expect_delta: -1
+      provenance: { source_type: human, source_id: <confirming human>, ... }
+      confidence: 0.9
+      status: believed
+    - type: network
+      value: the archived campaign id is no longer in the list
+      check:
+        kind: element_membership
+        identifier_slot: campaign_id
+        expect: absent
+      provenance: { source_type: human, source_id: <confirming human>, ... }
+      confidence: 0.9
+      status: believed
+
+`value` stays a plain human-readable sentence (it is the description and the
+grouping key); the invariant the runner enforces lives in the typed `check`
+fields. The concrete per-run id and counts are NEVER written into knowledge: the
+seed holds only the abstract `check`, the run reports the concrete numbers as a
+redacted per-run observation. `praxis learn` validates the check against the
+schema and rejects a malformed one (an unknown kind, a non-integer delta, an
+empty slot), the same loud write-time rejection a free-text risk trigger gets.
+
+A fact that simply IS a stable phrase (a route, a banner) does not need a check;
+prose, or an ADR-0030 inline `{slot}` in the value, is enough. Reach for a
+`check` only when the fact is a relation or an after-action membership.
+
 ## Do not silently overwrite a believed goal
 
 Before authoring, check whether the goal already exists in

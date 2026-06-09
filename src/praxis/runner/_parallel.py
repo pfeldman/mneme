@@ -35,6 +35,7 @@ def run_partitioned(
     *,
     is_subject: Callable[[str], bool],
     jobs: int,
+    on_start: Callable[[str], None] | None = None,
     on_done: Callable[[R], None] | None = None,
 ) -> list[R]:
     """Run each goal's `run_one` and return the reports in `goal_ids` order.
@@ -47,22 +48,36 @@ def run_partitioned(
     sequential loop), so a progress callback can print without interleaving
     across worker threads. Completion order drives `on_done`; the returned list
     is always in `goal_ids` order.
+
+    `on_start`, when given, fires once per goal just BEFORE its `run_one`
+    (sequential mode: in goal order; concurrent mode: in the worker thread as the
+    goal is picked up). It lets a live single-line progress display name the goal
+    that is currently running. The rich in-place display only makes sense
+    sequentially (one line, one goal at a time); the caller decides whether to
+    install it under `jobs > 1`.
     """
     if jobs <= 1:
         out: list[R] = []
         for g in goal_ids:
+            if on_start is not None:
+                on_start(g)
             r = run_one(g)
             if on_done is not None:
                 on_done(r)
             out.append(r)
         return out
 
+    def _run(g: str) -> R:
+        if on_start is not None:
+            on_start(g)
+        return run_one(g)
+
     subject = [g for g in goal_ids if is_subject(g)]
     concurrent = [g for g in goal_ids if not is_subject(g)]
     by_gid: dict[str, R] = {}
     if concurrent:
         with ThreadPoolExecutor(max_workers=jobs) as ex:
-            futs = {ex.submit(run_one, g): g for g in concurrent}
+            futs = {ex.submit(_run, g): g for g in concurrent}
             for fut in as_completed(futs):
                 r = fut.result()
                 by_gid[futs[fut]] = r
@@ -70,7 +85,7 @@ def run_partitioned(
                     on_done(r)
     # Serial pool: no concurrent logins on one test account (decision 4).
     for g in subject:
-        r = run_one(g)
+        r = _run(g)
         by_gid[g] = r
         if on_done is not None:
             on_done(r)

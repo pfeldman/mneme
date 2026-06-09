@@ -1135,6 +1135,27 @@ def test_run_partitioned_runs_auth_subject_goals_serially(tmp_path: Path) -> Non
     assert active["peak_feature"] > 1
 
 
+def test_run_partitioned_on_start_fires_before_run_in_goal_order() -> None:
+    """`on_start` fires once per goal just BEFORE its `run_one`, in goal order
+    (sequential), so the live progress display can name the currently-running
+    goal. The verdict line still comes from `on_done` after the run."""
+    from praxis.runner._parallel import run_partitioned
+
+    events: list[str] = []
+    run_partitioned(
+        ["a", "b", "c"],
+        lambda g: events.append(f"run:{g}") or g,
+        is_subject=lambda g: False, jobs=1,
+        on_start=lambda g: events.append(f"start:{g}"),
+        on_done=lambda r: events.append(f"done:{r}"),
+    )
+    assert events == [
+        "start:a", "run:a", "done:a",
+        "start:b", "run:b", "done:b",
+        "start:c", "run:c", "done:c",
+    ]
+
+
 # --- decision 7: per-goal budget slice; exhaustion is a loud ERROR ---------
 
 

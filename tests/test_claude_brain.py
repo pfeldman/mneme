@@ -14,10 +14,23 @@ from typing import Any
 import pytest
 
 from praxis.cli.claude_brain import (
+    _HEADLESS_PREAMBLE,
     ClaudeBrainError,
     _extract_observations,
     make_claude_brain,
 )
+
+
+def test_preamble_documents_the_structured_check_observed_payload() -> None:
+    """ADR-0031: the emit envelope must let an agent report a check's raw data
+    via an `observed` object, or a `claude -p` regress run could not confirm a
+    structured-check signal and it would fail closed (a false REGRESSED)."""
+    assert "observed" in _HEADLESS_PREAMBLE
+    assert "before_count" in _HEADLESS_PREAMBLE
+    assert "after_count" in _HEADLESS_PREAMBLE
+    assert "identifier" in _HEADLESS_PREAMBLE
+    # The grounding contract: report the data, do not self-judge the verdict.
+    assert "the runner evaluates" in _HEADLESS_PREAMBLE
 
 _OBS = {
     "observations": [

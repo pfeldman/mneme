@@ -16,6 +16,7 @@ Public API:
     HttpTrigger, SequenceTrigger, Trigger, Risk          - Phase-1 risks
     Uncertainty                                          - Phase-1 uncertainties
     AuthState                                            - Phase-2 auth posture (ADR-0017)
+    Check, ListCountDeltaCheck, ElementMembershipCheck   - structured signal checks (ADR-0031)
     KnowledgeFile                                        - one goal entry
     load / dump / loads / dumps                          - YAML round-trip
     validate_against_json_schema                         - cross-check vs the JSON Schema
@@ -23,6 +24,11 @@ Public API:
 """
 from __future__ import annotations
 
+from .check import (
+    Check,
+    ElementMembershipCheck,
+    ListCountDeltaCheck,
+)
 from .knowledge import (
     AuthState,
     HttpTrigger,
@@ -48,8 +54,11 @@ from .knowledge import (
 
 __all__ = [
     "AuthState",
+    "Check",
+    "ElementMembershipCheck",
     "HttpTrigger",
     "KnowledgeFile",
+    "ListCountDeltaCheck",
     "Meta",
     "Provenance",
     "Risk",

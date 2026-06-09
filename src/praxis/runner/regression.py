@@ -182,19 +182,26 @@ def _value_matches(observed: ObservedSignal, target: Signal) -> bool:
     """Does the observation match the target signal?
 
     Exact-type equality gates first, unchanged and never relaxed (ADR-0028): a
-    structured predicate NEVER loosens the type guard. Then the matcher
-    dispatches on whether the TARGET carries a structured `value_predicate`
-    (ADR-0030 decision 4):
+    structured predicate or check NEVER loosens the type guard. Then the matcher
+    dispatches on the TARGET, in order check -> value_predicate -> Jaccard
+    (ADR-0031 decision 4, ADR-0030 decision 4):
 
-      - structured target -> evaluate the predicate against the OBSERVED value
-        (decision 2). The invariant text matches EXACTLY (case-folded +
-        whitespace-normalized) and each declared slot must be FILLED (and, with
-        a declared shape, shaped); Jaccard is NOT computed. This is STRICTER
-        than Jaccard everywhere except the one declared instance-token axis
-        where Jaccard produced a false negative (decision 3). A malformed
-        predicate cannot reach here: it is rejected at the write boundary
-        (decision 6), so a parse failure is a hard non-match, never a silent
-        fall-through to the looser free-text path.
+      - structured CHECK target -> evaluate the typed check against the OBSERVED
+        structured payload (ADR-0031 decision 5). `evaluate_check` FAILS CLOSED
+        on a missing or malformed observation and is STRICTER than every string
+        path: a no-op delta or a still-present element is a hard non-match, no
+        false PASS. An unknown check kind cannot reach here (rejected at the
+        write boundary, decision 6).
+
+      - structured PREDICATE target -> evaluate the predicate against the
+        OBSERVED value (ADR-0030 decision 2). The invariant text matches EXACTLY
+        (case-folded + whitespace-normalized) and each declared slot must be
+        FILLED (and, with a declared shape, shaped); Jaccard is NOT computed.
+        This is STRICTER than Jaccard everywhere except the one declared
+        instance-token axis where Jaccard produced a false negative (decision
+        3). A malformed predicate cannot reach here: it is rejected at the write
+        boundary (decision 6), so a parse failure is a hard non-match, never a
+        silent fall-through to the looser free-text path.
 
       - free-text target -> the legacy Jaccard path, unchanged (ADR-0028). Value
         strings are short semantic phrases; exact equality is too strict (agents
@@ -203,6 +210,15 @@ def _value_matches(observed: ObservedSignal, target: Signal) -> bool:
     """
     if observed.type != target.type:
         return False
+
+    if target.check is not None:
+        # Structured check: evaluate the typed assertion over the OBSERVED
+        # structured payload, no predicate and no Jaccard (ADR-0031 decision 4).
+        # `evaluate_check` fails closed on a None / malformed payload, so an
+        # un-reportable check is a hard non-match, never a looser fall-through.
+        from ..model.check import evaluate_check
+
+        return evaluate_check(target.check, observed.observed)
 
     if target.value_predicate is not None:
         # Structured path: evaluate the predicate, no Jaccard (decision 2).
@@ -760,6 +776,7 @@ def run_aggregate(
     budget_wall_seconds_per_goal: float | None = None,
     decay_config: DecayConfig | None = None,
     jobs: int = 1,
+    on_goal_start: "Callable[[str], None] | None" = None,
     on_goal_done: "Callable[[GoalReport], None] | None" = None,
 ) -> list[GoalReport]:
     """Run R-mode across every goal with a PER-GOAL budget slice and emit one
@@ -782,7 +799,9 @@ def run_aggregate(
     goals (`auth_state.being_tested`) run serially so two real logins never
     collide on one test account. The per-goal budget and the loud-ERROR contract
     are unchanged by concurrency; only the scheduling differs. `on_goal_done`
-    fires once per completed goal in the calling thread (a progress callback).
+    fires once per completed goal in the calling thread (a progress callback);
+    `on_goal_start` fires once per goal just before it runs, naming the goal a
+    live single-line progress display shows as currently running.
     """
     slice_ = BudgetSlice(
         tokens=budget_tokens_per_goal,
@@ -809,7 +828,8 @@ def run_aggregate(
             and kf.auth_state.being_tested
 
     return run_partitioned(
-        goal_ids, _one, is_subject=_is_subject, jobs=jobs, on_done=on_goal_done,
+        goal_ids, _one, is_subject=_is_subject, jobs=jobs,
+        on_start=on_goal_start, on_done=on_goal_done,
     )
 
 

@@ -1,6 +1,6 @@
 # ADR-0031: Signals as structured checks for relational and after-action facts
 
-Status: Proposed (2026-06-09)
+Status: Accepted (2026-06-09)
 
 ## Context
 

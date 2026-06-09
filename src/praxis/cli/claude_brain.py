@@ -82,7 +82,16 @@ _HEADLESS_PREAMBLE = (
     'visual", "present": true}, ... ], "actions": <int>, "tokens": null, '
     '"authenticated": <true|false>}\n'
     "Emit one observation per signal you checked. Set \"authenticated\" to false "
-    "if the browser ended up logged out or you could not pass authentication.\n\n"
+    "if the browser ended up logged out or you could not pass authentication.\n"
+    "If a signal asks for a `structured check` (a count delta, or whether an id "
+    "is present/absent after the action), add an `\"observed\"` object to THAT "
+    "signal's observation carrying the raw data it names, and report the data you "
+    "saw - do NOT decide yourself whether the check passed; the runner evaluates "
+    "it. Shapes:\n"
+    '  count delta -> "observed": {"before_count": <int>, "after_count": <int>}\n'
+    '  membership  -> "observed": {"identifier": "<the concrete id you saw>", '
+    '"present": <true|false>}\n'
+    "Omit `observed` for a plain signal that has no `structured check` line.\n\n"
     "--- TASK ---\n"
 )
 
@@ -184,6 +193,7 @@ def make_claude_brain(
     model: str | None = None,
     mcp_config_path: str | None = None,
     extra_args: list[str] | None = None,
+    progress: Callable[[], tuple[str, str] | None] | None = None,
 ) -> Callable[[str], dict[str, Any]]:
     """Build a `Brain` that drives one goal through a headless `claude -p` run.
 
@@ -192,6 +202,14 @@ def make_claude_brain(
     ADR-0027 decision 4); a timeout raises and becomes a loud ERROR.
     `mcp_config_path` / `extra_args` inject the Playwright MCP wiring settled
     live (ADR-0027 Open decision 4) without changing this contract.
+
+    `progress`, when given, is read once at the start of each goal's run and
+    returns `(prefix, label)` for that goal (e.g. `("[1/2]", "create-welcome-
+    popup")`), so the live spinner reads as a pytest-style
+    `  [1/2] (spin) Running   create-welcome-popup   1:25` line that resolves
+    into the goal's verdict line. When it is None (or returns None) the spinner
+    falls back to the generic `driving the browser` line. The CLI installs it
+    only for sequential runs (one in-place line, one goal at a time).
 
     The returned brain takes the engine's per-goal prompt, wraps it with the
     headless / non-interactive preamble and the output contract, runs `claude -p`
@@ -231,11 +249,19 @@ def make_claude_brain(
         # this is the PARENT printing to its own stderr from a daemon thread; the
         # subprocess's own stdout is still captured for the observation JSON.
         mode = "headed" if headed else "headless"
-        print(
-            f"  [claude -p] driving the browser ({mode}) on your subscription; "
-            f"this can take a few minutes...",
-            file=sys.stderr, flush=True,
-        )
+        # Read the goal's progress label ONCE per run (the CLI sets it just
+        # before this call, sequential mode). When present, the spinner renders
+        # a pytest-style `[i/total] (spin) Running   <goal>   <clock>` line and
+        # the verbose announce is suppressed (the running line already says it
+        # all); when absent, keep the generic announce + `driving the browser`
+        # spinner so the single-goal and non-TTY paths are unchanged.
+        prog = progress() if progress is not None else None
+        if prog is None:
+            print(
+                f"  [claude -p] driving the browser ({mode}) on your "
+                f"subscription; this can take a few minutes...",
+                file=sys.stderr, flush=True,
+            )
         stop = threading.Event()
         is_tty = sys.stderr.isatty()
 
@@ -250,19 +276,30 @@ def make_claude_brain(
                 if is_tty:
                     frame = _SPINNER_FRAMES[i % len(_SPINNER_FRAMES)]
                     i += 1
-                    # Carriage return rewrites the same line; trailing spaces
-                    # clear any leftover from a longer previous render. The
-                    # braille frame is tinted cyan (ANSI); the rest stays plain.
-                    print(f"\r  {_SPINNER_COLOR}{frame}{_SPINNER_RESET} "
-                          f"driving the browser ({mode})   {clock}   ",
-                          end="", file=sys.stderr, flush=True)
+                    spin = f"{_SPINNER_COLOR}{frame}{_SPINNER_RESET}"
+                    if prog is not None:
+                        prefix, label = prog
+                        # Pytest-style live line: `[i/total] (spin) Running
+                        # <goal> <clock>`. `\x1b[2K` clears the whole line first
+                        # so a shorter render never leaves a stale tail.
+                        body = (f"  {prefix} {spin} Running   {label}   "
+                                f"{clock}")
+                    else:
+                        body = (f"  {spin} driving the browser ({mode})   "
+                                f"{clock}")
+                    print(f"\r\x1b[2K{body}", end="", file=sys.stderr, flush=True)
                 elif elapsed - last_beat >= _HEARTBEAT_SECONDS:
                     last_beat = float(elapsed)
-                    print(f"  still driving the browser... {clock}",
-                          file=sys.stderr, flush=True)
+                    if prog is not None:
+                        prefix, label = prog
+                        print(f"  {prefix} Running {label}... {clock}",
+                              file=sys.stderr, flush=True)
+                    else:
+                        print(f"  still driving the browser... {clock}",
+                              file=sys.stderr, flush=True)
             if is_tty:
                 # Wipe the spinner line so the verdict output starts clean.
-                print("\r" + " " * 48 + "\r", end="", file=sys.stderr, flush=True)
+                print("\r\x1b[2K", end="", file=sys.stderr, flush=True)
 
         hb = threading.Thread(target=_spinner, daemon=True)
         hb.start()

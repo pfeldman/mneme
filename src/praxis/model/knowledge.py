@@ -22,6 +22,8 @@ from typing import Annotated, Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .check import Check
+
 SCHEMA_VERSION: Literal["0"] = "0"
 
 
@@ -86,11 +88,21 @@ class Signal(_Base):
     required and is the projection grouping key), never replaces it. A free-text
     signal leaves it None and is matched exactly as before (Jaccard over the
     prose `value`, ADR-0028). When present, the matcher evaluates the predicate
-    instead of Jaccard (decision 2)."""
+    instead of Jaccard (decision 2).
+
+    `check` (ADR-0031) is the OPTIONAL third, stricter tier above
+    `value_predicate`: a typed assertion (`list_count_delta` /
+    `element_membership`) the matcher EVALUATES programmatically over the
+    structured data the agent observed, the only way to express a RELATION (a
+    count delta) or an AFTER-ACTION state (a membership change) no string
+    invariant can carry. The matcher dispatches check -> value_predicate ->
+    Jaccard; an unknown check kind or a malformed slot is rejected at the write
+    boundary by the discriminated union."""
 
     type: SignalType
     value: str
     value_predicate: str | None = Field(default=None, min_length=1)
+    check: Check | None = None
     provenance: Provenance
     confidence: float = Field(ge=0.0, le=1.0)
     status: Status
