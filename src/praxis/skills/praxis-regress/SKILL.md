@@ -66,7 +66,14 @@ not load, read, or reference any auditor scenario while regressing.
 
 1. Confirm you are inside a project that has `.praxis/` with seeded goals under
    `.praxis/knowledge/`. If there are no seeds, tell the user to seed a goal
-   with `/praxis:teach` first and stop.
+   with `/praxis:teach` first and stop. Also confirm you actually have the
+   Playwright browser tools (`browser_*`); if you do NOT, stop and ask the user
+   to add the Playwright MCP to Claude Code, then reconnect:
+
+       claude mcp add playwright -- npx -y @playwright/mcp@latest
+
+   That is the only manual MCP step; the user does not edit any config file by
+   hand (a fresh `praxis init` scaffolds the project's `playwright-mcp.json`).
 
 2. If a run must authenticate, decide FIRST whether the login is the test or
    just setup (ADR-0027 decisions 1, 2). When the goal's `auth_state.being_tested`

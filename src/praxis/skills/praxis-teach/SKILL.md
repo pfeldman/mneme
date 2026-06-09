@@ -23,6 +23,21 @@ looks like for one goal in plain, durable terms. That is the entire job.
   makes the result a trustworthy seed rather than the machine grading its own
   work.
 
+## Before you start: make sure you have the browser
+
+You drive the app through the Playwright MCP (`browser_*` tools). Before doing
+anything else, check that those tools are actually available to you in this
+session. If they are NOT (you have no `browser_*` / Playwright tools), do not try
+to drive the app: STOP and ask the user to add the Playwright MCP to Claude Code,
+giving them the exact one-liner to run and then reconnect:
+
+    claude mcp add playwright -- npx -y @playwright/mcp@latest
+
+After they add it and the `browser_*` tools appear, continue. This is the only
+manual setup; the user does not need to touch any MCP config file by hand (a
+fresh `praxis init` already scaffolds the project's `playwright-mcp.json` for the
+console runner).
+
 ## Credentials: just log in like a tester would
 
 To get past a login, log in the way a QA tester does: take the username and
