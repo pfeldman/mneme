@@ -67,7 +67,7 @@ verify.sh` ends ALL GREEN before every commit, gh PR merged on Pablo's OK.
   - Files: `src/praxis/runner/regression.py`.
   - Verification: matcher tests in step 7, including the no-false-PASS gate.
 
-- [ ] Step 5: Thread `check` through the projection read path
+- [x] Step 5: Thread `check` through the projection read path
   - Generalize `_restore_predicates` (projection.py) to also restore `check`
     onto the projected believed signal keyed by `(type, value)` (rename to
     `_restore_seed_signal_fields`, copy both `value_predicate` and `check`);
