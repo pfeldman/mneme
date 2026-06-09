@@ -177,3 +177,43 @@ def test_scaffolded_skills_match_packaged_skills(tmp_path: Path) -> None:
         dest = skills_dir / rel
         assert dest.is_file(), f"missing scaffolded skill file: {rel}"
         assert dest.read_bytes() == src.read_bytes()
+
+
+# --- browser-ready MCP onboarding (no manual MCP setup after pip install) ----
+
+
+def test_init_scaffolds_default_playwright_mcp_config(tmp_path: Path) -> None:
+    """A fresh `praxis init` (no --mcp-config) scaffolds a default Playwright MCP
+    config at the repo root and points config.yaml at it, so the console brain is
+    browser-ready with no manual setup after `pip install`."""
+    import json
+
+    import yaml
+
+    _run(["init", "--app", "demo"], tmp_path)
+    mcp = tmp_path / "playwright-mcp.json"
+    assert mcp.is_file(), "init must scaffold playwright-mcp.json"
+    spec = json.loads(mcp.read_text())
+    assert "playwright" in spec["mcpServers"]
+    assert spec["mcpServers"]["playwright"]["command"] == "npx"
+
+    config = yaml.safe_load((tmp_path / ".praxis" / "config.yaml").read_text())
+    assert config["mcp_config"] == "playwright-mcp.json"
+
+
+def test_init_does_not_overwrite_existing_mcp_config(tmp_path: Path) -> None:
+    """An existing MCP config is never clobbered by init."""
+    mcp = tmp_path / "playwright-mcp.json"
+    mcp.write_text('{"mcpServers": {"custom": {}}}')
+    _run(["init", "--app", "demo"], tmp_path)
+    assert "custom" in mcp.read_text()
+
+
+def test_init_with_explicit_mcp_config_does_not_scaffold(tmp_path: Path) -> None:
+    """An explicit --mcp-config wins and init does not scaffold a default file."""
+    import yaml
+
+    _run(["init", "--app", "demo", "--mcp-config", "my-mcp.json"], tmp_path)
+    assert not (tmp_path / "playwright-mcp.json").exists()
+    config = yaml.safe_load((tmp_path / ".praxis" / "config.yaml").read_text())
+    assert config["mcp_config"] == "my-mcp.json"
