@@ -47,6 +47,7 @@ from .regression import (
 )
 from .report import (
     CandidateGroup,
+    color_agg_verdict,
     format_console_summary,
     format_single_console_summary,
     group_candidates_by_trigger,
@@ -78,6 +79,7 @@ __all__ = [
     "aggregate_run_failed",
     "classify_goal",
     "compute_off_path_fraction",
+    "color_agg_verdict",
     "explore_aggregate_engine",
     "explore_engine",
     "format_console_summary",

@@ -32,6 +32,7 @@ from ..model import KnowledgeFile, Target, dump, load
 from ..resources import iter_skill_files, skills_root
 from ..runner import (
     aggregate_run_failed,
+    color_agg_verdict,
     explore_aggregate_engine,
     explore_engine,
     format_console_summary,
@@ -462,12 +463,15 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         else:
             print(f"running {total} goal(s)...")
         progress = {"done": 0, "passed": 0}
+        use_color = sys.stdout.isatty()
 
         def _on_goal_done(r: Any) -> None:
             progress["done"] += 1
             if r.verdict.is_ok:
                 progress["passed"] += 1
-            print(f"  [{progress['done']}/{total}] {r.verdict.value:<10} "
+            verdict_tag = color_agg_verdict(
+                r.verdict, f"{r.verdict.value:<10}", color=use_color)
+            print(f"  [{progress['done']}/{total}] {verdict_tag} "
                   f"{r.goal_id}  ({progress['passed']}/{progress['done']} passed)")
 
         # The console surface drives the SAME aggregate engine a skill driver
@@ -497,7 +501,7 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         # `N passed, N failed, N stale` tally, and every goal that needs action
         # named with its evidence (ADR-0027 decision 6). Verdicts and exit code
         # are unchanged; this is presentation only.
-        print(format_console_summary(reports))
+        print(format_console_summary(reports, color=use_color))
         print(f"report: {report_md}")
         # A REGRESSED or ERROR goal fails the run loudly; STALE alone does not
         # (the app changed on purpose, the fix is a human re-seed).
