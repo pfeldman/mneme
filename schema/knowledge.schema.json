@@ -49,6 +49,7 @@
         },
         "value": { "type": "string", "description": "The observable thing, described semantically." },
         "value_predicate": { "type": "string", "minLength": 1, "description": "Optional checkable form of `value` (ADR-0030): a template string whose text OUTSIDE a variable slot is the INVARIANT (matched exactly, case-folded + whitespace-normalized) and whose `{slot}` / `{slot:numeric}` / `{slot:uuid}` markers are per-run instance tokens the matcher tolerates on presence/shape only (mirrors the `risks.trigger.expect` inline-slot convention). SUPPLEMENTS `value` (which stays required and is the projection grouping key); when present, the matcher evaluates the predicate instead of Jaccard word-overlap. A predicate with no invariant, a malformed slot, an unknown shape, or only stopwords is rejected at write time." },
+        "check": { "$ref": "#/$defs/check" },
         "provenance": { "$ref": "#/$defs/provenance" },
         "confidence": { "$ref": "#/$defs/confidence" },
         "status": { "$ref": "#/$defs/status" }
@@ -109,6 +110,32 @@
         "n": { "type": "integer", "minimum": 1 },
         "action": { "type": "string", "minLength": 1, "description": "Intent-level action, never a UI selector. e.g. 'submit checkout'." },
         "expect": { "type": "string", "minLength": 1, "description": "Observable post-condition. e.g. 'same order_id returned both times'." }
+      }
+    },
+    "check": {
+      "description": "A signal's structured check (ADR-0031): a typed assertion the matcher evaluates programmatically over the agent's self-reported observation data, the third/stricter tier above `value_predicate`. The only way to express a RELATION (a count delta) or an AFTER-ACTION state (a membership change) no string invariant can carry. An unknown `kind` is rejected at write time by the discriminated union.",
+      "oneOf": [
+        { "$ref": "#/$defs/list_count_delta_check" },
+        { "$ref": "#/$defs/element_membership_check" }
+      ]
+    },
+    "list_count_delta_check": {
+      "type": "object",
+      "required": ["kind", "expect_delta"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "list_count_delta" },
+        "expect_delta": { "type": "integer", "description": "Required signed change between the observed BEFORE count and AFTER count (e.g. -1 for 'exactly one fewer'). The matcher checks `after_count - before_count == expect_delta`; a no-op (after == before) cannot satisfy a non-zero delta, so a failed removal is a loud non-match." }
+      }
+    },
+    "element_membership_check": {
+      "type": "object",
+      "required": ["kind", "identifier_slot", "expect"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "element_membership" },
+        "identifier_slot": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the per-run instance token the agent must track (e.g. the archived campaign id), the same variable-slot convention ADR-0030 uses. Prompt-facing and documentary; the seed never stores a concrete identifier." },
+        "expect": { "type": "string", "enum": ["present", "absent"], "description": "The expected membership of the identifier in the observed set AFTER the action. The matcher checks the agent's observed membership equals this." }
       }
     },
     "provenance": {

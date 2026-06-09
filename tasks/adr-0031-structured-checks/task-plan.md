@@ -20,7 +20,7 @@ verify.sh` ends ALL GREEN before every commit, gh PR merged on Pablo's OK.
 
 ## Steps
 
-- [ ] Step 1: Add the pure check module `src/praxis/model/check.py`
+- [x] Step 1: Add the pure check module `src/praxis/model/check.py`
   - Pydantic models `ListCountDeltaCheck` (`kind: list_count_delta`,
     `expect_delta: int`) and `ElementMembershipCheck` (`kind:
     element_membership`, `identifier_slot: str` min_length 1 + valid slot-name,
@@ -37,7 +37,7 @@ verify.sh` ends ALL GREEN before every commit, gh PR merged on Pablo's OK.
     (export the check types).
   - Verification: new unit tests in step 7; module imports clean, mypy/ruff ok.
 
-- [ ] Step 2: Add `check` to the `Signal` model + JSON schema (keep agreement green)
+- [x] Step 2: Add `check` to the `Signal` model + JSON schema (keep agreement green)
   - `Signal.check: Check | None = None` in `knowledge.py`, with docstring
     naming it the third tier above `value_predicate` (ADR-0031). Pydantic
     discriminated union gives unknown-kind + field-type rejection for free at

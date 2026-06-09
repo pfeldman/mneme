@@ -129,6 +129,111 @@ def test_malformed_value_predicate_is_a_loud_rejection() -> None:
         assert "value_predicate rejected" in str(ei.value)
 
 
+# --- ADR-0031: check is optional, typed, and validated at the write boundary --
+
+
+def _signal_with_check(check: dict | None) -> dict:
+    d = {
+        "type": "network",
+        "value": "a fresh list load returns one fewer campaign",
+        "provenance": {"source_type": "human", "source_id": "pablo-seed",
+                       "last_verified": "2026-06-09T00:00:00Z",
+                       "observation_count": 1},
+        "confidence": 1.0, "status": "believed",
+    }
+    if check is not None:
+        d["check"] = check
+    return d
+
+
+def test_check_is_optional_and_signal_required_set_unchanged() -> None:
+    """`check` is additive: the signal required set stays the Phase-1 set, so
+    every existing seed validates unchanged (ADR-0031 decision 1)."""
+    from praxis.model import Signal
+
+    schema_required = set(SCHEMA["$defs"]["signal"]["required"])
+    model_required = {
+        name for name, f in Signal.model_fields.items() if f.is_required()
+    }
+    assert schema_required == model_required
+    assert "check" not in schema_required
+    assert Signal.model_fields["check"].is_required() is False
+    s = Signal.model_validate(_signal_with_check(None))
+    assert s.check is None
+
+
+def test_check_property_registered_in_schema() -> None:
+    assert "check" in SCHEMA["$defs"]["signal"]["properties"]
+    assert "check" in SCHEMA["$defs"]
+    assert "list_count_delta_check" in SCHEMA["$defs"]
+    assert "element_membership_check" in SCHEMA["$defs"]
+
+
+def test_valid_checks_pass_write_boundary() -> None:
+    from praxis.model import ElementMembershipCheck, ListCountDeltaCheck, Signal
+
+    a = Signal.model_validate(
+        _signal_with_check({"kind": "list_count_delta", "expect_delta": -1})
+    )
+    assert isinstance(a.check, ListCountDeltaCheck)
+    b = Signal.model_validate(_signal_with_check(
+        {"kind": "element_membership", "identifier_slot": "campaign_id",
+         "expect": "absent"}
+    ))
+    assert isinstance(b.check, ElementMembershipCheck)
+
+
+def test_malformed_check_is_a_loud_rejection() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from praxis.model import Signal
+
+    bad_checks = (
+        {"kind": "http_status", "code": 200},               # unknown kind
+        {"kind": "list_count_delta", "expect_delta": "x"},   # non-int delta
+        {"kind": "element_membership", "identifier_slot": "",
+         "expect": "absent"},                                # empty slot
+        {"kind": "element_membership", "identifier_slot": "id",
+         "expect": "gone"},                                  # bad expect
+    )
+    for bad in bad_checks:
+        with pytest.raises(ValidationError):
+            Signal.model_validate(_signal_with_check(bad))
+
+
+def test_knowledge_file_with_check_round_trips_through_yaml_and_schema() -> None:
+    from praxis.model import (
+        KnowledgeFile,
+        dumps,
+        loads,
+        validate_against_json_schema,
+    )
+
+    src = {
+        "schema_version": "0",
+        "goal_id": "delete-a-campaign",
+        "goal": "a user can archive a campaign",
+        "target": {"app": "digioh"},
+        "success_signals": [{
+            "type": "network",
+            "value": "a fresh list load returns one fewer campaign",
+            "check": {"kind": "list_count_delta", "expect_delta": -1},
+            "provenance": {"source_type": "human", "source_id": "pablo-seed",
+                           "last_verified": "2026-06-09T00:00:00Z",
+                           "observation_count": 1},
+            "confidence": 1.0, "status": "believed",
+        }],
+        "meta": {"created_at": "2026-06-09T00:00:00Z",
+                 "updated_at": "2026-06-09T00:00:00Z"},
+    }
+    kf = KnowledgeFile.model_validate(src)
+    assert kf.success_signals[0].check is not None
+    kf2 = loads(dumps(kf))
+    assert kf2.success_signals[0].check == kf.success_signals[0].check
+    validate_against_json_schema(kf.model_dump(mode="json", exclude_none=True))
+
+
 # --- Phase-1 schema activation: risks + uncertainties + triggers -------------
 
 
