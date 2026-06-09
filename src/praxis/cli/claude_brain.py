@@ -82,7 +82,16 @@ _HEADLESS_PREAMBLE = (
     'visual", "present": true}, ... ], "actions": <int>, "tokens": null, '
     '"authenticated": <true|false>}\n'
     "Emit one observation per signal you checked. Set \"authenticated\" to false "
-    "if the browser ended up logged out or you could not pass authentication.\n\n"
+    "if the browser ended up logged out or you could not pass authentication.\n"
+    "If a signal asks for a `structured check` (a count delta, or whether an id "
+    "is present/absent after the action), add an `\"observed\"` object to THAT "
+    "signal's observation carrying the raw data it names, and report the data you "
+    "saw - do NOT decide yourself whether the check passed; the runner evaluates "
+    "it. Shapes:\n"
+    '  count delta -> "observed": {"before_count": <int>, "after_count": <int>}\n'
+    '  membership  -> "observed": {"identifier": "<the concrete id you saw>", '
+    '"present": <true|false>}\n'
+    "Omit `observed` for a plain signal that has no `structured check` line.\n\n"
     "--- TASK ---\n"
 )
 
