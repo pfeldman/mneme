@@ -142,6 +142,7 @@ def regress_aggregate_engine(
     budget_actions_per_goal: int | None = None,
     budget_wall_seconds_per_goal: float | None = None,
     jobs: int = 1,
+    on_goal_start: "Callable[[str], None] | None" = None,
     on_goal_done: "Callable[[GoalReport], None] | None" = None,
 ) -> list[GoalReport]:
     """Run the default-all break-vs-drift aggregate (ADR-0023 decisions 2-4, 7).
@@ -171,6 +172,7 @@ def regress_aggregate_engine(
         budget_actions_per_goal=budget_actions_per_goal,
         budget_wall_seconds_per_goal=budget_wall_seconds_per_goal,
         jobs=jobs,
+        on_goal_start=on_goal_start,
         on_goal_done=on_goal_done,
     )
 

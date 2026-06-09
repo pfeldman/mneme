@@ -776,6 +776,7 @@ def run_aggregate(
     budget_wall_seconds_per_goal: float | None = None,
     decay_config: DecayConfig | None = None,
     jobs: int = 1,
+    on_goal_start: "Callable[[str], None] | None" = None,
     on_goal_done: "Callable[[GoalReport], None] | None" = None,
 ) -> list[GoalReport]:
     """Run R-mode across every goal with a PER-GOAL budget slice and emit one
@@ -798,7 +799,9 @@ def run_aggregate(
     goals (`auth_state.being_tested`) run serially so two real logins never
     collide on one test account. The per-goal budget and the loud-ERROR contract
     are unchanged by concurrency; only the scheduling differs. `on_goal_done`
-    fires once per completed goal in the calling thread (a progress callback).
+    fires once per completed goal in the calling thread (a progress callback);
+    `on_goal_start` fires once per goal just before it runs, naming the goal a
+    live single-line progress display shows as currently running.
     """
     slice_ = BudgetSlice(
         tokens=budget_tokens_per_goal,
@@ -825,7 +828,8 @@ def run_aggregate(
             and kf.auth_state.being_tested
 
     return run_partitioned(
-        goal_ids, _one, is_subject=_is_subject, jobs=jobs, on_done=on_goal_done,
+        goal_ids, _one, is_subject=_is_subject, jobs=jobs,
+        on_start=on_goal_start, on_done=on_goal_done,
     )
 
 
