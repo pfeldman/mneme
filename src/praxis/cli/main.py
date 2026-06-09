@@ -64,6 +64,25 @@ SECRETS_FILE = ".praxis.secrets"
 PRAXISIGNORE_NAME = ".praxisignore"
 SKILLS_INSTALL_DIR = Path(".claude") / "skills"
 
+# `praxis init` scaffolds a default Playwright MCP config at the repo root so the
+# console brain (`praxis regress` / `praxis explore` via claude -p) drives a
+# browser with NO manual MCP setup after `pip install` (ADR-0027). It is plain
+# project config (no secret), so it is committed, not gitignored. A run's
+# `--mcp-config` or an existing file always wins; init never overwrites one.
+MCP_CONFIG_NAME = "playwright-mcp.json"
+_MCP_CONFIG_TEMPLATE = (
+    "{\n"
+    '  "mcpServers": {\n'
+    '    "playwright": {\n'
+    '      "type": "stdio",\n'
+    '      "command": "npx",\n'
+    '      "args": ["-y", "@playwright/mcp@latest", "--headless"],\n'
+    '      "env": {}\n'
+    "    }\n"
+    "  }\n"
+    "}\n"
+)
+
 # The ignore lines `praxis init` appends to the repo root `.gitignore`
 # (ADR-0021 decisions 5 and 6; ADR-0026 decisions 2 and 3). `runs/` is the
 # gitignored, regenerable per-machine log; `.praxis.secrets` is the credentials
@@ -301,6 +320,20 @@ def _cmd_init(args: argparse.Namespace) -> int:
     (pdir / "knowledge").mkdir(exist_ok=True)
     (pdir / "candidates").mkdir(exist_ok=True)
     (pdir / RUNS_SUBDIR).mkdir(exist_ok=True)
+    # Make the project browser-ready with NO manual MCP setup: when the user
+    # passes no --mcp-config, scaffold a default Playwright MCP config at the repo
+    # root and point the config at it, so `praxis regress` / `praxis explore`
+    # drive a browser out of the box after `pip install` (the "don't touch the
+    # MCP" onboarding). An explicit --mcp-config wins; an existing file is never
+    # overwritten.
+    mcp_config_value = getattr(args, "mcp_config", None)
+    mcp_scaffolded = False
+    if not mcp_config_value:
+        mcp_path = root / MCP_CONFIG_NAME
+        if not mcp_path.exists():
+            mcp_path.write_text(_MCP_CONFIG_TEMPLATE, encoding="utf-8")
+            mcp_scaffolded = True
+        mcp_config_value = MCP_CONFIG_NAME
     config = {
         "base_url": args.base_url,
         "app": args.app or root.name,
@@ -308,10 +341,10 @@ def _cmd_init(args: argparse.Namespace) -> int:
         "agent_id": args.agent_id,
         "observed_app_version": None,
         # Default Playwright MCP config for the claude -p console brain
-        # (ADR-0027). Set this to a JSON file path (relative to the project root)
-        # so `praxis regress` / `praxis explore` need no --mcp-config flag; the
-        # flag overrides it. None until the project wires its browser MCP.
-        "mcp_config": getattr(args, "mcp_config", None),
+        # (ADR-0027): a JSON file path (relative to the project root) so
+        # `praxis regress` / `praxis explore` need no --mcp-config flag; the flag
+        # overrides it. Scaffolded above so a fresh project is browser-ready.
+        "mcp_config": mcp_config_value,
     }
     (pdir / CONFIG_NAME).write_text(
         yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
@@ -345,6 +378,11 @@ def _cmd_init(args: argparse.Namespace) -> int:
         print("  .gitignore: already covers runs/ + secrets + auth session "
               "(no change)")
     print(f"  skills:     {root / SKILLS_INSTALL_DIR}/  ({n_skills} file(s) scaffolded)")
+    if mcp_scaffolded:
+        print(f"  mcp config: {root / MCP_CONFIG_NAME}  (Playwright MCP, browser-ready; "
+              "console regress/explore need no setup)")
+    else:
+        print(f"  mcp config: {mcp_config_value}  (in use)")
     print()
     print("Credentials go in a gitignored .praxis.secrets at the repo root "
           "(KEY=value), never inside .praxis/ (ADR-0021 decision 6).")
@@ -420,6 +458,32 @@ def _select_console_brain(
             "your subscription, no API key), or pass --from-file PATH with agent "
             "observations."
         )
+    # Browser MCP preflight: the claude -p brain drives a real browser through a
+    # Playwright MCP, so a missing MCP config gets a loud, actionable WARNING here
+    # naming the exact fix, instead of a cryptic mid-run failure. A fresh
+    # `praxis init` scaffolds playwright-mcp.json, so this only surfaces for a
+    # project inited before that or one whose file was removed. It is a warning,
+    # not a hard exit: the path may resolve at runtime, and the run still fails
+    # loudly downstream if the browser truly never starts.
+    mcp = getattr(args, "mcp_config", None) or default_mcp_config
+    if not mcp:
+        print(
+            "warning: no Playwright MCP configured; the console brain needs a "
+            f"browser MCP to drive the app. Re-run `praxis init` to scaffold "
+            f"{MCP_CONFIG_NAME}, or pass --mcp-config PATH.",
+            file=sys.stderr,
+        )
+    else:
+        mcp_path = Path(mcp)
+        if not mcp_path.is_absolute():
+            mcp_path = Path.cwd() / mcp
+        if not mcp_path.exists():
+            print(
+                f"warning: Playwright MCP config {mcp!r} not found at {mcp_path}. "
+                f"Re-run `praxis init` to scaffold {MCP_CONFIG_NAME}, or pass "
+                "--mcp-config PATH to point at your browser MCP.",
+                file=sys.stderr,
+            )
     return make_claude_brain(
         headed=getattr(args, "headed", False),
         timeout_seconds=args.budget_wall_seconds,

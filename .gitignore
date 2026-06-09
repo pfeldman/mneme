@@ -29,3 +29,14 @@ experiments/ui-mutation/results.json
 experiments/ui-mutation/results.md
 experiments/ui-mutation/seed_*.knowledge.yaml
 experiments/ui-mutation/recorded_*.py
+
+# Local secrets + saved auth sessions (ADR-0021/0026): NEVER commit
+.praxis.secrets
+.praxis.auth/
+
+# Build artifacts (regenerable via `python -m build`)
+dist/
+build/
+
+# Playwright MCP scratch (snapshots/consoles from live browser runs)
+.playwright-mcp/
