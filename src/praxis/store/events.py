@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -68,6 +68,15 @@ class ObservedSignal(BaseModel):
     source_id: str
     observed_app_version: str | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    # The structured payload for a signal whose target carries an ADR-0031
+    # `check`: the agent self-reports the raw data the check evaluates (a
+    # `list_count_delta` -> {before_count, after_count}; an `element_membership`
+    # -> {identifier, present}). Optional and defaults None so every free-text /
+    # value_predicate observation is unaffected. The matcher passes it to
+    # `evaluate_check`, which FAILS CLOSED on a missing or malformed payload
+    # (ADR-0031 decision 5); it is per-run observation data redacted at the
+    # adapter boundary, never durable knowledge (ADR-0031 forbidden alt).
+    observed: dict[str, Any] | None = None
 
 
 class ObservationEvent(BaseModel):
