@@ -149,6 +149,27 @@ dual end condition holds:
      false regression). This constrains WHICH types you choose; it does not relax
      the rule above that a believed oracle needs at least two DIFFERENT types
      (ADR-0005).
+     A specific case where `network` is the WRONG type even though you genuinely
+     saw the request: a STREAMING or long-lived endpoint (Server-Sent Events,
+     chunked transfer, a websocket, any response that stays open and trickles
+     data). The request fires, but it has no FINAL status when the regress agent
+     samples the network log - the call is still open, so there is no 2xx to
+     read back. A `network`-typed seed against a streaming endpoint therefore
+     comes back UNCONFIRMED on a later run (the agent saw the request go out but
+     never a final status), which flips a genuinely-passing goal to UNCERTAIN
+     and then a false REGRESSED, even though the feature works. Do NOT type the
+     fact `network` for a streaming / long-lived endpoint. Instead, type the
+     VISIBLE EFFECT the stream produces - the answer text that renders, the
+     control that appears, the route that changes - `behavioral` or `text` (or
+     `url`), which a later run CAN reproduce by looking at the page. You still
+     keep the two-distinct-types diversity (ADR-0005, docs/05): pair the visible
+     effect with a second different-type signal that a run can also reproduce
+     (for example a `behavioral` "the answer streams into the thread" plus a
+     `text` "the final answer contains the asked-about value"), never two
+     `network` signals on the open stream. If a non-streaming network fact IS
+     reliably re-observable (a short request-response that finalizes, like the
+     login POST that returns 2xx and closes), `network` stays fine; the warning
+     is specifically about endpoints that stay open past the sampling window.
    - `auth_state`: `authenticated` plus the abstract `scope` from the role
      prompt. Never the credential or the cookie value.
    - optional `failure_signals`, `risks` (with a STRUCTURED trigger, never free
