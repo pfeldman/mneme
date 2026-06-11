@@ -1,8 +1,18 @@
 # ADR-0032: Whether an observed-but-still-streaming network request counts as a typed partial confirmation
 
-Status: Proposed (2026-06-11)
+Status: Withdrawn (2026-06-11)
 
 ## Context
+
+**Withdrawal addendum (2026-06-11):** the premise of this ADR - that a
+streaming endpoint's final status is not observable on a sampled run - is
+falsified by the persisted regress observation event of the same 0.0.3
+incident: the agent DID observe the streamed POST's 200 ("a POST ... that
+returned a 200 OK response", `present: true`); HTTP status and headers arrive
+before the body streams. Matching, not observability, failed both times, and
+ADR-0033 removes that matching failure, so the open PARTIAL/STREAMING question
+below is moot. This ADR's own refusal to ship Option B aged well: a taxonomy
+change was never needed. See ADR-0033.
 
 ADR-0028 fixed a false REGRESSED that came from the agent expressing a believed
 success signal in a different evidence type than the seed declared: it aligned
