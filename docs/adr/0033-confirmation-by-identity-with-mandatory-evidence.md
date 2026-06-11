@@ -1,6 +1,6 @@
 # ADR-0033: Enumerated signals are confirmed by identity with mandatory evidence; paraphrase matching is demoted to unsolicited observations
 
-Status: Proposed (2026-06-11)
+Status: Accepted (2026-06-11; live proof: the real-app believed goal whose two free-text signals scored Jaccard 0.40/0.41 and false-REGRESSED on 0.0.3 confirmed by ref with grounded evidence on 0.0.4, run verdict OK)
 
 ## Context
 

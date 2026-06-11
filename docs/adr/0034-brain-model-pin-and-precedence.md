@@ -1,6 +1,6 @@
 # ADR-0034: The brain model is an operational input, pinned per project with a fixed flag-env-config precedence
 
-Status: Proposed (2026-06-11)
+Status: Accepted (2026-06-11; live proof: a real-app regress on 0.0.5 with brain_model pinned in config.yaml ran the pinned model, printed "brain model: claude-sonnet-4-6 (from config.yaml brain_model)", run verdict OK)
 
 ## Context
 
