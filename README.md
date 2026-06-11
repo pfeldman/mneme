@@ -72,4 +72,13 @@ gate on the exit code alone: read the report and act on STALE (fail or warn on t
 `regress-aggregate.xml`, or open a re-teach follow-up). The exit code tells you the
 app did not break; it does not tell you the knowledge is still accurate.
 
+Pin the brain model deliberately (ADR-0034): a cheaper/faster model is a real
+false-alarm risk for the regress brain (it can mis-navigate the app and honestly
+report the seeded signals absent), and teammates or CI on different claude CLI
+defaults can reach different verdicts from the same knowledge. Commit the pin in
+`.praxis/config.yaml` (`brain_model`), override per pipeline with the
+`PRAXIS_BRAIN_MODEL` env var or per run with `--model` (flag > env > config >
+the claude CLI default), and validate a cheaper pin with a few runs before
+trusting it; details in [docs/examples/ci.md](docs/examples/ci.md).
+
 License: Apache-2.0 (recommended).

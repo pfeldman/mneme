@@ -161,6 +161,29 @@ def test_model_and_mcp_config_flags_are_forwarded(monkeypatch: Any) -> None:
     assert "--strict-mcp-config" in argv
 
 
+def test_unset_model_appends_no_model_flag(monkeypatch: Any) -> None:
+    """ADR-0034 backward compatibility: with no model pinned anywhere, the brain
+    appends NO `--model` at all, so the argv is byte-identical to the
+    pre-ADR-0034 invocation (the claude CLI's own default model runs)."""
+    seen = _patch_run(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    make_claude_brain()("p")
+    assert "--model" not in seen["argv"]
+    # And the empty string counts as unset too (never `--model ""`).
+    seen2 = _patch_run(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    make_claude_brain(model="")("p")
+    assert "--model" not in seen2["argv"]
+
+
+def test_pinned_model_is_appended_verbatim(monkeypatch: Any) -> None:
+    """The model value is passed through VERBATIM as `--model <value>`: no
+    validation against a model-name list (names rot; the claude CLI is the
+    authority and errors loudly on an unknown model, ADR-0034)."""
+    seen = _patch_run(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    make_claude_brain(model="some-future-model-name")("p")
+    argv = seen["argv"]
+    assert argv[argv.index("--model") + 1] == "some-future-model-name"
+
+
 def test_headless_brain_bypasses_permission_prompts(monkeypatch: Any) -> None:
     """The headless brain runs non-interactive, so it must pre-grant tool
     permissions: a permission prompt would hang a run with no human to answer

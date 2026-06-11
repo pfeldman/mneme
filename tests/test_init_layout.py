@@ -201,6 +201,21 @@ def test_init_scaffolds_default_playwright_mcp_config(tmp_path: Path) -> None:
     assert config["mcp_config"] == "playwright-mcp.json"
 
 
+def test_init_scaffolds_brain_model_commented_out(tmp_path: Path) -> None:
+    """ADR-0034: `praxis init` scaffolds the `brain_model` key COMMENTED OUT.
+    The pin is discoverable in the committed config (with the deliberate-pin
+    warning), but the parsed config carries NO `brain_model` key, so a fresh
+    project runs the claude CLI's own default model: no model name is ever a
+    hardcoded default."""
+    import yaml
+
+    _run(["init", "--app", "demo"], tmp_path)
+    text = (tmp_path / ".praxis" / "config.yaml").read_text(encoding="utf-8")
+    assert "# brain_model:" in text
+    config = yaml.safe_load(text)
+    assert "brain_model" not in config
+
+
 def test_init_does_not_overwrite_existing_mcp_config(tmp_path: Path) -> None:
     """An existing MCP config is never clobbered by init."""
     mcp = tmp_path / "playwright-mcp.json"

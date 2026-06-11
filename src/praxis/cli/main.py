@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import threading
@@ -102,6 +103,28 @@ GITIGNORE_RUNS_LINE = f"{PROJECT_DIR}/{RUNS_SUBDIR}/"
 GITIGNORE_SECRETS_LINE = SECRETS_FILE
 GITIGNORE_AUTH_LINE = f"{AUTH_DIRNAME}/"
 
+# The env-var surface of the brain-model pin (ADR-0034). For CI: the runner
+# exports it and every `praxis regress` / `praxis explore` in that pipeline runs
+# the claude -p brain with that model, mirroring the env-over-file precedence of
+# the ADR-0021 secrets channel. The model name is NOT a secret; it is an
+# operational input to the brain and never enters knowledge.
+BRAIN_MODEL_ENV = "PRAXIS_BRAIN_MODEL"
+
+# `praxis init` scaffolds the `brain_model` key COMMENTED OUT (ADR-0034): the
+# pin is discoverable in the committed config without forcing a model choice,
+# and no model name is ever hardcoded as a default (the default stays whatever
+# the claude CLI defaults to; model names rot). The block is pure YAML comments,
+# so a parsed config has NO `brain_model` key until a human uncomments it.
+_BRAIN_MODEL_CONFIG_COMMENT = (
+    "# brain_model: pin the model the claude -p console brain runs with, so\n"
+    "# every teammate and CI regress with the same brain capability. Pin\n"
+    "# deliberately: a cheaper/faster model can mis-navigate the app and\n"
+    "# false-alarm (see docs/examples/ci.md). The --model flag and the\n"
+    "# PRAXIS_BRAIN_MODEL env var override it per run; unset = the claude CLI\n"
+    "# default (ADR-0034). Uncomment and set to enable:\n"
+    "# brain_model: <model-name>\n"
+)
+
 
 class ProjectContext:
     """Resolved layout for one `.praxis/` project: paths + config.
@@ -165,6 +188,16 @@ class ProjectContext:
             return None
         p = Path(raw)
         return str(p if p.is_absolute() else (self.root / p))
+
+    @property
+    def brain_model(self) -> str | None:
+        """The committed per-project model pin for the claude -p console brain
+        (ADR-0034), or None when the key is absent / empty (the claude CLI's
+        own default; no `--model` is appended). The `--model` flag and the
+        `PRAXIS_BRAIN_MODEL` env var override it per run. The value is passed
+        through verbatim: the claude CLI is the authority on model names."""
+        raw = self.config.get("brain_model")
+        return str(raw) if raw else None
 
     def target(self) -> Target:
         return Target(app=self.app, environment=self.environment)
@@ -354,8 +387,13 @@ def _cmd_init(args: argparse.Namespace) -> int:
         # overrides it. Scaffolded above so a fresh project is browser-ready.
         "mcp_config": mcp_config_value,
     }
+    # The brain-model pin ships COMMENTED OUT below the live keys (ADR-0034):
+    # discoverable per project without forcing a choice, and never a hardcoded
+    # model-name default. Comments only, so the parsed config has no
+    # `brain_model` key until a human uncomments it.
     (pdir / CONFIG_NAME).write_text(
-        yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
+        yaml.safe_dump(config, sort_keys=False, allow_unicode=True)
+        + _BRAIN_MODEL_CONFIG_COMMENT,
         encoding="utf-8",
     )
     praxisignore = pdir / PRAXISIGNORE_NAME
@@ -478,8 +516,48 @@ def _auth_states_for(proj: "ProjectContext", goals: list[str]) -> dict[str, Any]
             for gid in goals}
 
 
+def _resolve_brain_model(
+    flag: str | None,
+    config_value: str | None,
+    *,
+    environ: dict[str, str] | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve the model the claude -p console brain pins, and name its source.
+
+    Precedence (ADR-0034, fixed):
+
+      1. the `--model` flag: an explicit per-run override (an A/B run);
+      2. the `PRAXIS_BRAIN_MODEL` env var: the CI channel, mirroring the
+         env-over-file precedence of the ADR-0021 secrets channel;
+      3. the committed `.praxis/config.yaml` `brain_model` key: the per-project
+         pin teammates share through git;
+      4. unset everywhere -> (None, None): no `--model` is appended and the
+         claude CLI's own default runs, exactly today's argv.
+
+    The winning value is passed through VERBATIM: model names rot, so nothing
+    here validates against a model-name list; the claude CLI is the authority
+    and errors loudly on an unknown model. The model is an OPERATIONAL input to
+    the brain, never knowledge: it never enters a knowledge file, a candidate,
+    or an assertion (ADR-0034). An empty string at any level counts as unset,
+    so an exported-but-blank env var cannot mask the committed pin.
+
+    Returns `(model, source)` where source is a human-readable name of the
+    level that won, for the run banner; `(None, None)` when nothing pins.
+    """
+    if flag:
+        return flag, "--model flag"
+    env = os.environ if environ is None else environ
+    env_value = env.get(BRAIN_MODEL_ENV)
+    if env_value:
+        return env_value, f"{BRAIN_MODEL_ENV} env"
+    if config_value:
+        return config_value, "config.yaml brain_model"
+    return None, None
+
+
 def _select_console_brain(
     args: argparse.Namespace, *, default_mcp_config: str | None = None,
+    default_brain_model: str | None = None,
     progress: "Callable[[], tuple[str, str] | None] | None" = None,
     session_for_goal: "Callable[[], Any] | None" = None,
 ) -> Any:
@@ -504,6 +582,11 @@ def _select_console_brain(
     precondition authenticated goal reuses its saved Playwright storage state via
     `--storage-state` (ADR-0026, ADR-0027 decision 2). The `--from-file` path
     ignores it: a scripted run feeds observations directly and drives no browser.
+
+    The brain model resolves `--model` flag > `PRAXIS_BRAIN_MODEL` env >
+    `default_brain_model` (the project's committed `brain_model` pin) > unset
+    (the claude CLI default, no `--model` appended), per ADR-0034. The
+    `--from-file` path ignores it too: a scripted run invokes no model.
     """
     if args.from_file:
         return _executor_from_file(Path(args.from_file))
@@ -540,9 +623,20 @@ def _select_console_brain(
                 "--mcp-config PATH to point at your browser MCP.",
                 file=sys.stderr,
             )
+    # Brain model pin (ADR-0034): flag > env > committed config > unset (the
+    # claude CLI default). When a pin wins, name it and its source on stderr so
+    # a run's output records which brain capability produced the verdicts (the
+    # model name is operational, not a secret); when nothing pins, stay silent
+    # and append no --model, exactly the pre-ADR-0034 argv.
+    model, model_source = _resolve_brain_model(
+        getattr(args, "model", None), default_brain_model,
+    )
+    if model is not None:
+        print(f"  brain model: {model} (from {model_source})", file=sys.stderr)
     return make_claude_brain(
         headed=getattr(args, "headed", False),
         timeout_seconds=args.budget_wall_seconds,
+        model=model,
         mcp_config_path=getattr(args, "mcp_config", None) or default_mcp_config,
         progress=progress,
         session_for_goal=session_for_goal,
@@ -583,7 +677,8 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     auth_ctx = _GoalAuthContext(_auth_states_for(proj, all_goals))
 
     brain = _select_console_brain(
-        args, default_mcp_config=proj.mcp_config, progress=_progress_label,
+        args, default_mcp_config=proj.mcp_config,
+        default_brain_model=proj.brain_model, progress=_progress_label,
         session_for_goal=auth_ctx.current,
     )
 
@@ -868,6 +963,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
 
     brain = _select_console_brain(
         args, default_mcp_config=proj.mcp_config,
+        default_brain_model=proj.brain_model,
         session_for_goal=auth_ctx.current,
     )
 
@@ -1122,6 +1218,13 @@ def _build_parser() -> argparse.ArgumentParser:
     regress.add_argument("--mcp-config",
                           help="Path to the Playwright MCP config the claude -p "
                                "brain uses to drive the browser (ADR-0027).")
+    regress.add_argument("--model", default=None,
+                          help="Model the claude -p console brain runs with for "
+                               "THIS run (passed to `claude -p --model` "
+                               "verbatim); overrides PRAXIS_BRAIN_MODEL and the "
+                               "config.yaml brain_model pin (ADR-0034). Default: "
+                               "env, then the committed pin, then the claude "
+                               "CLI default.")
     regress.add_argument("--stop-on-fail", action="store_true")
     regress.add_argument("--from-file",
                           help="Read agent observations from this JSON file "
@@ -1151,6 +1254,13 @@ def _build_parser() -> argparse.ArgumentParser:
     explore.add_argument("--mcp-config",
                           help="Path to the Playwright MCP config the claude -p "
                                "brain uses to drive the browser (ADR-0027).")
+    explore.add_argument("--model", default=None,
+                          help="Model the claude -p console brain runs with for "
+                               "THIS run (passed to `claude -p --model` "
+                               "verbatim); overrides PRAXIS_BRAIN_MODEL and the "
+                               "config.yaml brain_model pin (ADR-0034). Default: "
+                               "env, then the committed pin, then the claude "
+                               "CLI default.")
     explore.add_argument("--happy-path", nargs="*", default=None,
                           help="URLs the happy path visits "
                                "(for off_path_fraction).")

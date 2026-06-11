@@ -86,6 +86,33 @@ That session is a secret, never committed and never echoed. When it expires, a r
 the distinct **AUTH-EXPIRED** outcome (not REGRESSED, not green) and a human refreshes the
 secret. See [Login with two-factor](auth-and-2fa.md) for the full walkthrough.
 
+## Pinning the brain model
+
+Which model drives the brain affects verdict QUALITY, not just speed. A cheaper or
+faster model is a real false-alarm risk for the regress brain: it can mis-navigate the
+app (open the wrong widget, never reach the flow under test) and then honestly report
+the expected signals absent, which surfaces as REGRESSED on a healthy app. The risk is
+on the navigation/grounding side, so no evidence rule downstream can catch it. It also
+means two operators (or your laptop and CI) regressing the same committed knowledge
+with different claude CLI defaults can reach different verdicts.
+
+Pin the model deliberately, per project
+([ADR-0034](../adr/0034-brain-model-pin-and-precedence.md)):
+
+- **`brain_model` in `.praxis/config.yaml`** is the committed pin the whole team and CI
+  share (`praxis init` scaffolds it commented out).
+- **`PRAXIS_BRAIN_MODEL`** as a runner environment variable overrides the committed pin
+  for a pipeline, mirroring the env-over-file precedence of the secrets channel. It is
+  not a secret; a plain `env:` entry is fine.
+- **`--model`** on `praxis regress` / `praxis explore` overrides both for one run, which
+  is how you A/B a cheaper candidate pin.
+
+Unset everywhere means whatever the claude CLI defaults to (exactly the previous
+behavior). The value is passed to `claude -p --model` verbatim; an unknown model errors
+loudly and fails the run, never silently. Before trusting a cheaper pin, validate it
+with a few runs against a known-good app state: if it false-alarms there, it will
+false-alarm in your gate.
+
 ## Optional: scheduled exploration
 
 If you want autonomous exploration, run `praxis explore` on a schedule. It hunts off the

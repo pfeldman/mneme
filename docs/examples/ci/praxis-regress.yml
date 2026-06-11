@@ -88,6 +88,13 @@ jobs:
           APP_USERNAME: ${{ secrets.APP_USERNAME }}
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
           PRAXIS_AUTH_STATE_USER: ${{ secrets.PRAXIS_AUTH_STATE_USER }}
+          # Optional: override the brain model for this pipeline (ADR-0034).
+          # NOT a secret. Usually unnecessary: the committed `brain_model` key
+          # in .praxis/config.yaml already pins CI and every teammate to the
+          # same brain capability, which is the point (a cheaper model can
+          # mis-navigate the app and false-alarm; pin deliberately and validate
+          # before trusting it).
+          # PRAXIS_BRAIN_MODEL: <model-name>
         run: praxis regress
 
   # OPTIONAL second job: scheduled exploration. Delete this whole job if you

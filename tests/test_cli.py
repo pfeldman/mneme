@@ -329,6 +329,175 @@ def test_regress_uses_the_project_mcp_config_default(
     assert str(tmp_path) in got
 
 
+# --- ADR-0034: brain model pin (--model flag > PRAXIS_BRAIN_MODEL env > -----
+# --- config.yaml brain_model > unset = the claude CLI default) --------------
+
+
+def test_resolve_brain_model_precedence_chain() -> None:
+    """The resolution is a pure function in the CLI layer: each level alone
+    pins, the chain is flag > env > config, unset everywhere is (None, None),
+    and an empty string at any level counts as unset (ADR-0034)."""
+    from praxis.cli.main import BRAIN_MODEL_ENV, _resolve_brain_model
+
+    env = {BRAIN_MODEL_ENV: "from-env"}
+    assert _resolve_brain_model("from-flag", "from-config", environ=env) == (
+        "from-flag", "--model flag")
+    assert _resolve_brain_model(None, "from-config", environ=env) == (
+        "from-env", f"{BRAIN_MODEL_ENV} env")
+    assert _resolve_brain_model(None, "from-config", environ={}) == (
+        "from-config", "config.yaml brain_model")
+    assert _resolve_brain_model(None, None, environ={}) == (None, None)
+    # Empty values are unset: an exported-but-blank env var never masks the
+    # committed pin, and a blank pin never produces `--model ""`.
+    assert _resolve_brain_model("", "", environ={BRAIN_MODEL_ENV: ""}) == (
+        None, None)
+
+
+def test_project_config_reads_brain_model(tmp_path: Path) -> None:
+    """The config reader: `brain_model` is read when present and None when the
+    key is absent (the scaffolded config keeps it commented out)."""
+    from praxis.cli.main import ProjectContext
+
+    _run(["init"], tmp_path)
+    assert ProjectContext(tmp_path).brain_model is None
+    cfg = tmp_path / ".praxis" / "config.yaml"
+    cfg.write_text(cfg.read_text() + "\nbrain_model: claude-sonnet-pin\n")
+    assert ProjectContext(tmp_path).brain_model == "claude-sonnet-pin"
+
+
+def _model_pin_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> dict:
+    """Init + seed a project, make `claude` look available, clear any ambient
+    PRAXIS_BRAIN_MODEL, and capture the kwargs the brain factory receives so a
+    test can assert which model (if any) the resolution pinned."""
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+
+    import sys
+    cli_mod = sys.modules["praxis.cli.main"]
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _name: "/usr/bin/claude")
+    monkeypatch.delenv("PRAXIS_BRAIN_MODEL", raising=False)
+    captured: dict = {}
+
+    def fake_factory(**kwargs):
+        captured.update(kwargs)
+        return lambda prompt: {
+            "observations": [{
+                "kind": "success", "type": "behavioral",
+                "value": "a Sign out control is present after submitting "
+                         "valid credentials",
+                "source_type": "agent", "source_id": "praxis-cli",
+            }],
+            "actions": 1, "tokens": 10,
+        }
+
+    monkeypatch.setattr(cli_mod, "make_claude_brain", fake_factory)
+    return captured
+
+
+def test_regress_model_flag_pins_the_brain_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _model_pin_setup(tmp_path, monkeypatch)
+    rc = _run(["regress", "--model", "pin-from-flag"], tmp_path)
+    assert rc == 0
+    assert captured.get("model") == "pin-from-flag"
+
+
+def test_regress_env_var_pins_when_no_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _model_pin_setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("PRAXIS_BRAIN_MODEL", "pin-from-env")
+    rc = _run(["regress"], tmp_path)
+    assert rc == 0
+    assert captured.get("model") == "pin-from-env"
+
+
+def test_regress_config_brain_model_pins_when_no_flag_no_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _model_pin_setup(tmp_path, monkeypatch)
+    cfg = tmp_path / ".praxis" / "config.yaml"
+    cfg.write_text(cfg.read_text() + "\nbrain_model: pin-from-config\n")
+    rc = _run(["regress"], tmp_path)
+    assert rc == 0
+    assert captured.get("model") == "pin-from-config"
+
+
+def test_regress_model_precedence_flag_over_env_over_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All three levels set: the explicit per-run flag wins (ADR-0034)."""
+    captured = _model_pin_setup(tmp_path, monkeypatch)
+    cfg = tmp_path / ".praxis" / "config.yaml"
+    cfg.write_text(cfg.read_text() + "\nbrain_model: pin-from-config\n")
+    monkeypatch.setenv("PRAXIS_BRAIN_MODEL", "pin-from-env")
+    rc = _run(["regress", "--model", "pin-from-flag"], tmp_path)
+    assert rc == 0
+    assert captured.get("model") == "pin-from-flag"
+
+
+def test_regress_model_precedence_env_over_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Env + config set, no flag: the env var (the CI channel) wins over the
+    committed pin, mirroring the env-over-file secrets precedence."""
+    captured = _model_pin_setup(tmp_path, monkeypatch)
+    cfg = tmp_path / ".praxis" / "config.yaml"
+    cfg.write_text(cfg.read_text() + "\nbrain_model: pin-from-config\n")
+    monkeypatch.setenv("PRAXIS_BRAIN_MODEL", "pin-from-env")
+    rc = _run(["regress"], tmp_path)
+    assert rc == 0
+    assert captured.get("model") == "pin-from-env"
+
+
+def test_regress_unset_everywhere_pins_no_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No flag, no env, no config key: the brain factory receives model=None,
+    so no `--model` is appended and the claude CLI default runs - today's
+    behavior, byte-identical argv (ADR-0034 backward compatibility)."""
+    captured = _model_pin_setup(tmp_path, monkeypatch)
+    rc = _run(["regress"], tmp_path)
+    assert rc == 0
+    assert "model" in captured  # the factory was called with the kwarg
+    assert captured["model"] is None
+
+
+def test_explore_accepts_the_model_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`praxis explore` carries the same per-run --model override as regress."""
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+
+    import sys
+    cli_mod = sys.modules["praxis.cli.main"]
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _name: "/usr/bin/claude")
+    monkeypatch.delenv("PRAXIS_BRAIN_MODEL", raising=False)
+    captured: dict = {}
+
+    def fake_factory(**kwargs):
+        captured.update(kwargs)
+        return lambda prompt: {
+            "candidate_observations": [], "new_risks": [],
+            "new_uncertainties": [], "actions": 1, "tokens": 10,
+            "visited_urls": [],
+        }
+
+    monkeypatch.setattr(cli_mod, "make_claude_brain", fake_factory)
+    rc = _run(["explore", "--goal", "login", "--model", "pin-from-flag"],
+              tmp_path)
+    assert rc == 0
+    assert captured.get("model") == "pin-from-flag"
+
+
 def _seed_authed_yaml(*, being_tested: bool = False) -> str:
     """A seed for an authenticated goal: `auth_state.authenticated: true,
     scope: user`. `being_tested` makes authentication the SUBJECT under test."""
