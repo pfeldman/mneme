@@ -308,6 +308,90 @@ def write_aggregate_markdown(reports: list[GoalReport], path: str | Path) -> Pat
     return p
 
 
+def to_aggregate_junit_xml(
+    reports: list[GoalReport], *, suite_name: str = "praxis-regress",
+) -> str:
+    """Render a JUnit XML string for the AGGREGATE (default-all, the CI path)
+    regress run. One <testcase> per goal, mirroring `to_junit_xml`.
+
+    The aggregate path is what runs in CI (`praxis regress` with no `--goal`),
+    so it needs JUnit too: a CI that renders test reports gets one testcase per
+    goal here exactly as the single-goal path gives. The break-vs-drift verdict
+    maps to the same pass/failure/skip shape the single-goal emitter uses,
+    keyed off the SAME `fails_run` contract so the XML never disagrees with the
+    exit code:
+
+    - OK                          -> pass (no body).
+    - REGRESSED / ERROR / AUTH-EXPIRED -> <failure> (the `fails_run` verdicts;
+      these are the goals that fail the run loudly, ADR-0023 decision 4,
+      ADR-0026 decision 5). The failure message carries the verdict and the
+      named flipped signal(s) or expired role from `evidence` / `signals`.
+    - STALE                       -> <skipped> (does NOT fail the run: the app
+      changed on purpose, the fix is a human re-seed, so it is not-green but not
+      a regression, the same not-green-but-not-failure slot UNCERTAIN takes in
+      the single-goal emitter).
+
+    `failures` counts the `fails_run` goals and `skipped` counts STALE, so the
+    suite attributes match the per-goal bodies and a CI that gates on
+    `failures > 0` agrees with the process exit code.
+    """
+    n = len(reports)
+    fails = sum(1 for r in reports if r.fails_run)
+    skips = sum(1 for r in reports if r.verdict == AggregateVerdict.STALE)
+
+    def _wall(r: GoalReport) -> float:
+        return r.result.wall_seconds if r.result is not None else 0.0
+
+    total_wall = sum(_wall(r) for r in reports)
+    cases: list[str] = []
+    for r in reports:
+        body: list[str] = []
+        if r.fails_run:
+            named = "; ".join(r.signals) if r.signals else r.evidence
+            detail = f"{r.verdict.value}: {named}" if named else r.verdict.value
+            body.append(
+                f'      <failure message="{_attr(r.verdict.value)}">'
+                f"{xml_escape(detail)}</failure>"
+            )
+        elif r.verdict == AggregateVerdict.STALE:
+            body.append(
+                f'      <skipped message="{_attr("knowledge stale; re-seed")}"/>'
+            )
+        if r.evidence:
+            body.append(
+                f"      <system-out>{xml_escape(r.evidence)}</system-out>"
+            )
+        body_str = "\n".join(body)
+        cases.append(
+            f'    <testcase name="{_attr(r.goal_id)}" '
+            f'classname="{_attr(suite_name)}" '
+            f'time="{_wall(r):.3f}">'
+            + (("\n" + body_str + "\n    ") if body_str else "")
+            + "</testcase>"
+        )
+    cases_str = "\n".join(cases)
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<testsuite name="{_attr(suite_name)}" '
+        f'tests="{n}" failures="{fails}" skipped="{skips}" '
+        f'time="{total_wall:.3f}">\n'
+        f"{cases_str}\n"
+        "</testsuite>\n"
+    )
+
+
+def write_aggregate_junit_xml(
+    reports: list[GoalReport], path: str | Path, *,
+    suite_name: str = "praxis-regress",
+) -> Path:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        to_aggregate_junit_xml(reports, suite_name=suite_name), encoding="utf-8"
+    )
+    return p
+
+
 _AGG_ANSI = {
     AggregateVerdict.OK: "\x1b[32m",          # green
     AggregateVerdict.REGRESSED: "\x1b[31m",   # red

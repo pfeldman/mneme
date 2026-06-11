@@ -41,6 +41,7 @@ from ..runner import (
     regress_aggregate_engine,
     regress_engine,
     regress_failed,
+    write_aggregate_junit_xml,
     write_aggregate_markdown,
     write_candidate_markdown,
     write_junit_xml,
@@ -583,7 +584,12 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         )
         run_dir = proj.run_dir()
         report_md = run_dir / "regress-aggregate.md"
+        report_xml = run_dir / "regress-aggregate.xml"
         write_aggregate_markdown(reports, report_md)
+        # The aggregate path is the CI path (ADR-0024: `praxis regress` with no
+        # --goal). Emit JUnit XML here too, one testcase per goal, so a CI that
+        # renders test reports gets the aggregate run, not only single-goal runs.
+        write_aggregate_junit_xml(reports, report_xml)
         # Per-goal verdict lines were printed live by `_on_goal_done` as each
         # goal completed (ADR-0027 decision 6); the named signal for a non-OK
         # goal is in the final summary below and the markdown report.
@@ -593,6 +599,7 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         # are unchanged; this is presentation only.
         print(format_console_summary(reports, color=use_color))
         print(f"report: {report_md}")
+        print(f"junit:  {report_xml}")
         # A REGRESSED or ERROR goal fails the run loudly; STALE alone does not
         # (the app changed on purpose, the fix is a human re-seed).
         failed = aggregate_run_failed(reports)

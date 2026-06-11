@@ -51,7 +51,9 @@ from praxis.runner import (
     RunResult,
     aggregate_run_failed,
     classify_goal,
+    to_aggregate_junit_xml,
     to_aggregate_markdown,
+    write_aggregate_junit_xml,
 )
 from praxis.runner.regression import (
     RegressionRunner,
@@ -1271,3 +1273,91 @@ def test_auditor_scenarios_are_not_an_input(tmp_path: Path) -> None:
     _init_with_goals(root, ["a"])
     reports = regress_aggregate_via_skill(_const_brain(_PASS_OBS), project_start=root)
     assert reports[0].verdict == AggregateVerdict.OK
+
+
+# --- aggregate JUnit XML (the CI path) ------------------------------------
+
+
+def test_aggregate_junit_emits_one_valid_testcase_per_goal(tmp_path: Path) -> None:
+    """The aggregate path (the CI path: `praxis regress` with no --goal) writes
+    valid JUnit XML with ONE testcase per goal, verdict mapped pass/failure/skip
+    consistently with the single-goal emitter and with the `fails_run` exit-code
+    contract: OK -> pass, REGRESSED / ERROR / AUTH-EXPIRED -> <failure>, STALE ->
+    <skipped>."""
+    import xml.etree.ElementTree as ET
+
+    reports = [
+        GoalReport("ok-goal", AggregateVerdict.OK,
+                   "all 2 believed success signals observed",
+                   result=_run_result("ok-goal", RegressionVerdict.PASS,
+                                       matched_success=["a", "b"])),
+        GoalReport("regressed-goal", AggregateVerdict.REGRESSED,
+                   "failure signal fired: double-order created",
+                   signals=["double-order created"],
+                   result=_run_result("regressed-goal", RegressionVerdict.FAIL,
+                                       matched_failure=["double-order created"])),
+        GoalReport("stale-goal", AggregateVerdict.STALE,
+                   "healthy equivalent observed; knowledge outdated"),
+        GoalReport("error-goal", AggregateVerdict.ERROR,
+                   "could not reach a verdict: adapter threw"),
+        GoalReport("auth-goal", AggregateVerdict.AUTH_EXPIRED,
+                   "expected authenticated scope=user but observed logged out",
+                   signals=["user"]),
+    ]
+
+    out = write_aggregate_junit_xml(reports, tmp_path / "agg.xml")
+    text = out.read_text(encoding="utf-8")
+
+    # Parses as valid XML, and the suite attributes match the verdict mapping.
+    root = ET.fromstring(text)
+    assert root.tag == "testsuite"
+    assert root.attrib["tests"] == "5"
+    # failures == the fails_run verdicts (REGRESSED + ERROR + AUTH-EXPIRED).
+    assert root.attrib["failures"] == "3"
+    # skipped == STALE only (not-green, not a regression).
+    assert root.attrib["skipped"] == "1"
+
+    # One <testcase> per goal, in order, each named by goal_id.
+    cases = root.findall("testcase")
+    assert [c.attrib["name"] for c in cases] == [
+        "ok-goal", "regressed-goal", "stale-goal", "error-goal", "auth-goal",
+    ]
+
+    by_name = {c.attrib["name"]: c for c in cases}
+    # OK is a clean pass: no <failure>, no <skipped>.
+    assert by_name["ok-goal"].find("failure") is None
+    assert by_name["ok-goal"].find("skipped") is None
+    # REGRESSED / ERROR / AUTH-EXPIRED each render a <failure> carrying the
+    # verdict and the named signal / role.
+    reg_fail = by_name["regressed-goal"].find("failure")
+    assert reg_fail is not None
+    assert reg_fail.attrib["message"] == "REGRESSED"
+    assert "double-order created" in (reg_fail.text or "")
+    assert by_name["error-goal"].find("failure") is not None
+    auth_fail = by_name["auth-goal"].find("failure")
+    assert auth_fail is not None
+    assert auth_fail.attrib["message"] == "AUTH-EXPIRED"
+    assert "user" in (auth_fail.text or "")
+    # STALE renders a <skipped>, never a <failure>.
+    assert by_name["stale-goal"].find("skipped") is not None
+    assert by_name["stale-goal"].find("failure") is None
+
+
+def test_aggregate_junit_failures_count_matches_run_failed() -> None:
+    """The JUnit `failures` attribute counts exactly the goals that fail the run
+    (`fails_run`), so a CI gating on `failures > 0` agrees with the process exit
+    code: zero fails == zero failures, and any fail is a non-zero count."""
+    import xml.etree.ElementTree as ET
+
+    all_ok = [
+        GoalReport("a", AggregateVerdict.OK, "ok"),
+        GoalReport("b", AggregateVerdict.STALE, "re-seed"),
+    ]
+    root = ET.fromstring(to_aggregate_junit_xml(all_ok))
+    assert root.attrib["failures"] == "0"
+    assert not aggregate_run_failed(all_ok)
+
+    with_fail = all_ok + [GoalReport("c", AggregateVerdict.REGRESSED, "broke")]
+    root2 = ET.fromstring(to_aggregate_junit_xml(with_fail))
+    assert root2.attrib["failures"] == "1"
+    assert aggregate_run_failed(with_fail)
