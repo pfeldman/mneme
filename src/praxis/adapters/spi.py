@@ -63,13 +63,16 @@ class KnowledgeAdapter(Protocol):
         verdict: str,
         observations: list[ObservedSignal],
         observed_app_version: str | None = None,
+        voids: list[str] | None = None,
     ) -> str:
         """Append the traceable, NON-PROMOTABLE record of what a regress run
         observed for a goal that reached a verdict (ADR-0023 decision 4),
         redacted at the boundary. Returns the event id. Unlike
         `write_observations`, this never enters the promotable stream the merge
         projection folds into belief (ADR-0029), so it cannot grow the believed
-        set; it is the audit trail behind a REGRESSED / OK / STALE verdict."""
+        set; it is the audit trail behind a REGRESSED / OK / STALE verdict.
+        `voids` names the run's void confirmations (ADR-0033 decision 4) so a
+        sloppy envelope is distinguishable from a broken app in the record."""
         ...
 
 
@@ -126,8 +129,15 @@ def redact(value: str) -> str:
 
 
 def redact_observation(obs: ObservedSignal) -> ObservedSignal:
-    """Return a copy of an observation with its value redacted."""
-    return obs.model_copy(update={"value": redact(obs.value)})
+    """Return a copy of an observation with its free-text fields redacted.
+
+    `evidence` (the ADR-0033 confirmation grounding detail) is agent-authored
+    free text exactly like `value`, so the same redaction pass applies before
+    it is persisted to the audit record (docs/06 leakage rule)."""
+    update: dict[str, str] = {"value": redact(obs.value)}
+    if obs.evidence is not None:
+        update["evidence"] = redact(obs.evidence)
+    return obs.model_copy(update=update)
 
 
 # --- Auth-state boundary validator (ADR-0017 sec 2) --------------------------

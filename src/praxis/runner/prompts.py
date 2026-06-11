@@ -54,25 +54,29 @@ def _format_check(sig: Signal) -> str:
     return ""
 
 
-def _format_signal(sig: Signal, idx: int) -> str:
+def _format_signal(sig: Signal, ref: str) -> str:
     # A structured check (ADR-0031) takes precedence over a value_predicate
     # (ADR-0030); both take precedence over free prose. Surface whichever the
     # signal carries so the agent confirms IN the shape the matcher evaluates.
+    # `ref` is the stable line label: the R-mode prompt passes the ADR-0033
+    # confirmation refs (S1..Sn / F1..Fm) the envelope answers by; the E-mode
+    # watch-list keeps plain positional numbers (no confirmation contract there).
     if sig.check is not None:
         structured = _format_check(sig)
     elif sig.value_predicate is not None:
-        # The matcher matches the observation against the predicate by
-        # containment (invariant exact, {slots} filled), so the agent must report
-        # the observation as the predicate with each {slot} replaced by the
-        # concrete value it saw; otherwise a genuinely-passing check cannot match.
+        # The matcher evaluates the predicate over the confirmation's EVIDENCE
+        # string (ADR-0033 decision 3 / ADR-0030 semantics: invariant contained,
+        # {slots} filled), so the agent's evidence must carry the predicate with
+        # each {slot} replaced by the concrete value it saw; otherwise a
+        # genuinely-passing check cannot be confirmed.
         structured = (
-            f"\n     fact (confirm in THIS exact shape, fill each {{slot}} with "
-            f"the concrete value you saw): {sig.value_predicate}"
+            f"\n     fact (your evidence must contain THIS exact shape, fill "
+            f"each {{slot}} with the concrete value you saw): {sig.value_predicate}"
         )
     else:
         structured = ""
     return (
-        f"  {idx}. [{sig.type.value}] {sig.value}{structured}"
+        f"  {ref}. [{sig.type.value}] {sig.value}{structured}"
         f"  (status={sig.status.value}, confidence={sig.confidence:.2f})"
     )
 
@@ -112,45 +116,56 @@ def render_regression_prompt(kf: KnowledgeFile, *, budget_actions: int | None = 
     Auditor scenarios are NOT included: that leak path was removed in
     ADR-0009 sec 6.
     """
-    success = "\n".join(_format_signal(s, i + 1) for i, s in enumerate(kf.success_signals))
+    success = "\n".join(
+        _format_signal(s, f"S{i + 1}") for i, s in enumerate(kf.success_signals)
+    )
     failures = kf.failure_signals or []
     failure_block = (
         "\nFailure signals (if observed = regression):\n"
-        + "\n".join(_format_signal(s, i + 1) for i, s in enumerate(failures))
+        + "\n".join(_format_signal(s, f"F{i + 1}") for i, s in enumerate(failures))
         if failures else ""
     )
     budget_line = _format_budget(budget_actions, budget_tokens)
-    # The emit contract is aligned with the matcher (ADR-0028): the agent must
-    # confirm EVERY success signal listed above and emit each observation IN that
-    # signal's DECLARED type (the [type] shown), because the verdict matches a
-    # believed success signal only when the observation's type equals the
-    # signal's type (regression._value_matches, exact-type equality). The old
-    # "type the observation by what you actually checked" instruction fought that
-    # rule and made a genuinely-passing goal read UNCERTAIN. The grounding
-    # guardrail LEADS the completeness instruction: confirm all is never tick
-    # all; an unconfirmable signal is left unconfirmed, never fabricated, because
-    # a false confirmation is the worst outcome (docs/06, ADR-0005).
+    # The emit contract is confirmation by IDENTITY (ADR-0033): every enumerated
+    # signal carries a stable ref (S1..Sn success, F1..Fm failure, positional in
+    # this snapshot) and the agent answers PER REF with `{ref, present,
+    # evidence}`. The runner binds the answer to its seed by the ref and stamps
+    # the seed's declared type and value onto the observation itself (decision
+    # 2), so the agent never restates seed text and no paraphrase matching ever
+    # decides an enumerated seed. Evidence is MANDATORY for a `present: true`
+    # confirmation and must be grounded in the declared type's evidence plane
+    # (the [type] shown). The grounding guardrail LEADS the completeness
+    # instruction (ADR-0028 decision 2, unchanged): confirm all is never tick
+    # all; an ungroundable signal is reported `present: false` (or omitted),
+    # never fabricated, because a false confirmation is the worst outcome
+    # (docs/06, ADR-0005).
     return (
         f"GOAL ({kf.goal_id}): {kf.goal}\n"
         f"App: {kf.target.app}"
         f"{(' (env=' + kf.target.environment + ')') if kf.target.environment else ''}\n"
-        f"\nSuccess signals (the oracle - confirm EACH one listed):\n{success}"
+        f"\nSuccess signals (the oracle - confirm EACH one listed, by its ref):\n{success}"
         f"{failure_block}\n"
         f"\nMode: REGRESSION. Regenerate your own steps to achieve the goal. Do NOT replay\n"
-        f"recorded steps. Confirm every success signal listed above: emit exactly one\n"
-        f"observation per signal, and emit each observation IN that signal's declared type\n"
-        f"(the [type] shown on its line: behavioral / network / accessibility / text / url /\n"
-        f"visual), through write_observations. Each observation must be grounded in evidence\n"
-        f"you actually saw; NEVER assert a signal just to complete the list. If you cannot\n"
-        f"ground a signal in its declared type, leave it unconfirmed - do NOT fabricate one,\n"
-        f"because a false confirmation is the worst possible outcome. For a signal that shows a\n"
-        f"`fact (confirm in THIS exact shape...)` line, your observation value MUST match that\n"
-        f"template exactly, with each {{slot}} replaced by the concrete value you actually\n"
-        f"observed and everything outside the slots kept verbatim. For a signal that shows a\n"
-        f"`structured check (...)` line, emit the exact `observed` object it asks for (the raw\n"
-        f"counts, or the concrete identifier and its membership) - report the data you saw, do\n"
-        f"NOT decide yourself whether it passed; the runner evaluates the check. Match a failure\n"
-        f"signal -> regression."
+        f"recorded steps. Each signal must be grounded in evidence you actually saw; NEVER\n"
+        f"tick a signal just to complete the checklist. If you cannot ground a signal in its\n"
+        f"declared type (the [type] shown on its line: behavioral / network / accessibility /\n"
+        f"text / url / visual), report it as present: false or omit it - do NOT fabricate a\n"
+        f"confirmation, because a false confirmation is the worst possible outcome.\n"
+        f"Answer every enumerated signal BY ITS REF (S1..Sn, F1..Fm): emit one confirmation\n"
+        f"entry per ref, shaped {{\"ref\": \"S1\", \"present\": true|false, \"evidence\":\n"
+        f"\"<the concrete detail you actually saw: the literal text, status, route, count>\"}}.\n"
+        f"Evidence is MANDATORY for present: true (a confirmation with empty evidence is\n"
+        f"VOID and counts as unconfirmed); ground it in the signal's declared type. Do NOT\n"
+        f"copy the signal's own wording as evidence - report what YOU saw, in your words.\n"
+        f"For a signal that shows a `fact (...)` line, your evidence MUST contain that\n"
+        f"template with each {{slot}} replaced by the concrete value you actually observed\n"
+        f"and everything outside the slots kept verbatim. For a signal that shows a\n"
+        f"`structured check (...)` line, add the exact `observed` object it asks for to that\n"
+        f"confirmation entry (the raw counts, or the concrete identifier and its membership)\n"
+        f"- report the data you saw, do NOT decide yourself whether it passed;\n"
+        f"the runner evaluates the check. Anything real you observed BEYOND the enumerated signals may\n"
+        f"still be emitted as a plain observation (kind / type / value / present). A failure\n"
+        f"signal confirmed present -> regression."
         f"\n{budget_line}"
     )
 
@@ -182,7 +197,7 @@ def render_exploration_prompt(kf: KnowledgeFile, *, budget_actions: int | None =
     )
     failure_block = (
         "\nWatch-list (failure signals that indicate something broke):\n"
-        + "\n".join(_format_signal(s, i + 1) for i, s in enumerate(failures))
+        + "\n".join(_format_signal(s, str(i + 1)) for i, s in enumerate(failures))
         if failures else ""
     )
     budget_line = _format_budget(budget_actions, budget_tokens)

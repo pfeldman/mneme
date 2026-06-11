@@ -61,6 +61,15 @@ not load, read, or reference any auditor scenario while regressing.
   and whether it is present), never by deciding for yourself that it passed. The
   runner evaluates the check over your reported data; report the raw numbers and
   let the verdict be computed.
+- NEVER restate a seed signal's text as a confirmation. The run enumerates each
+  believed signal with a stable ref (`S1..Sn` success, `F1..Fm` failure) and a
+  signal is confirmed BY ITS REF with `present` plus MANDATORY `evidence` in
+  your own words: the concrete detail actually seen (the literal answer text,
+  the status, the full route, the count). The runner binds the answer to the
+  seed by the ref and stamps the seed's type and value itself (ADR-0033); a
+  `present: true` with empty evidence is VOID and counts as unconfirmed, loud.
+  Ticking refs to complete the checklist is the worst possible failure: if a
+  signal cannot be grounded, it is reported `present: false`, never fabricated.
 
 ## Protocol
 
