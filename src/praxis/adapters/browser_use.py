@@ -26,6 +26,7 @@ from ..store import (
     EventStore,
     ObservationEvent,
     ObservedSignal,
+    RegressObservationEvent,
 )
 from .spi import redact, redact_observation
 
@@ -102,6 +103,34 @@ class BrowserUseAdapter:
             signals=redacted,
         )
         self.store.append(event)
+
+    def write_regress_observation(
+        self,
+        goal_id: str,
+        agent_id: str,
+        verdict: str,
+        observations: list[ObservedSignal],
+        observed_app_version: str | None = None,
+    ) -> str:
+        """Redact then append the regress run's audit record (ADR-0023 dec 4).
+
+        Same redaction boundary as `write_observations` (docs/06 leakage: no
+        secrets / tokens / PII reach the store), but the event lands in the
+        sibling `regress/` subdir via `append_regress`, NOT in the promotable
+        `events/` stream. The merge projection never reads it, so persisting a
+        regress confirmation can never grow the believed set (ADR-0029); it only
+        makes the verdict traceable after the fact."""
+        redacted = [redact_observation(o) for o in observations]
+        event = RegressObservationEvent(
+            ts=datetime.now(timezone.utc),
+            agent_id=agent_id,
+            goal_id=goal_id,
+            verdict=verdict,
+            observed_app_version=observed_app_version or self.current_version,
+            signals=redacted,
+        )
+        self.store.append_regress(event)
+        return event.event_id
 
     def write_candidates(
         self,

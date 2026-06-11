@@ -47,7 +47,12 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .events import CandidateEvent, DecayEvent, ObservationEvent
+from .events import (
+    CandidateEvent,
+    DecayEvent,
+    ObservationEvent,
+    RegressObservationEvent,
+)
 
 # The default tenant id used when the caller does not specify one. ADR-0012
 # names `local` as the conventional default for Phase 2 single-tenant
@@ -63,6 +68,11 @@ DEFAULT_TENANT_ID: str = "local"
 _EVENTS_SUBDIR: str = "events"
 _DECAY_SUBDIR: str = "decay"
 _CANDIDATES_SUBDIR: str = "candidates"
+# ADR-0023 decision 4 traceability: regress observation records live in their
+# own sibling subdir so the believed-state projection's glob over `events/`
+# never reads them. They are NON-PROMOTABLE by construction (ADR-0029): a
+# record here can never grow the believed set.
+_REGRESS_SUBDIR: str = "regress"
 
 
 def _validate_tenant_id(tenant_id: str) -> str:
@@ -129,6 +139,25 @@ class EventStore(ABC):
         live in the same logical log."""
 
     @abstractmethod
+    def append_regress(
+        self, event: RegressObservationEvent, *, tenant_id: str | None = None
+    ) -> None:
+        """Persist one immutable regress observation record (ADR-0023 decision 4).
+
+        Append-only contract is identical to `append()`. This record is NEVER
+        read by the projection or the oracle gate (it is non-promotable by
+        construction, ADR-0029); it is the traceable audit trail of what a
+        regress run observed for a goal that reached a verdict."""
+
+    @abstractmethod
+    def read_regress(
+        self, goal_id: str | None = None, *, tenant_id: str | None = None
+    ) -> list[RegressObservationEvent]:
+        """Return all regress observation records (optionally for one goal), in
+        (ts, event_id) order. Stored separately from observation events so the
+        believed projection never folds them into belief (ADR-0029)."""
+
+    @abstractmethod
     def append_candidate(
         self, event: CandidateEvent, *, tenant_id: str | None = None
     ) -> None:
@@ -155,7 +184,9 @@ class EventStore(ABC):
         """Return candidate events strictly newer than `ts`, time-ordered."""
 
 
-def _filename(event: ObservationEvent | DecayEvent | CandidateEvent) -> str:
+def _filename(
+    event: ObservationEvent | DecayEvent | CandidateEvent | RegressObservationEvent,
+) -> str:
     # Sortable ts prefix keeps files roughly time-ordered on disk; the event
     # id guarantees uniqueness (lock-free concurrency). The event_id itself is
     # a uuid4 hex; collisions are impossible by construction so the filesystem
@@ -215,6 +246,14 @@ class FileEventStore(EventStore):
         tenant = self._resolve_tenant(tenant_id)
         d = self.root / tenant / _CANDIDATES_SUBDIR
         # Lazily created on first candidate write; absent dir = no candidates
+        # for this tenant (legacy stores stay byte-equivalent on disk).
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _regress_dir(self, tenant_id: str | None) -> Path:
+        tenant = self._resolve_tenant(tenant_id)
+        d = self.root / tenant / _REGRESS_SUBDIR
+        # Lazily created on first regress record; absent dir = no regress runs
         # for this tenant (legacy stores stay byte-equivalent on disk).
         d.mkdir(parents=True, exist_ok=True)
         return d
@@ -291,6 +330,48 @@ class FileEventStore(EventStore):
         self, goal_id: str | None = None, *, tenant_id: str | None = None
     ) -> list[DecayEvent]:
         events = self._load_all_decay(tenant_id)
+        if goal_id is not None:
+            events = [e for e in events if e.goal_id == goal_id]
+        return events
+
+    # ---- EventStore API: RegressObservationEvent (ADR-0023) ---------------
+
+    def append_regress(
+        self, event: RegressObservationEvent, *, tenant_id: str | None = None
+    ) -> None:
+        regress_dir = self._regress_dir(tenant_id)
+        path = regress_dir / _filename(event)
+        if path.exists():
+            raise FileExistsError(
+                f"regress event already exists, refusing to overwrite: {path}"
+            )
+        # Same atomic-rename commit as `append()`. Salt the tmp name with the
+        # event id so concurrent regress writers (the `--jobs` aggregate path)
+        # do not stomp each other's tmp file: each worker writes its own
+        # uniquely-named file, lock-free (ADR-0001, ADR-0012).
+        tmp = regress_dir / f".{event.event_id}.tmp"
+        tmp.write_text(event.model_dump_json(indent=2), encoding="utf-8")
+        tmp.rename(path)
+
+    def _load_all_regress(self, tenant_id: str | None) -> list[RegressObservationEvent]:
+        tenant = self._resolve_tenant(tenant_id)
+        regress_dir = self.root / tenant / _REGRESS_SUBDIR
+        events: list[RegressObservationEvent] = []
+        if not regress_dir.exists():
+            return events
+        for f in regress_dir.glob("*.json"):
+            events.append(
+                RegressObservationEvent.model_validate_json(
+                    f.read_text(encoding="utf-8")
+                )
+            )
+        events.sort(key=lambda e: (e.ts, e.event_id))
+        return events
+
+    def read_regress(
+        self, goal_id: str | None = None, *, tenant_id: str | None = None
+    ) -> list[RegressObservationEvent]:
+        events = self._load_all_regress(tenant_id)
         if goal_id is not None:
             events = [e for e in events if e.goal_id == goal_id]
         return events
@@ -421,7 +502,12 @@ class RunsEventStore(FileEventStore):
 
     def _read_across(
         self, method: str, *args: object, tenant_id: str | None, **kwargs: object
-    ) -> list[ObservationEvent] | list[DecayEvent] | list[CandidateEvent]:
+    ) -> (
+        list[ObservationEvent]
+        | list[DecayEvent]
+        | list[CandidateEvent]
+        | list[RegressObservationEvent]
+    ):
         """Call a base read method on every run root and concat, time-ordered.
 
         Re-sorts the union by (ts, event_id) so the cross-run fold is the same
@@ -454,6 +540,11 @@ class RunsEventStore(FileEventStore):
         self, goal_id: str | None = None, *, tenant_id: str | None = None
     ) -> list[CandidateEvent]:
         return self._read_across("read_candidates", goal_id, tenant_id=tenant_id)  # type: ignore[return-value]
+
+    def read_regress(
+        self, goal_id: str | None = None, *, tenant_id: str | None = None
+    ) -> list[RegressObservationEvent]:
+        return self._read_across("read_regress", goal_id, tenant_id=tenant_id)  # type: ignore[return-value]
 
     def candidates_since(
         self,

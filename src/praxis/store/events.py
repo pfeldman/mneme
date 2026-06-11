@@ -93,6 +93,50 @@ class ObservationEvent(BaseModel):
     signals: list[ObservedSignal] = Field(default_factory=list)
 
 
+class RegressObservationEvent(BaseModel):
+    """A NON-PROMOTABLE, append-only record of what a regress run observed for
+    one goal that reached a verdict (ADR-0023 decision 4 traceability).
+
+    This is a sibling event kind, NOT an `ObservationEvent`. The distinction is
+    the whole point: an `ObservationEvent` is the PROMOTABLE evidence the merge
+    projection folds into belief, and ADR-0029 disabled the regress runner from
+    persisting those because each confirmation run grew the believed success set
+    (defect A: 4 seeded signals inflating to 26 agent-sourced ones). A
+    `RegressObservationEvent` is read by NO projection and NO oracle gate; it
+    lives in its own `regress/` store subdirectory so the believed-state
+    projection's `*.json` glob over `events/` never sees it. It can never
+    promote, so it does not reintroduce defect A.
+
+    What it buys: a REGRESSED verdict is now traceable after the fact. Before
+    this event existed, a failing console regress left only the aggregate
+    markdown report; `local/events/` was empty, so there was no record of what
+    the agent actually observed and no way to tell a real regression from a
+    brain / observability miss. This event is that record - the brain's grounded
+    observation envelope for the run, redacted at the adapter boundary, carrying
+    the computed verdict so the audit trail is self-contained.
+
+    It is NOT a procedure: it stores the same `ObservedSignal` envelope an
+    `ObservationEvent` carries (signals only, no clicks, no selectors), plus the
+    deterministic verdict the runner computed from them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str = Field(default_factory=_new_id)
+    ts: datetime = Field(default_factory=_now)
+    schema_version: Literal["0"] = SCHEMA_VERSION
+    kind: Literal["regress"] = "regress"
+    agent_id: str
+    goal_id: str
+    # The deterministic per-goal verdict the runner computed in-memory from
+    # `signals` (ADR-0009): "pass" / "fail" / "uncertain" / "auth_expired". It is
+    # stored verbatim so the audit record is self-contained: replaying the log
+    # tells you what the run concluded without re-running the matcher.
+    verdict: str
+    observed_app_version: str | None = None
+    signals: list[ObservedSignal] = Field(default_factory=list)
+
+
 class DecayEvent(BaseModel):
     """An immutable, append-only record that a recency-decay re-evaluation
     flipped a projected signal's status (ADR-0013).

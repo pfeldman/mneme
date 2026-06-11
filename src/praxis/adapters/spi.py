@@ -56,6 +56,22 @@ class KnowledgeAdapter(Protocol):
         independence rule (ADR-0008 + ADR-0014 sec 2)."""
         ...
 
+    def write_regress_observation(
+        self,
+        goal_id: str,
+        agent_id: str,
+        verdict: str,
+        observations: list[ObservedSignal],
+        observed_app_version: str | None = None,
+    ) -> str:
+        """Append the traceable, NON-PROMOTABLE record of what a regress run
+        observed for a goal that reached a verdict (ADR-0023 decision 4),
+        redacted at the boundary. Returns the event id. Unlike
+        `write_observations`, this never enters the promotable stream the merge
+        projection folds into belief (ADR-0029), so it cannot grow the believed
+        set; it is the audit trail behind a REGRESSED / OK / STALE verdict."""
+        ...
+
 
 # --- Redaction (docs/06 + ADR-0017): never persist secrets, tokens, generated
 # ids, or PII. Each pattern is concrete enough that over-redaction is rare on

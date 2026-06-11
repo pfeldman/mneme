@@ -1271,3 +1271,131 @@ def test_auditor_scenarios_are_not_an_input(tmp_path: Path) -> None:
     _init_with_goals(root, ["a"])
     reports = regress_aggregate_via_skill(_const_brain(_PASS_OBS), project_start=root)
     assert reports[0].verdict == AggregateVerdict.OK
+
+
+# --- traceability: every verdict-reaching run persists an observation record --
+# ADR-0023 decision 4 (loud-and-traceable). The release-blocker dogfooding bug:
+# console regress persisted ZERO observation events, so a REGRESSED verdict was
+# not traceable (the run dir held only regress-aggregate.md; local/events/ was
+# empty). These tests pin that EVERY regress run that reaches a verdict (single
+# goal AND aggregate, console AND skill) persists at least one regress
+# observation record per evaluated goal, and that the record is NON-PROMOTABLE
+# so it never grows the believed set (the ADR-0029 defect A closure holds).
+
+
+def _regress_records_by_goal(root: Path) -> dict[str, list[Any]]:
+    """Read the persisted regress observation records, folded across run dirs,
+    grouped by goal. Uses a fresh ProjectContext so reads come from disk, not
+    in-memory state of the run that wrote them."""
+    proj = discover_project(root)
+    records = proj.store().read_regress()
+    out: dict[str, list[Any]] = {}
+    for rec in records:
+        out.setdefault(rec.goal_id, []).append(rec)
+    return out
+
+
+def test_single_goal_regress_persists_one_observation_record(
+    tmp_path: Path,
+) -> None:
+    """A single-goal `praxis regress --goal` run that reaches a verdict persists
+    at least one regress observation record for that goal. Before the fix the
+    run dir held only the markdown report and the regress store was empty, so a
+    verdict was not traceable to what the agent observed."""
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["login"])
+    obs_file = root / "pass.json"
+    obs_file.write_text(json.dumps(_PASS_OBS))
+    old = Path.cwd()
+    os.chdir(root)
+    try:
+        rc = cli_run(["regress", "--goal", "login", "--from-file", str(obs_file)])
+    finally:
+        os.chdir(old)
+    assert rc == 0
+    by_goal = _regress_records_by_goal(root)
+    assert "login" in by_goal, (
+        "single-goal regress reached a verdict but persisted no observation "
+        "record; the verdict is not traceable (ADR-0023 decision 4)"
+    )
+    assert len(by_goal["login"]) >= 1
+    rec = by_goal["login"][0]
+    # The record carries the brain's observation envelope AND the verdict, so
+    # the audit trail is self-contained.
+    assert rec.verdict == RegressionVerdict.PASS.value
+    assert len(rec.signals) >= 1
+
+
+def test_aggregate_regress_persists_a_record_per_evaluated_goal(
+    tmp_path: Path,
+) -> None:
+    """A default-all aggregate regress run (skill surface) persists at least one
+    regress observation record per goal that reached a verdict, including a
+    REGRESSED goal. This is the exact dogfooding miss: a failing aggregate run
+    left local/events/ empty so a REGRESSED could not be told apart from a
+    brain / observability miss after the fact."""
+    def mixed_brain(prompt: str) -> dict[str, Any]:
+        if "GOAL (b)" in prompt:
+            return json.loads(json.dumps(_FAIL_OBS))
+        return json.loads(json.dumps(_PASS_OBS))
+
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["a", "b", "c"])
+    reports = regress_aggregate_via_skill(mixed_brain, project_start=root)
+    # Sanity: the run reached a verdict for every goal, with one REGRESSED.
+    by_report = {r.goal_id: r.verdict for r in reports}
+    assert by_report["b"] == AggregateVerdict.REGRESSED
+
+    by_goal = _regress_records_by_goal(root)
+    for gid in ("a", "b", "c"):
+        assert gid in by_goal and len(by_goal[gid]) >= 1, (
+            f"goal {gid!r} reached a verdict but persisted no regress "
+            f"observation record; ADR-0023 decision 4 requires every "
+            f"verdict-reaching goal to leave a traceable record"
+        )
+    # The REGRESSED goal's record names the failure signal the agent observed,
+    # so a real regression is distinguishable from an observability miss.
+    fail_rec = by_goal["b"][0]
+    assert fail_rec.verdict == RegressionVerdict.FAIL.value
+    assert any(
+        "invalid credentials banner" in s.value for s in fail_rec.signals
+    )
+
+
+def test_persisted_regress_record_does_not_grow_the_believed_set(
+    tmp_path: Path,
+) -> None:
+    """The regress audit record is NON-PROMOTABLE (ADR-0029 defect A closure):
+    running regress repeatedly persists records but the believed success set is
+    unchanged, because the record lands in the `regress/` store subdir the merge
+    projection never reads. This guards the traceability fix from reintroducing
+    the self-certification defect ADR-0029 closed."""
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["login"])
+
+    proj0 = discover_project(root)
+    kf0 = proj0.adapter().read_knowledge("login")
+    assert kf0 is not None
+    believed_before = sum(
+        1 for s in kf0.success_signals if s.status == Status.BELIEVED
+    )
+
+    # Run regress several times; each run reaches a verdict and persists a record.
+    for _ in range(3):
+        regress_aggregate_via_skill(_const_brain(_PASS_OBS), project_start=root)
+
+    by_goal = _regress_records_by_goal(root)
+    assert len(by_goal.get("login", [])) >= 3  # records accumulated
+
+    proj1 = discover_project(root)
+    kf1 = proj1.adapter().read_knowledge("login")
+    assert kf1 is not None
+    believed_after = sum(
+        1 for s in kf1.success_signals if s.status == Status.BELIEVED
+    )
+    # The believed success set did NOT grow: the regress records never enter the
+    # promotable stream the projection folds into belief.
+    assert believed_after == believed_before

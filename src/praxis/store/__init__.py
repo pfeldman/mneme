@@ -74,6 +74,7 @@ from .events import (
     DecayEvent,
     ObservationEvent,
     ObservedSignal,
+    RegressObservationEvent,
 )
 from .file_store import (
     DEFAULT_TENANT_ID,
@@ -101,6 +102,7 @@ __all__ = [
     "RunsEventStore",
     "ObservationEvent",
     "ObservedSignal",
+    "RegressObservationEvent",
     "new_run_id",
     "source_id_for",
 ]

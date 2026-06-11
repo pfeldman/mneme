@@ -391,6 +391,28 @@ class RegressionRunner:
             kf, ctx.observations,
         )
 
+        # Persist the NON-PROMOTABLE regress audit record (ADR-0023 decision 4):
+        # every regress run that reaches a verdict leaves a traceable record of
+        # the brain's observation envelope plus the computed verdict, so a
+        # REGRESSED can be told apart from a brain / observability miss after the
+        # fact. This is distinct from `write_observations` above: it lands in the
+        # sibling `regress/` store subdir and the merge projection NEVER reads
+        # it, so it cannot grow the believed set (the ADR-0029 defect A closure
+        # holds). Written for the verdicts that actually exercised the oracle
+        # (PASS / FAIL / UNCERTAIN / AUTH_EXPIRED); the empty-observation case is
+        # still recorded because an absent envelope is itself the evidence behind
+        # an UNCERTAIN -> REGRESSED routing. Guarded so an adapter that predates
+        # this SPI method (a hand-rolled test double) does not break.
+        write_regress = getattr(self.adapter, "write_regress_observation", None)
+        if callable(write_regress):
+            write_regress(
+                goal_id=goal_id,
+                agent_id=self.agent_id,
+                verdict=verdict.value,
+                observations=ctx.observations,
+                observed_app_version=self.observed_app_version,
+            )
+
         return RunResult(
             goal_id=goal_id,
             verdict=verdict,

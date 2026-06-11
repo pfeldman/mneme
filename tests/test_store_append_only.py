@@ -6,9 +6,16 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from praxis.merge import project
 from praxis.model import Target
-from praxis.store import FileEventStore, ObservationEvent, ObservedSignal
+from praxis.store import (
+    FileEventStore,
+    ObservationEvent,
+    ObservedSignal,
+    RegressObservationEvent,
+)
 
 
 def _sig(value: str, type_: str = "behavioral") -> ObservedSignal:
@@ -91,5 +98,69 @@ def test_concurrent_writes_do_not_lose_knowledge(tmp_path) -> None:
                  now=datetime(2026, 6, 1, tzinfo=timezone.utc), current_version="1")
     values = {s.value for s in kf.success_signals}
     assert values == {"behavioral signal", "network signal"}  # both kept, not collapsed
-    # Different evidence types both present → the diversity rule promotes them.
+    # Different evidence types both present: the diversity rule promotes them.
     assert all(s.status.value == "believed" for s in kf.success_signals)
+
+
+# --- RegressObservationEvent (ADR-0023 decision 4): the non-promotable,
+# append-only regress audit record lives in its own sibling subdir and the
+# believed projection never reads it.
+
+
+def _regress_event(value: str, *, verdict: str = "pass") -> RegressObservationEvent:
+    return RegressObservationEvent(
+        agent_id="a", goal_id="g", verdict=verdict, signals=[_sig(value)],
+    )
+
+
+def test_regress_event_append_then_read(tmp_path) -> None:
+    store = FileEventStore(tmp_path)
+    ev = _regress_event("logout available")
+    store.append_regress(ev)
+    got = store.read_regress("g")
+    assert len(got) == 1 and got[0].event_id == ev.event_id
+    assert got[0].verdict == "pass"
+
+
+def test_regress_event_overwrite_raises(tmp_path) -> None:
+    """Append-only: re-appending the same regress event id raises (ADR-0001)."""
+    store = FileEventStore(tmp_path)
+    ev = _regress_event("x")
+    store.append_regress(ev)
+    with pytest.raises(FileExistsError):
+        store.append_regress(ev)
+
+
+def test_regress_events_live_in_their_own_subdir(tmp_path) -> None:
+    """Regress records land under `regress/`, NOT `events/`, so the believed
+    projection's `events/` glob never folds them into belief (ADR-0029)."""
+    store = FileEventStore(tmp_path)
+    store.append_regress(_regress_event("a"))
+    assert len(list((tmp_path / "local" / "regress").glob("*.json"))) == 1
+    # The promotable observation stream is untouched.
+    assert not (tmp_path / "local" / "events").exists() \
+        or len(list((tmp_path / "local" / "events").glob("*.json"))) == 0
+    assert store.read("g") == []
+
+
+def test_concurrent_regress_writes_do_not_lose_records(tmp_path) -> None:
+    """The `--jobs` aggregate path writes regress records concurrently. The
+    salted atomic-rename commit keeps every record (lock-free, ADR-0012); none
+    is lost or corrupted under concurrency."""
+    store = FileEventStore(tmp_path)
+    n = 25
+
+    def writer(agent: str) -> None:
+        for i in range(n):
+            store.append_regress(RegressObservationEvent(
+                agent_id=agent, goal_id="g", verdict="pass",
+                signals=[_sig(f"{agent}-{i}")],
+            ))
+
+    t1 = threading.Thread(target=writer, args=("a1",))
+    t2 = threading.Thread(target=writer, args=("a2",))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    assert len(store.read_regress("g")) == 2 * n  # nothing lost
