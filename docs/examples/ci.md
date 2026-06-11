@@ -39,6 +39,22 @@ knowledge-update task, not a code bug. How you treat STALE is your CI policy: ha
 it, or read the report and open a follow-up to re-teach the goal. That choice is yours,
 not a Praxis behavior.
 
+!!! warning "A STALE-only run exits 0; a gate that reads ONLY the exit code passes drifted knowledge silently"
+    By design, STALE does NOT fail the run: `praxis regress` exits `0` when every
+    non-OK goal is STALE (no REGRESSED, no ERROR, no AUTH-EXPIRED). That is correct
+    for the verdict (the app changed on purpose, the fix is a human re-seed, not a
+    red gate), but it has a sharp edge for CI: a job that gates on **the exit code
+    alone** will go green while your knowledge is drifting out of date, and the
+    drift accumulates invisibly until a real REGRESSED finally trips the gate on top
+    of knowledge no one trusts anymore.
+
+    If you care about drift (you should), do NOT gate on the exit code alone. Read
+    the report and act on STALE: surface the `STALE` count from the aggregate
+    markdown or the `<skipped>` count from the JUnit XML
+    (`.praxis/runs/<timestamp>/regress-aggregate.{md,xml}`), fail or warn on
+    `skipped > 0`, or open a re-teach follow-up. The exit code only tells you the
+    app did not break; it does NOT tell you the knowledge is still accurate.
+
 ## The CI brain and the credentials
 
 When the commands run autonomously in CI there is no human session to borrow, but the brain
