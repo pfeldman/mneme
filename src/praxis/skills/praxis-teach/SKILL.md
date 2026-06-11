@@ -149,27 +149,15 @@ dual end condition holds:
      false regression). This constrains WHICH types you choose; it does not relax
      the rule above that a believed oracle needs at least two DIFFERENT types
      (ADR-0005).
-     A specific case where `network` is the WRONG type even though you genuinely
-     saw the request: a STREAMING or long-lived endpoint (Server-Sent Events,
-     chunked transfer, a websocket, any response that stays open and trickles
-     data). The request fires, but it has no FINAL status when the regress agent
-     samples the network log - the call is still open, so there is no 2xx to
-     read back. A `network`-typed seed against a streaming endpoint therefore
-     comes back UNCONFIRMED on a later run (the agent saw the request go out but
-     never a final status), which flips a genuinely-passing goal to UNCERTAIN
-     and then a false REGRESSED, even though the feature works. Do NOT type the
-     fact `network` for a streaming / long-lived endpoint. Instead, type the
-     VISIBLE EFFECT the stream produces - the answer text that renders, the
-     control that appears, the route that changes - `behavioral` or `text` (or
-     `url`), which a later run CAN reproduce by looking at the page. You still
-     keep the two-distinct-types diversity (ADR-0005, docs/05): pair the visible
-     effect with a second different-type signal that a run can also reproduce
-     (for example a `behavioral` "the answer streams into the thread" plus a
-     `text` "the final answer contains the asked-about value"), never two
-     `network` signals on the open stream. If a non-streaming network fact IS
-     reliably re-observable (a short request-response that finalizes, like the
-     login POST that returns 2xx and closes), `network` stays fine; the warning
-     is specifically about endpoints that stay open past the sampling window.
+     Streaming endpoints (Server-Sent Events, chunked transfer, a long-lived
+     response): the response STATUS is observable - HTTP status and headers
+     arrive BEFORE the body streams, so a run reads the 200 as soon as headers
+     land - and `network` is a fine type for request/response facts, including
+     streamed ones (ADR-0033 decision 8). The only facts a `network` signal
+     cannot carry are about the CONTENT of a still-open stream (its completion,
+     its final payload): type those as the VISIBLE EFFECT the stream produces -
+     the answer text that renders, the control that appears - `behavioral` /
+     `text` (or `url`), which a later run reproduces by looking at the page.
    - `auth_state`: `authenticated` plus the abstract `scope` from the role
      prompt. Never the credential or the cookie value.
    - optional `failure_signals`, `risks` (with a STRUCTURED trigger, never free
@@ -245,9 +233,29 @@ redacted per-run observation. `praxis learn` validates the check against the
 schema and rejects a malformed one (an unknown kind, a non-integer delta, an
 empty slot), the same loud write-time rejection a free-text risk trigger gets.
 
-A fact that simply IS a stable phrase (a route, a banner) does not need a check;
-prose, or an ADR-0030 inline `{slot}` in the value, is enough. Reach for a
-`check` only when the fact is a relation or an after-action membership.
+## Prefer the structured form: structured-first seeding (ADR-0033 decision 6)
+
+Default INVERTED from "reach for a check only when the fact is a relation":
+prefer the STRUCTURED form whenever the fact is structurable, because the
+structured tiers are the ones a later run grounds with a fail-closed
+evaluation (a lazy tick fails closed against a `check` or a `value_predicate`;
+free text has no deterministic semantic gate, only an audit trail).
+
+- A fact that is a RELATION or an after-action membership (a count delta, an
+  id absent/present): a typed `check` (the section above).
+- A fact that is a STABLE PHRASE with per-run instance tokens (a route, a
+  banner, a fixed message naming a fresh id): an ADR-0030 `value_predicate`
+  with `{slot}`s (for example `/Box/Editor/{campaign_id:numeric}`).
+- FREE TEXT is the documented FALLBACK, reserved for genuinely unstructurable,
+  judgment-shaped facts. The canonical example: "the panel identifies the
+  user's account rather than erroring or refusing" - a judgment with no clean
+  invariant or relation. Before seeding free text, ask: is there a status, an
+  element presence, a count, a stable phrase in here? If yes, structure it.
+
+(A `http_status` check kind is the named follow-up ADR and is NOT available
+yet - do not invent one. Until it ships, a "POST to <endpoint> returns 2xx"
+fact stays free text: a later run confirms it by ref with the literal status
+and URL in its evidence, which the audit record keeps.)
 
 ## Do not silently overwrite a believed goal
 

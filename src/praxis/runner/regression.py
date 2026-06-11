@@ -18,15 +18,16 @@ docs/06 warns about.
 """
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 from ..adapters.spi import KnowledgeAdapter
 from ..merge.decay import DecayConfig, _parse_semver, is_observation_staled
-from ..model import KnowledgeFile, Signal, Status
+from ..model import KnowledgeFile, Signal, SignalType, Status
 from ..model.predicate import _STOPWORDS
 from ..store import ObservedSignal
 from ._parallel import run_partitioned
@@ -132,6 +133,22 @@ class RunResult:
     # absent flag (and the anonymous-scope path) is treated as "no auth wall",
     # leaving existing runs and tests unaffected.
     authenticated: bool = True
+    # ADR-0033 decision 4: the run's VOID confirmations, named with reasons
+    # (unknown ref, empty evidence, conflicting duplicate, failed tier gate).
+    # `classify_goal` appends them to the GoalReport evidence so a REGRESSED
+    # produced by a sloppy envelope is distinguishable from one produced by
+    # the app, from the run output alone. Defaults empty: absent on every
+    # pre-ADR-0033 path.
+    void_confirmations: list[str] = field(default_factory=list)
+    # ADR-0033 decision 5: the run's ADVISORY tripwire flag messages (off-topic
+    # containment, parrot evidence, type-vocabulary). Recorded, never gating.
+    confirmation_flags: list[str] = field(default_factory=list)
+    # ADR-0033 decision 7: True when a believed FREE-TEXT success signal was
+    # matched through the legacy Jaccard paraphrase path (an unsolicited or
+    # legacy-envelope observation, not a ref-bound confirmation). The report
+    # flags it so the remaining roulette is visible; the fallback is removed
+    # after one transition release.
+    paraphrase_matched: bool = False
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     ended_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -243,6 +260,215 @@ def _value_matches(observed: ObservedSignal, target: Signal) -> bool:
     return (inter / union) >= _PARAPHRASE_THRESHOLD
 
 
+# --- ADR-0033: confirmation by identity with mandatory evidence -------------
+#
+# An ENUMERATED seed signal (the prompt lists it with a stable ref: S1..Sn for
+# success, F1..Fm for failure, positional in the run's KnowledgeFile snapshot)
+# is confirmed BY REF, never by re-matching text. The runner binds the agent's
+# `{ref, present, evidence}` answer to the seed deterministically and stamps
+# the seed's declared type and value onto the bound observation (decision 2,
+# the ADR-0008 provenance-stamping posture): the agent never restates seed
+# text, so neither the paraphrase roulette nor the parrot channel exists for
+# an enumerated seed. Identity replaces only the BINDING; every grounding
+# evaluation still gates after it, fail-closed (decision 3): a `check` target
+# still evaluates over the structured `observed` payload (ADR-0031), a
+# `value_predicate` target evaluates over the EVIDENCE string (ADR-0030
+# semantics), and a free-text target requires non-empty evidence. A malformed
+# confirmation (empty evidence on present:true, unknown ref, conflicting
+# duplicate) is VOID: loud, named in the run output and the persisted record,
+# never a match (decision 4). Jaccard survives ONLY for unsolicited
+# observations (decision 7).
+
+# Flags are body-computed audit markers on a bound observation. A flag starting
+# with `void:` excludes the observation from verdict matching (fail closed);
+# every other flag is the ADR-0033 decision 5 ADVISORY tripwire surface: it is
+# recorded in the non-promotable regress record and the report and NEVER
+# changes a verdict. Promoting a tripwire to a gate requires a future ADR with
+# live flag data (the measured terse-honest-evidence case, containment 0.235,
+# proves a day-one gate misfires).
+_VOID_FLAG_PREFIX = "void:"
+
+# The off-topic tripwire floor: evidence-vs-seed token containment
+# (|evidence & seed| / |seed|, over the runner's own `_tokens`). Calibration
+# measured live (tasks/signal-matching-redesign/analysis.md): both real
+# evidence strings score 0.56+, a deliberately off-topic string scores 0.0,
+# and a TERSE honest evidence string scores 0.235 - which is exactly why the
+# floor sits at 0.15 and why this flags instead of gates.
+_OFFTOPIC_CONTAINMENT_FLOOR = 0.15
+
+_OFFTOPIC_FLAG = "off-topic-evidence"
+_PARROT_FLAG = "parrot-evidence"
+_TYPE_VOCAB_FLAG = "type-vocabulary"
+
+# Type-vocabulary tripwire shapes (advisory, deliberately coarse: a false void
+# is a false REGRESSED, so these only ever FLAG): a `network` confirmation
+# whose evidence names neither a status-shaped token (200, 404, 2xx) nor a
+# URL-shaped token; a `url` confirmation naming no path-like token.
+_STATUS_TOKEN_RE = re.compile(r"\b[1-5](?:[0-9]{2}|xx)\b", re.IGNORECASE)
+_URLISH_RE = re.compile(
+    r"https?://|www\.|[a-z0-9-]+(?:\.[a-z0-9-]+){2,}|/[a-z0-9_.~-]+",
+    re.IGNORECASE,
+)
+
+
+def _is_void(o: ObservedSignal) -> bool:
+    return any(f.startswith(_VOID_FLAG_PREFIX) for f in (o.flags or []))
+
+
+def _ref_table(kf: KnowledgeFile) -> dict[str, tuple[str, Signal]]:
+    """The run's ref -> (kind, seed) table, positional over the SAME snapshot
+    `render_regression_prompt` enumerated, so prompt and binding cannot skew
+    within a run (ADR-0033 decision 1)."""
+    table: dict[str, tuple[str, Signal]] = {}
+    for i, s in enumerate(kf.success_signals):
+        table[f"S{i + 1}"] = ("success", s)
+    for i, s in enumerate(kf.failure_signals or []):
+        table[f"F{i + 1}"] = ("failure", s)
+    return table
+
+
+def _tripwire_flags(seed: Signal, evidence: str) -> list[str]:
+    """The ADVISORY tripwire flags for one FREE-TEXT confirmation (ADR-0033
+    decision 5). Flags never change a verdict; they make a suspicious green
+    LOUD AND TRACEABLE in the audit record (docs/06)."""
+    flags: list[str] = []
+    ev = _tokens(evidence)
+    sd = _tokens(seed.value)
+    if sd and (len(ev & sd) / len(sd)) < _OFFTOPIC_CONTAINMENT_FLOOR:
+        flags.append(_OFFTOPIC_FLAG)
+    if not (ev - sd):
+        # Zero novel content tokens: real evidence names per-run concrete
+        # detail; a copy of the seed names none.
+        flags.append(_PARROT_FLAG)
+    if seed.type == SignalType.NETWORK:
+        if not (_STATUS_TOKEN_RE.search(evidence) or _URLISH_RE.search(evidence)):
+            flags.append(_TYPE_VOCAB_FLAG)
+    elif seed.type == SignalType.URL:
+        if "/" not in evidence:
+            flags.append(_TYPE_VOCAB_FLAG)
+    return flags
+
+
+def bind_confirmations(
+    kf: KnowledgeFile,
+    raw_confirmations: list[Any],
+    *,
+    agent_id: str = "praxis-agent",
+) -> tuple[list[ObservedSignal], list[str]]:
+    """Bind the envelope's ref-tagged confirmations to their seeds by IDENTITY
+    (ADR-0033 decisions 1-5). Returns `(bound_observations, void_messages)`.
+
+    Every bindable answer becomes an `ObservedSignal` whose `type` and `value`
+    are SYSTEM-STAMPED from the seed (decision 2); a void answer that bound to
+    a seed rides along flagged `void:*` so the persisted record keeps it, but
+    the verdict NEVER counts it (fail closed). An unbindable answer (unknown
+    ref, malformed entry) produces only a void message: there is no seed to
+    stamp. NO Jaccard runs anywhere on this path.
+    """
+    table = _ref_table(kf)
+    voids: list[str] = []
+    out: list[ObservedSignal] = []
+
+    # Duplicate scan (decision 4): a ref answered more than once with
+    # CONFLICTING `present` values voids every answer for that ref; an
+    # agreeing duplicate keeps the first answer and voids the redundant
+    # copies (they carry no new claim, and a void is never a green).
+    presents_by_ref: dict[str, set[bool]] = {}
+    for entry in raw_confirmations:
+        if isinstance(entry, dict) and isinstance(entry.get("ref"), str):
+            presents_by_ref.setdefault(entry["ref"], set()).add(
+                bool(entry.get("present", False))
+            )
+    conflicting = {r for r, p in presents_by_ref.items() if len(p) > 1}
+    seen_refs: set[str] = set()
+
+    for entry in raw_confirmations:
+        if not isinstance(entry, dict):
+            voids.append(f"malformed confirmation entry (not an object): {entry!r}")
+            continue
+        ref = entry.get("ref")
+        if not isinstance(ref, str) or ref not in table:
+            voids.append(f"unknown ref {ref!r}: no enumerated signal has it")
+            continue
+        kind, seed = table[ref]
+        claimed_kind = entry.get("kind")
+        present = bool(entry.get("present", False))
+        evidence_raw = entry.get("evidence")
+        evidence = evidence_raw.strip() if isinstance(evidence_raw, str) else ""
+
+        flags: list[str] = []
+        if ref in conflicting:
+            msg = (f"{ref}: duplicate answers with conflicting present values; "
+                   f"all answers for {ref} are void")
+            voids.append(msg)
+            flags.append(f"{_VOID_FLAG_PREFIX}conflicting-duplicate")
+        elif ref in seen_refs:
+            msg = f"{ref}: redundant duplicate answer (first answer kept)"
+            voids.append(msg)
+            flags.append(f"{_VOID_FLAG_PREFIX}redundant-duplicate")
+        elif isinstance(claimed_kind, str) and claimed_kind != kind:
+            # A ref into the failure list claimed as success (or vice versa).
+            voids.append(
+                f"{ref}: claimed kind {claimed_kind!r} contradicts the "
+                f"enumerated {kind} list"
+            )
+            flags.append(f"{_VOID_FLAG_PREFIX}kind-mismatch")
+        elif present and not evidence:
+            # Evidence is MANDATORY for a present:true confirmation
+            # (decision 4): an empty tick is void, loud, unconfirmed.
+            voids.append(f"{ref}: present:true with empty/missing evidence")
+            flags.append(f"{_VOID_FLAG_PREFIX}empty-evidence")
+        elif present and seed.check is not None:
+            # Tier gate (decision 3 / ADR-0031): the structured check still
+            # evaluates over the structured payload, fail-closed. The ref only
+            # binds; it never substitutes for the check.
+            from ..model.check import evaluate_check
+
+            observed_payload = entry.get("observed")
+            payload = observed_payload if isinstance(observed_payload, dict) else None
+            if not evaluate_check(seed.check, payload):
+                voids.append(
+                    f"{ref}: structured check did not hold over the reported "
+                    f"`observed` payload (missing, malformed, or failing)"
+                )
+                flags.append(f"{_VOID_FLAG_PREFIX}check-failed")
+        elif present and seed.value_predicate is not None:
+            # Tier gate (decision 3 / ADR-0030): the predicate evaluates over
+            # the EVIDENCE string, fail-closed. The ref never substitutes.
+            from ..model.predicate import PredicateError, parse
+
+            try:
+                holds = parse(seed.value_predicate).evaluate(evidence)
+            except PredicateError:
+                holds = False
+            if not holds:
+                voids.append(
+                    f"{ref}: evidence does not satisfy the signal's "
+                    f"value_predicate (invariant missing or slot unfilled)"
+                )
+                flags.append(f"{_VOID_FLAG_PREFIX}predicate-failed")
+        elif present and seed.check is None and seed.value_predicate is None:
+            # Free-text tier: confirmed (ref + non-empty evidence). Record the
+            # advisory tripwires (decision 5), never gating.
+            flags.extend(_tripwire_flags(seed, evidence))
+
+        seen_refs.add(ref)
+        observed_payload = entry.get("observed")
+        out.append(ObservedSignal(
+            kind=kind,  # type: ignore[arg-type]
+            type=seed.type,
+            value=seed.value,  # SYSTEM-STAMPED from the seed (decision 2)
+            present=present,
+            source_type="agent",  # type: ignore[arg-type]
+            source_id=agent_id,
+            observed=observed_payload if isinstance(observed_payload, dict) else None,
+            ref=ref,
+            evidence=evidence or None,
+            flags=flags or None,
+        ))
+    return out, voids
+
+
 def verdict_from_observations(
     kf: KnowledgeFile,
     observations: Iterable[ObservedSignal],
@@ -256,25 +482,56 @@ def verdict_from_observations(
       - all believed success signals observed as `present=True` -> PASS
       - otherwise -> UNCERTAIN (oracle could not be exercised; not a regression
         but also not a clean pass)
+
+    Matching is two-channel (ADR-0033 decision 7):
+      - a REF-BOUND observation (`ref` set; produced by `bind_confirmations`,
+        which already applied the per-tier grounding gates fail-closed and
+        system-stamped the seed's type/value) matches its target by IDENTITY:
+        the ref IS the binding, no `_value_matches`, no Jaccard. A `void:*`
+        flagged answer NEVER matches (decision 4: a void is never a green).
+      - an UNSOLICITED observation (no ref: extra failure evidence, an old
+        envelope) matches through the legacy `_value_matches` path, unchanged.
     """
-    obs = [o for o in observations if o.present]
+    all_obs = list(observations)
+    # First answer wins per ref: a redundant duplicate was void-flagged at bind
+    # time and must not shadow the first valid answer (conflicting duplicates
+    # are ALL void, so order is irrelevant for them).
+    bound: dict[str, ObservedSignal] = {}
+    for o in all_obs:
+        if o.ref is not None:
+            bound.setdefault(o.ref, o)
+    obs = [o for o in all_obs if o.present and o.ref is None]
+
+    def _ref_confirmed(ref: str, kind: str) -> bool:
+        o = bound.get(ref)
+        return (o is not None and o.present and o.kind == kind
+                and not _is_void(o))
+
     matched_success: list[str] = []
     matched_failure: list[str] = []
 
-    failure_targets = [s for s in (kf.failure_signals or [])
-                       if s.status in (Status.BELIEVED, Status.CONTESTED)]
-    for ft in failure_targets:
-        if any(_value_matches(o, ft) and o.kind == "failure" for o in obs):
+    failure_seeds = list(kf.failure_signals or [])
+    for i, ft in enumerate(failure_seeds):
+        if ft.status not in (Status.BELIEVED, Status.CONTESTED):
+            continue
+        if _ref_confirmed(f"F{i + 1}", "failure") or any(
+            _value_matches(o, ft) and o.kind == "failure" for o in obs
+        ):
             matched_failure.append(ft.value)
     if matched_failure:
         return RegressionVerdict.FAIL, matched_success, matched_failure
 
-    success_targets = [s for s in kf.success_signals if s.status == Status.BELIEVED]
-    for st in success_targets:
-        if any(_value_matches(o, st) and o.kind == "success" for o in obs):
+    n_believed_success = 0
+    for i, st in enumerate(kf.success_signals):
+        if st.status != Status.BELIEVED:
+            continue
+        n_believed_success += 1
+        if _ref_confirmed(f"S{i + 1}", "success") or any(
+            _value_matches(o, st) and o.kind == "success" for o in obs
+        ):
             matched_success.append(st.value)
 
-    if success_targets and len(matched_success) == len(success_targets):
+    if n_believed_success and len(matched_success) == n_believed_success:
         return RegressionVerdict.PASS, matched_success, matched_failure
     return RegressionVerdict.UNCERTAIN, matched_success, matched_failure
 
@@ -289,6 +546,14 @@ class _RunContext:
     notes: list[str]
     healthy_equivalent_observed: bool
     authenticated: bool
+    # ADR-0033: the raw ref-tagged `confirmations` array (each entry
+    # `{ref, present, evidence, observed?}`), bound to seeds by `run_one` via
+    # `bind_confirmations` (binding needs the KnowledgeFile snapshot, which
+    # this parse does not have). `has_confirmations` distinguishes an empty
+    # array (a new brain that confirmed nothing) from a LEGACY envelope with
+    # no `confirmations` key at all (decision 7: the legacy path is flagged).
+    raw_confirmations: list[Any] = field(default_factory=list)
+    has_confirmations: bool = False
 
 
 def _parse_executor_result(
@@ -312,6 +577,7 @@ def _parse_executor_result(
             o.setdefault("source_type", "agent")
             o.setdefault("source_id", agent_id)
             obs.append(ObservedSignal.model_validate(o))
+    confirmations = raw.get("confirmations")
     return _RunContext(
         observations=obs,
         actions=int(raw.get("actions", 0)),
@@ -322,6 +588,11 @@ def _parse_executor_result(
         # authenticated / unknown", leaving the anonymous-scope path and every
         # existing payload unaffected (ADR-0026 Open decision 2).
         authenticated=bool(raw.get("authenticated", True)),
+        # ADR-0033: additive. An envelope with no `confirmations` key is the
+        # legacy shape and routes through the unchanged Jaccard path, flagged
+        # (decision 7).
+        raw_confirmations=list(confirmations) if isinstance(confirmations, list) else [],
+        has_confirmations=isinstance(confirmations, list),
     )
 
 
@@ -367,6 +638,17 @@ class RegressionRunner:
 
         ctx = _parse_executor_result(raw, agent_id=self.agent_id)
 
+        # ADR-0033: bind the ref-tagged confirmations to their seeds by
+        # IDENTITY (type/value system-stamped from the seed, per-tier grounding
+        # gates applied fail-closed, voids flagged loud). The bound observations
+        # join the envelope so the verdict, the RunResult, and the persisted
+        # regress record all carry them; the unsolicited observations keep the
+        # unchanged legacy matching path (decision 7).
+        bound, voids = bind_confirmations(
+            kf, ctx.raw_confirmations, agent_id=self.agent_id,
+        )
+        observations = ctx.observations + bound
+
         # R-mode regress is a READ of the believed oracle (ADR-0009): it confirms
         # the seeded success signals and reports a verdict; it must NOT GROW the
         # believed set. `write_observations` appends promotable ObservationEvents
@@ -378,7 +660,10 @@ class RegressionRunner:
         # 26 agent-sourced ones). The verdict is computed in-memory from
         # ctx.observations below, so persistence is not needed to reach it.
         # Default OFF for R-mode regress (ADR-0029 defect A); the verdict and the
-        # RunResult still carry what the run observed.
+        # RunResult still carry what the run observed. Ref-bound confirmations
+        # are NEVER written here even on opt-in: a confirmation persists only to
+        # the non-promotable regress record (ADR-0033 forbidden alternative; the
+        # believed set never grows from a confirmation).
         if persist_observations and ctx.observations:
             self.adapter.write_observations(
                 goal_id=goal_id,
@@ -388,8 +673,34 @@ class RegressionRunner:
             )
 
         verdict, matched_success, matched_failure = verdict_from_observations(
-            kf, ctx.observations,
+            kf, observations,
         )
+
+        # ADR-0033 decision 7: name the believed FREE-TEXT success signals that
+        # were matched by the legacy Jaccard paraphrase path rather than a
+        # ref-bound confirmation, so the remaining roulette is visible in the
+        # report instead of silent (the fallback lasts one transition release).
+        paraphrase_matched = False
+        confirmed_refs = {
+            o.ref for o in observations
+            if o.ref is not None and o.present and not _is_void(o)
+        }
+        for i, st in enumerate(kf.success_signals):
+            if (st.status == Status.BELIEVED
+                    and st.value in matched_success
+                    and f"S{i + 1}" not in confirmed_refs
+                    and st.check is None and st.value_predicate is None):
+                paraphrase_matched = True
+                break
+
+        # ADR-0033 decision 5: the advisory tripwire flag messages (recorded in
+        # the report and the persisted record, never changing the verdict).
+        flag_messages = [
+            f"{o.ref}: advisory flag {f}"
+            for o in bound
+            for f in (o.flags or [])
+            if not f.startswith(_VOID_FLAG_PREFIX)
+        ]
 
         # Persist the NON-PROMOTABLE regress audit record (ADR-0023 decision 4):
         # every regress run that reaches a verdict leaves a traceable record of
@@ -405,13 +716,28 @@ class RegressionRunner:
         # this SPI method (a hand-rolled test double) does not break.
         write_regress = getattr(self.adapter, "write_regress_observation", None)
         if callable(write_regress):
-            write_regress(
-                goal_id=goal_id,
-                agent_id=self.agent_id,
-                verdict=verdict.value,
-                observations=ctx.observations,
-                observed_app_version=self.observed_app_version,
-            )
+            # The bound confirmations (ref + system-stamped value + evidence +
+            # flags) and the void reasons land in the SAME non-promotable
+            # record (ADR-0033 decision 5: every confirmation auditable
+            # forever; no second record kind). A test double that predates the
+            # `voids` kwarg still works: fall back to the original signature.
+            try:
+                write_regress(
+                    goal_id=goal_id,
+                    agent_id=self.agent_id,
+                    verdict=verdict.value,
+                    observations=observations,
+                    observed_app_version=self.observed_app_version,
+                    voids=voids or None,
+                )
+            except TypeError:
+                write_regress(
+                    goal_id=goal_id,
+                    agent_id=self.agent_id,
+                    verdict=verdict.value,
+                    observations=observations,
+                    observed_app_version=self.observed_app_version,
+                )
 
         return RunResult(
             goal_id=goal_id,
@@ -419,12 +745,15 @@ class RegressionRunner:
             actions=ctx.actions,
             tokens=ctx.tokens,
             wall_seconds=wall,
-            observed_signals=ctx.observations,
+            observed_signals=observations,
             matched_success=matched_success,
             matched_failure=matched_failure,
             notes=ctx.notes,
             healthy_equivalent_observed=ctx.healthy_equivalent_observed,
             authenticated=ctx.authenticated,
+            void_confirmations=voids,
+            confirmation_flags=flag_messages,
+            paraphrase_matched=paraphrase_matched,
             started_at=started_at,
             ended_at=ended_at,
         )
@@ -580,7 +909,57 @@ def _expected_authenticated_scope(kf: KnowledgeFile) -> str | None:
     return scope
 
 
+def _confirmation_audit_suffix(result: RunResult) -> str:
+    """The ADR-0033 audit suffix for a GoalReport's evidence string.
+
+    Decision 4: the report NAMES every void confirmation and its reason, so a
+    REGRESSED produced by a sloppy envelope is distinguishable from one
+    produced by the app, from the run output alone. Decision 5: the advisory
+    tripwire flags are recorded in the report (and the persisted record) but
+    NEVER change the verdict. Decision 7: a believed free-text signal matched
+    by the legacy paraphrase path is flagged so the remaining roulette is
+    visible (one transition release). Empty when the run had none of these.
+    """
+    extras: list[str] = []
+    if result.void_confirmations:
+        extras.append(
+            "void confirmation(s): " + "; ".join(result.void_confirmations)
+        )
+    if result.confirmation_flags:
+        extras.append(
+            "advisory flag(s), not gating: "
+            + "; ".join(result.confirmation_flags)
+        )
+    if result.paraphrase_matched:
+        extras.append(
+            "matched by paraphrase: a believed free-text signal was matched "
+            "by the legacy Jaccard path, not a ref-bound confirmation "
+            "(legacy fallback; removed after one transition release)"
+        )
+    return " | ".join(extras)
+
+
 def classify_goal(
+    kf: KnowledgeFile,
+    result: RunResult,
+    *,
+    current_version: str | None = None,
+    decay_config: DecayConfig | None = None,
+) -> GoalReport:
+    """Map one goal's RunResult into the OK / REGRESSED / STALE / AUTH-EXPIRED
+    aggregate verdict, carrying the evidence plus the ADR-0033 confirmation
+    audit suffix (voids named, advisory flags recorded, paraphrase fallback
+    flagged; none of them changes the verdict)."""
+    report = _classify_goal_verdict(
+        kf, result, current_version=current_version, decay_config=decay_config,
+    )
+    suffix = _confirmation_audit_suffix(result)
+    if suffix:
+        report.evidence = f"{report.evidence} | {suffix}" if report.evidence else suffix
+    return report
+
+
+def _classify_goal_verdict(
     kf: KnowledgeFile,
     result: RunResult,
     *,

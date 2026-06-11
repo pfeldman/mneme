@@ -184,35 +184,54 @@ def test_regression_prompt_includes_signals_and_no_steps() -> None:
         assert f not in p.lower(), f"prompt leaked imperative artifact: {f!r}"
 
 
-def test_regression_prompt_demands_each_signal_in_its_declared_type() -> None:
-    """ADR-0028: the regress prompt must ask the agent to confirm EVERY success
-    signal, one observation per signal, IN that signal's DECLARED type, with the
-    grounding guardrail leading. The old "type the observation by what you
-    actually checked" instruction must be GONE, because it fought the exact-type
-    matcher and produced a false UNCERTAIN. The negative assertion catches a
-    future regression of the wording."""
+def test_regression_prompt_confirms_by_ref_with_mandatory_evidence() -> None:
+    """ADR-0033 decision 1: the regress prompt enumerates every success signal
+    with a stable S1..Sn ref and every failure signal with F1..Fm, instructs
+    the agent to answer PER REF with `{ref, present, evidence}`, makes evidence
+    MANDATORY for a present:true confirmation, and keeps the ADR-0028 grounding
+    guardrail LEADING the completeness instruction. The superseded ADR-0028
+    one-observation-per-signal-in-declared-type emit contract and the older
+    free-typing clause are GONE (the runner now stamps the seed's type/value
+    onto a ref-bound answer itself)."""
     kf = _login_kf()
     p = render_regression_prompt(kf, budget_actions=10)
-    low = p.lower()
-    # Confirm ALL signals, one observation per signal, each in its declared type.
-    assert "confirm every success signal" in low
-    assert "one\nobservation per signal" in low or "one observation per signal" in low
-    assert "declared type" in low
-    # Grounding guardrail present: never assert a signal just to complete the list.
-    assert "grounded in evidence" in low
-    assert "never assert a signal just to complete" in low
-    assert "leave it unconfirmed" in low
-    assert "do not fabricate" in low
-    # The conflicting free-typing instruction is gone (ADR-0028 decision 1).
-    assert "by what you actually checked" not in low
+    # Refs render per enumerated signal: S1/S2 success, F1 failure.
+    assert "  S1. [behavioral] sign-out action becomes available" in p
+    assert "  S2. [network] POST /session returns 2xx" in p
+    assert "  F1. [text] invalid credentials banner" in p
+    # Normalize wrapping so phrase assertions do not depend on line breaks.
+    flat = " ".join(p.lower().split())
+    # Answer per ref, with the {ref, present, evidence} shape named.
+    assert "by its ref" in flat
+    assert '"ref"' in flat and '"present"' in flat and '"evidence"' in flat
+    # Evidence is MANDATORY for present: true; an empty one is VOID.
+    assert "evidence is mandatory for present: true" in flat
+    assert "void" in flat
+    # The agent never restates seed text (decision 2: system-stamped echo).
+    assert "do not copy the signal's own wording" in flat
+    # Grounding guardrail still present and LEADING: it appears BEFORE the
+    # per-ref completeness instruction (ADR-0028 decision 2 survives).
+    assert "never tick a signal just to complete" in flat
+    assert "do not fabricate" in flat
+    guard_at = flat.index("tick a signal just to complete")
+    completeness_at = flat.index("answer every enumerated signal")
+    assert guard_at < completeness_at, (
+        "the grounding guardrail must LEAD the completeness instruction "
+        "(ADR-0028 decision 2, preserved by ADR-0033)"
+    )
+    # The superseded emit contracts are gone.
+    assert "by what you actually checked" not in flat
+    assert "one observation per signal" not in flat
+    assert "emit each observation in that signal's declared type" not in flat
 
 
 def test_regression_prompt_surfaces_a_structured_predicate(tmp_path: Path) -> None:
-    """ADR-0030 wiring: when a signal carries a `value_predicate`, the prompt must
-    show it and tell the agent to confirm IN that exact shape (fill each {slot}).
-    The matcher fullmatches the observation against the predicate, so without this
-    the agent emits free prose that can never match. Pins the prompt half of the
-    facts feature."""
+    """ADR-0030 wiring under ADR-0033: when a signal carries a `value_predicate`,
+    the prompt must show it and tell the agent the EVIDENCE of its ref-bound
+    confirmation must contain that exact shape (fill each {slot}). The predicate
+    is evaluated over the evidence string (ADR-0033 decision 3), so without this
+    the agent emits free prose evidence that can never satisfy it. Pins the
+    prompt half of the facts feature."""
     from praxis.model import Signal, SignalType, Status
 
     kf = _login_kf()
@@ -225,8 +244,9 @@ def test_regression_prompt_surfaces_a_structured_predicate(tmp_path: Path) -> No
     p = render_regression_prompt(kf)
     assert "/Box/Editor/{campaign_id:numeric}" in p
     low = p.lower()
-    assert "fact (confirm in this exact shape" in low
-    assert "must match that\ntemplate exactly" in low or "must match that template exactly" in low
+    assert "fact (your evidence must contain this exact shape" in low
+    assert "your evidence must contain that\ntemplate" in low \
+        or "your evidence must contain that template" in low
 
 
 def test_parse_executor_result_stamps_missing_provenance() -> None:

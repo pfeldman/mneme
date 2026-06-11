@@ -120,21 +120,33 @@ _HEADLESS_PREAMBLE = (
     "steps; do NOT replay recorded steps.\n\n"
     "When you are done, output EXACTLY ONE JSON object as the LAST thing you "
     "print, on its own, and nothing after it:\n"
-    '  {"observations": [ {"value": "<one factual sentence>", "kind": '
-    '"success|failure", "type": "behavioral|network|accessibility|text|url|'
-    'visual", "present": true}, ... ], "actions": <int>, "tokens": null, '
-    '"authenticated": <true|false>}\n'
-    "Emit one observation per signal you checked. Set \"authenticated\" to false "
-    "if the browser ended up logged out or you could not pass authentication.\n"
+    '  {"confirmations": [ {"ref": "S1", "present": true, "evidence": "<the '
+    'concrete detail you actually saw: the literal text, status, route, '
+    'count>"}, ... ], "observations": [ {"value": "<one factual sentence>", '
+    '"kind": "success|failure", "type": "behavioral|network|accessibility|'
+    'text|url|visual", "present": true}, ... ], "actions": <int>, '
+    '"tokens": null, "authenticated": <true|false>}\n'
+    "Answer every signal the task enumerates with a ref (S1..Sn success, "
+    "F1..Fm failure) in `confirmations`: one entry per ref. NEVER tick a "
+    "signal just to complete the checklist; if you cannot ground it, report "
+    "present: false (or omit it), never fabricate. `evidence` is MANDATORY "
+    "for present: true (an empty evidence is VOID and counts as unconfirmed) "
+    "and must be in your own words - do NOT copy the signal's wording; report "
+    "what YOU saw. Do not restate the signal text anywhere else: the runner "
+    "binds your answer to the signal by the ref alone.\n"
     "If a signal asks for a `structured check` (a count delta, or whether an id "
     "is present/absent after the action), add an `\"observed\"` object to THAT "
-    "signal's observation carrying the raw data it names, and report the data you "
-    "saw - do NOT decide yourself whether the check passed; the runner evaluates "
-    "it. Shapes:\n"
+    "ref's confirmation entry carrying the raw data it names, and report the "
+    "data you saw - do NOT decide yourself whether the check passed; the runner "
+    "evaluates it. Shapes:\n"
     '  count delta -> "observed": {"before_count": <int>, "after_count": <int>}\n'
     '  membership  -> "observed": {"identifier": "<the concrete id you saw>", '
     '"present": <true|false>}\n'
-    "Omit `observed` for a plain signal that has no `structured check` line.\n\n"
+    "Omit `observed` for a plain signal that has no `structured check` line.\n"
+    "Use `observations` only for anything real you saw BEYOND the enumerated "
+    "signals (extra failure evidence, a healthy equivalent). Set "
+    "\"authenticated\" to false if the browser ended up logged out or you "
+    "could not pass authentication.\n\n"
     "If the goal needs you to log in fresh (no saved session was injected for "
     "this run), log in the way a QA tester does: read the credentials from the "
     "gitignored `.praxis.secrets` file at the repo root (an environment variable "

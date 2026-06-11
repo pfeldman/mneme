@@ -77,6 +77,21 @@ class ObservedSignal(BaseModel):
     # (ADR-0031 decision 5); it is per-run observation data redacted at the
     # adapter boundary, never durable knowledge (ADR-0031 forbidden alt).
     observed: dict[str, Any] | None = None
+    # ADR-0033: a ref-tagged confirmation of an ENUMERATED seed signal. `ref` is
+    # the stable prompt ref (S1..Sn for success seeds, F1..Fm for failure seeds,
+    # positional within the run's KnowledgeFile snapshot); the runner binds the
+    # confirmation to its seed by IDENTITY and SYSTEM-STAMPS the seed's declared
+    # `type` and `value` onto this observation (the agent never restates seed
+    # text). `evidence` is the MANDATORY concrete grounded detail (the agent's
+    # own words: the literal text, status, route, count) for a `present: true`
+    # confirmation; it is what the ADR-0030 predicate tier evaluates and what
+    # the audit record preserves forever. `flags` are BODY-computed audit
+    # markers (the ADR-0033 decision 5 advisory tripwires plus `void:*` reasons
+    # for a malformed confirmation, decision 4); they never change a verdict.
+    # All three default None so every pre-ADR-0033 envelope is unaffected.
+    ref: str | None = None
+    evidence: str | None = None
+    flags: list[str] | None = None
 
 
 class ObservationEvent(BaseModel):
@@ -135,6 +150,14 @@ class RegressObservationEvent(BaseModel):
     verdict: str
     observed_app_version: str | None = None
     signals: list[ObservedSignal] = Field(default_factory=list)
+    # ADR-0033 decision 4: the void confirmations of this run, named with their
+    # reasons ("unknown ref 'S9'", "S1 present:true with empty evidence", ...).
+    # A void that bound to a seed ALSO rides as a `void:*`-flagged signal above;
+    # an unbindable void (unknown ref, malformed entry) has no seed to stamp, so
+    # this list is the only place the record can name it. Additive, defaults
+    # None so every pre-ADR-0033 record is unaffected (ADR-0001: additive event
+    # fields only).
+    voids: list[str] | None = None
 
 
 class DecayEvent(BaseModel):

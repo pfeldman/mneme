@@ -111,6 +111,7 @@ class BrowserUseAdapter:
         verdict: str,
         observations: list[ObservedSignal],
         observed_app_version: str | None = None,
+        voids: list[str] | None = None,
     ) -> str:
         """Redact then append the regress run's audit record (ADR-0023 dec 4).
 
@@ -128,6 +129,9 @@ class BrowserUseAdapter:
             verdict=verdict,
             observed_app_version=observed_app_version or self.current_version,
             signals=redacted,
+            # ADR-0033 decision 4: void confirmation reasons ride the same
+            # record (redacted: they may quote agent-authored text).
+            voids=[redact(v) for v in voids] if voids else None,
         )
         self.store.append_regress(event)
         return event.event_id
