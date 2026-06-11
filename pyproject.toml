@@ -20,9 +20,14 @@ dependencies = [
 dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10", "jsonschema>=4"]
 # Adapters are extras so the core stays runtime-agnostic (see ADR-0003).
 browser-use = ["browser-use"]
-# Live regression-recall experiment executor (Anthropic API + HTTP probe tool).
-# Optional - the core + tests run without it; only `experiments/regression_recall/
-# exec_anthropic.py` needs the SDK.
+# Anthropic SDK for the offline regression-recall EXPERIMENT executor only
+# (`experiments/regression_recall/exec_anthropic.py` + `run_live.py`). It is NOT
+# the brain an installed wheel runs: nothing under `src/praxis` imports
+# `anthropic`. The autonomous CI brain is the Claude Code CLI driven headless as
+# `claude -p` (ADR-0027), the SAME brain `praxis regress` / `praxis explore` use
+# locally; CI installs Claude Code on the runner, never this extra (see
+# `docs/examples/ci.md`). This extra exists only so the experiment harness has a
+# named install path; the core + tests run without it.
 live = ["anthropic>=0.40"]
 # Docs-only dev tool: the mkdocs-material static-site generator that renders the
 # `docs/` tree into the landing page and docs site (ADR-0025). It is NOT a core

@@ -1,9 +1,10 @@
-# Mneme
+# Praxis
 
-> A shared **semantic-memory layer for QA agents.**
-> Codename — rename freely (`praxis` → your brand) in `pyproject.toml` and `src/`.
+> A shared **operational-knowledge layer for QA agents.** Library plus git, no SaaS.
+> Distributed on PyPI as `praxis-qa`; the import package and CLI command are `praxis`
+> (ADR-0020). Formerly codenamed `mneme` (renamed in ADR-0009).
 
-Most testing tools store **procedures** (click A, fill B, assert C). Mneme stores
+Most testing tools store **procedures** (click A, fill B, assert C). Praxis stores
 **knowledge about the system under test** — goals, how to recognize states, what
 success and failure actually look like, which alternative paths exist, and which
 risks lurk — and keeps that knowledge **decoupled from the steps** any single run
@@ -31,16 +32,19 @@ The bet here is that **agents can build and maintain the model themselves**,
 which inverts that economics. The procedure is disposable; the knowledge is the asset.
 
 ## What's in this repo
-- `docs/` — the full design: vision, architecture, schema, MVP experiment, risks, roadmap.
-- `docs/adr/` — the load-bearing decisions and why.
-- `schema/` — the language-neutral knowledge schema (JSON Schema) + real examples.
-- `src/praxis/` — package skeleton (model, store, merge, oracle, adapters).
-- `experiments/ui-mutation/` — the one experiment that validates or kills the idea.
+- `docs/` - the full design: vision, architecture, schema, MVP experiment, risks, roadmap.
+- `docs/adr/` - the load-bearing decisions and why (ADR-0001 through ADR-0031).
+- `schema/` - the language-neutral knowledge schema (JSON Schema) + real examples.
+- `src/praxis/` - the package: `model`, `store`, `merge`, `oracle`, `runner`, `cli`,
+  `adapters`, and the packaged Claude Code `skills` (the `teach` / `regress` / `explore`
+  authoring + run loop).
+- `experiments/` - the falsifiers: `ui-mutation/` (Phase 0, validated and closed) and
+  `regression_recall/` (the Phase 1 regression-recall experiment).
 
 ## Start here
-1. `docs/00-product-brief.md` — the one-page pitch.
-2. `AGENTS.md` — how Claude Code should build this (non-negotiables included).
-3. `experiments/ui-mutation/README.md` — build this first.
+1. `docs/00-product-brief.md` - the one-page pitch.
+2. `AGENTS.md` - the build brief and the non-negotiables.
+3. `docs/examples/ci.md` - how to wire `praxis regress` into your own CI.
 
 ## Non-negotiables (the spine of the design)
 1. Store **invariants, not coordinates**.
@@ -51,5 +55,21 @@ which inverts that economics. The procedure is disposable; the knowledge is the 
    diversity (≥2 different signal types) or a human/spec seed, never by counting
    agents; the first oracle is seeded (ADR-0005). Silent poisoning is the way this
    product dies (docs/06).
+
+## Running in CI
+
+Wire `praxis regress` into your own CI and gate on its exit code (ADR-0024). A
+REGRESSED, ERROR, or AUTH-EXPIRED goal exits non-zero and fails the job; full
+walkthrough and an example workflow in [docs/examples/ci.md](docs/examples/ci.md).
+
+**LOUD NOTE: a STALE-only run exits 0, so a gate that reads ONLY the exit code
+silently passes drifted knowledge.** By design STALE does not fail the run (the
+app changed on purpose; the fix is a human re-seed, not a red gate), so when every
+non-OK goal is STALE the process exits `0`. A CI that gates on the exit code alone
+goes green while the knowledge drifts out of date. If you care about drift, do not
+gate on the exit code alone: read the report and act on STALE (fail or warn on the
+`STALE` count in `regress-aggregate.md`, or on `skipped > 0` in the JUnit XML
+`regress-aggregate.xml`, or open a re-teach follow-up). The exit code tells you the
+app did not break; it does not tell you the knowledge is still accurate.
 
 License: Apache-2.0 (recommended).

@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -375,6 +376,44 @@ def _auth_expired_observations(role: str) -> dict[str, Any]:
     }
 
 
+def _resolve_claude_argv0(claude_bin: str) -> list[str]:
+    """Resolve the launch prefix for `claude_bin` so it actually starts, on
+    POSIX and on Windows.
+
+    On Windows, `npm install -g @anthropic-ai/claude-code` installs `claude` as a
+    `claude.cmd` (or `.bat`) BATCH SHIM, not a native `.exe`. `shutil.which`
+    finds it (so the CLI preflight passes), but `subprocess.run(["claude", ...])`
+    with the default `shell=False` cannot launch a batch file: the Win32
+    `CreateProcess` it calls only runs real executables, so it raises
+    `FileNotFoundError` even though the shim is right there on PATH. The robust
+    fix is to resolve the shim to its full path and run it through the command
+    interpreter (`%COMSPEC% /c claude.cmd ...`), which IS how a `.cmd` is meant to
+    be invoked. We resolve the full path (rather than `shell=True` with a bare
+    name) so no shell quoting touches the prompt argument that follows.
+
+    On POSIX this is a no-op: `claude` is a normal executable (or a shebang
+    script the kernel launches directly), so the launch prefix is just
+    `[claude_bin]` and the existing behavior is unchanged.
+
+    Returns the argv PREFIX (one or more tokens); the caller appends `-p`, the
+    prompt, and the rest. The binary is never run here; this only builds argv.
+    """
+    if os.name != "nt":
+        return [claude_bin]
+    resolved = shutil.which(claude_bin)
+    if resolved is None:
+        # which() did not find it; let the caller's subprocess raise the normal
+        # FileNotFoundError, which the brain maps to a clear ClaudeBrainError.
+        return [claude_bin]
+    if resolved.lower().endswith((".cmd", ".bat")):
+        # Route a batch shim through the command interpreter so it launches.
+        comspec = os.environ.get("COMSPEC", "cmd.exe")
+        return [comspec, "/c", resolved]
+    # A native .exe (or a path which() resolved): launch the resolved path
+    # directly so we do not re-search PATH inside subprocess.
+    return [resolved]
+
+
 def _iter_balanced_objects(text: str) -> list[str]:
     """Yield every top-level balanced `{...}` substring of `text`, in order.
 
@@ -526,7 +565,9 @@ def make_claude_brain(
             run_mcp_config = synthesized_mcp_config
 
         full_prompt = _HEADLESS_PREAMBLE + prompt
-        argv = [claude_bin, "-p", full_prompt]
+        # Resolve the launch prefix so a Windows npm `.cmd` shim actually starts
+        # (a bare `["claude", ...]` cannot launch a batch file); POSIX is a no-op.
+        argv = [*_resolve_claude_argv0(claude_bin), "-p", full_prompt]
         if model:
             argv += ["--model", model]
         if run_mcp_config:
