@@ -3,7 +3,7 @@
 # `praxis`: only the published distribution name moves.
 [project]
 name = "praxis-qa"
-version = "0.0.2"
+version = "0.0.3"
 description = "A shared semantic-memory layer for QA agents. Agents store and maintain knowledge about a system under test (goals, recognition signals, success/failure oracles, alternative paths, risks) decoupled from the procedure used to reach it."
 readme = "README.md"
 requires-python = ">=3.11"

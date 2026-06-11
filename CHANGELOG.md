@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-06-11: 0.0.3 (first real-app dogfooding fixes)
+
+Fixes surfaced by the first integration of `praxis-qa` against a real production web app, ordered by release impact:
+
+- **Console runner reuses the saved auth session.** The `claude -p` console brain now loads the saved Playwright storage state via the native `@playwright/mcp --storage-state` argument for an authenticated, non-subject goal (resolved by role through the existing `auth_session` channel, env-secret beats file per ADR-0026), so the console surface stops producing a false REGRESSED on an authenticated goal that the skill surface passed. A `being_tested` login-subject goal still does a real login; a missing session surfaces the loud AUTH-EXPIRED outcome, never a silent logged-out run. The brain preamble now tells the agent the `.praxis.secrets` channel exists.
+- **Every verdict-reaching regress run persists an observation record.** A console regress that reached a verdict was persisting zero observation events, so a REGRESSED verdict was not traceable. A new non-promotable regress observation record is now written for every evaluated goal (single-goal and aggregate, console and skill) into a sibling `regress/` store subdir the belief projection never reads, so traceability holds without growing the believed set (ADR-0029 closure intact).
+- **Streaming endpoints and network signals.** Teach guidance now warns against typing a fact `network` for a streaming or long-lived endpoint (SSE, chunked, websockets), whose request often has no final status when the regress agent samples the network log, which made a genuinely-passing goal come back UNCERTAIN then falsely REGRESSED. The deeper "observed-but-still-streaming as a typed partial confirmation" option is captured as [ADR-0032](docs/adr/0032-streaming-network-signal-partial-confirmation.md) (Proposed), not shipped, because it touches verdict semantics.
+- **Aggregate JUnit XML.** The aggregate (CI) regress path now emits JUnit XML with one testcase per goal, mapped to the same exit-code contract as the single-goal emitter (OK pass, REGRESSED / ERROR / AUTH-EXPIRED failure, STALE skipped); previously only single-goal runs produced JUnit.
+- **Docs and packaging honesty.** The example CI workflow documents the `claude -p` CLI brain it actually runs (not the experiment-only `anthropic` extra); the README is retitled Praxis (no longer "Mneme" / "skeleton") with a loud note that a STALE-only run exits 0 so an exit-code-only gate passes drifted knowledge; the mkdocs nav lists the current ADRs; and the Windows launch path routes an npm `.cmd` shim through the command interpreter so a preflight-passing `claude` actually starts.
+
 ## 2026-06-08: Phase 3 implementation
 
 The code for the Phase 3 decisions below. The eight ADRs were the spec; this pass built them, in dependency order, on `bash verify.sh` ALL GREEN throughout. What shipped:
