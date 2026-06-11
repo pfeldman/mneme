@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-11: 0.0.4 (confirmation by identity, ADR-0033)
+
+Fixes the second real-app dogfooding blocker: the free-text Jaccard matcher rejected TRUE confirmations the agent had explicitly grounded (paraphrase, per-run detail, URL tokenization), flipping a healthy goal to a false REGRESSED, while a verbatim parrot of the seed would have scored 1.0. Measured on the live run: both believed signals confirmed with evidence, Jaccard 0.40 / 0.41 against a 0.5 floor.
+
+- **Enumerated signals are confirmed by identity with mandatory evidence ([ADR-0033](docs/adr/0033-confirmation-by-identity-with-mandatory-evidence.md), Proposed).** The regress prompt tags each believed success signal S1..Sn and each failure signal F1..Fm; the envelope answers per ref (`{ref, present, evidence}`) with evidence mandatory for a confirmation; the runner binds by ref and system-stamps the seed's declared type and value, so no fuzzy text matching decides an enumerated seed. An empty evidence, an unknown ref, or a conflicting duplicate is VOID: loud, named in the report, never a match. Structured checks (ADR-0031) and value predicates (ADR-0030) still evaluate fail-closed; a ref never bypasses them. Advisory grounding tripwires (parrot, off-topic, type-vocabulary) are recorded in the persisted observation record, flag not gate. Jaccard survives only for unsolicited ref-less observations, and an old-style envelope still parses and matches exactly as before.
+- **ADR-0032 withdrawn.** Its premise (streaming endpoints are hard to observe at the network level) was falsified by the persisted observation event the 0.0.3 traceability fix produced: the agent observed the streamed POST's 200 fine; matching, not observability, failed. The broad teach streaming guidance is replaced with a narrow caveat (stream STATUS is observable; only still-open stream CONTENT belongs in visible-effect types).
+- **Teach goes structured-first.** The teach skill now prefers a structured `check` or `value_predicate` whenever the fact is structurable, reserving free text for genuinely unstructurable facts; `http_status` is named as the next check kind, not yet built.
+
 ## 2026-06-11: 0.0.3 (first real-app dogfooding fixes)
 
 Fixes surfaced by the first integration of `praxis-qa` against a real production web app, ordered by release impact:
