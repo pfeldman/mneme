@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-11: 0.0.5 (brain model pin, ADR-0034)
+
+First-class model selection for the console brain, from real-app dogfooding: an A/B on the same believed goal showed model choice materially affects verdict quality (a cheaper model mis-navigated to a third-party chat widget and false-alarmed), so the pin belongs in the repo, not in whoever happens to run the command.
+
+- **Pin the console-brain model per project ([ADR-0034](docs/adr/0034-brain-model-pin-and-precedence.md), Proposed).** A committed `brain_model` key in `.praxis/config.yaml` (scaffolded commented-out by `praxis init`), a `PRAXIS_BRAIN_MODEL` env var for CI, and a `--model` flag on `regress` / `explore` for per-run A/B. Precedence: flag > env > config > the claude CLI default; unset everywhere is byte-identical to today. The value passes through verbatim (model names rot; the claude CLI errors loudly on an unknown one), and a pinned run prints the resolved model and its source once. The model is an operational input to the brain, never knowledge.
+- **Docs:** cheaper/faster models are a real false-alarm risk for the regress brain (the risk is navigation/grounding, not just speed); pin deliberately and validate with a few runs before trusting a cheaper pin.
+
 ## 2026-06-11: 0.0.4 (confirmation by identity, ADR-0033)
 
 Fixes the second real-app dogfooding blocker: the free-text Jaccard matcher rejected TRUE confirmations the agent had explicitly grounded (paraphrase, per-run detail, URL tokenization), flipping a healthy goal to a false REGRESSED, while a verbatim parrot of the seed would have scored 1.0. Measured on the live run: both believed signals confirmed with evidence, Jaccard 0.40 / 0.41 against a 0.5 floor.
