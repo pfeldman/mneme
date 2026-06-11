@@ -13,10 +13,12 @@ from typing import Any
 
 import pytest
 
+import praxis.cli.claude_brain as claude_brain_mod
 from praxis.cli.claude_brain import (
     _HEADLESS_PREAMBLE,
     ClaudeBrainError,
     _extract_observations,
+    _resolve_claude_argv0,
     make_claude_brain,
 )
 
@@ -172,3 +174,73 @@ def test_extract_observations_prefers_the_last_object(monkeypatch: Any) -> None:
     last = json.dumps(_OBS)
     got = _extract_observations(f"{first}\nfinal:\n{last}")
     assert got == _OBS
+
+
+# --- Windows npm `.cmd` shim launch robustness ----------------------------
+
+
+def test_windows_cmd_shim_is_launched_through_the_command_interpreter(
+    monkeypatch: Any,
+) -> None:
+    """On Windows, `npm install -g @anthropic-ai/claude-code` installs `claude`
+    as a `claude.cmd` BATCH SHIM. `shutil.which` finds it (the preflight passes),
+    but a bare `subprocess.run(["claude", ...])` cannot launch a batch file. The
+    brain must resolve the shim and route it through the command interpreter so
+    it actually starts, instead of raising FileNotFoundError."""
+    monkeypatch.setattr(claude_brain_mod.os, "name", "nt")
+    shim = r"C:\Users\dev\AppData\Roaming\npm\claude.cmd"
+    monkeypatch.setattr(
+        claude_brain_mod.shutil, "which",
+        lambda name: shim if name == "claude" else None,
+    )
+    monkeypatch.setattr(
+        claude_brain_mod.os, "environ", {"COMSPEC": r"C:\Windows\System32\cmd.exe"}
+    )
+
+    prefix = _resolve_claude_argv0("claude")
+    # Routed through %COMSPEC% /c <full shim path>, not a bare "claude".
+    assert prefix == [r"C:\Windows\System32\cmd.exe", "/c", shim]
+
+    # End to end: the launched argv starts with the interpreter + /c + shim, then
+    # the usual `-p <prompt>`, so the subprocess can actually run the batch shim.
+    seen = _patch_run(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    out = make_claude_brain()("GOAL (x): reach x")
+    assert out == _OBS
+    argv = seen["argv"]
+    assert argv[:3] == [r"C:\Windows\System32\cmd.exe", "/c", shim]
+    assert argv[3] == "-p"
+    assert "GOAL (x)" in argv[4]
+
+
+def test_windows_native_exe_is_launched_by_resolved_path(monkeypatch: Any) -> None:
+    """A native `claude.exe` on Windows is launched by its resolved full path
+    (not routed through cmd, and not re-searched on PATH inside subprocess)."""
+    monkeypatch.setattr(claude_brain_mod.os, "name", "nt")
+    exe = r"C:\Program Files\claude\claude.exe"
+    monkeypatch.setattr(
+        claude_brain_mod.shutil, "which",
+        lambda name: exe if name == "claude" else None,
+    )
+    assert _resolve_claude_argv0("claude") == [exe]
+
+
+def test_posix_launch_prefix_is_unchanged(monkeypatch: Any) -> None:
+    """On POSIX the resolution is a no-op: the launch prefix is just the bare
+    binary name, so the existing argv shape (`["claude", "-p", ...]`) and every
+    other test stay valid. We never call shutil.which on POSIX."""
+    monkeypatch.setattr(claude_brain_mod.os, "name", "posix")
+
+    def _boom(_name: str) -> str:
+        raise AssertionError("shutil.which must not be consulted on POSIX")
+
+    monkeypatch.setattr(claude_brain_mod.shutil, "which", _boom)
+    assert _resolve_claude_argv0("claude") == ["claude"]
+
+
+def test_windows_shim_not_found_falls_back_to_bare_name(monkeypatch: Any) -> None:
+    """If which() finds nothing on Windows, the prefix is the bare name so the
+    caller's subprocess raises the normal FileNotFoundError, which the brain maps
+    to the actionable ClaudeBrainError (never a silent pass)."""
+    monkeypatch.setattr(claude_brain_mod.os, "name", "nt")
+    monkeypatch.setattr(claude_brain_mod.shutil, "which", lambda _name: None)
+    assert _resolve_claude_argv0("claude") == ["claude"]
