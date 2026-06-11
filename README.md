@@ -1,9 +1,10 @@
-# Mneme
+# Praxis
 
-> A shared **semantic-memory layer for QA agents.**
-> Codename — rename freely (`praxis` → your brand) in `pyproject.toml` and `src/`.
+> A shared **operational-knowledge layer for QA agents.** Library plus git, no SaaS.
+> Distributed on PyPI as `praxis-qa`; the import package and CLI command are `praxis`
+> (ADR-0020). Formerly codenamed `mneme` (renamed in ADR-0009).
 
-Most testing tools store **procedures** (click A, fill B, assert C). Mneme stores
+Most testing tools store **procedures** (click A, fill B, assert C). Praxis stores
 **knowledge about the system under test** — goals, how to recognize states, what
 success and failure actually look like, which alternative paths exist, and which
 risks lurk — and keeps that knowledge **decoupled from the steps** any single run
@@ -31,16 +32,19 @@ The bet here is that **agents can build and maintain the model themselves**,
 which inverts that economics. The procedure is disposable; the knowledge is the asset.
 
 ## What's in this repo
-- `docs/` — the full design: vision, architecture, schema, MVP experiment, risks, roadmap.
-- `docs/adr/` — the load-bearing decisions and why.
-- `schema/` — the language-neutral knowledge schema (JSON Schema) + real examples.
-- `src/praxis/` — package skeleton (model, store, merge, oracle, adapters).
-- `experiments/ui-mutation/` — the one experiment that validates or kills the idea.
+- `docs/` - the full design: vision, architecture, schema, MVP experiment, risks, roadmap.
+- `docs/adr/` - the load-bearing decisions and why (ADR-0001 through ADR-0031).
+- `schema/` - the language-neutral knowledge schema (JSON Schema) + real examples.
+- `src/praxis/` - the package: `model`, `store`, `merge`, `oracle`, `runner`, `cli`,
+  `adapters`, and the packaged Claude Code `skills` (the `teach` / `regress` / `explore`
+  authoring + run loop).
+- `experiments/` - the falsifiers: `ui-mutation/` (Phase 0, validated and closed) and
+  `regression_recall/` (the Phase 1 regression-recall experiment).
 
 ## Start here
-1. `docs/00-product-brief.md` — the one-page pitch.
-2. `AGENTS.md` — how Claude Code should build this (non-negotiables included).
-3. `experiments/ui-mutation/README.md` — build this first.
+1. `docs/00-product-brief.md` - the one-page pitch.
+2. `AGENTS.md` - the build brief and the non-negotiables.
+3. `docs/examples/ci.md` - how to wire `praxis regress` into your own CI.
 
 ## Non-negotiables (the spine of the design)
 1. Store **invariants, not coordinates**.

@@ -4,10 +4,14 @@ Six verbs: init, learn, regress, explore, review, status. Each is a thin
 glue between a discovered project context (`.praxis/` upward from cwd) and
 the runtime-agnostic core (model + store + merge + oracle + runner).
 
-The CLI never drives a browser. For live runs, regress / explore print the
-agent-facing prompt and accept the resulting observations as JSON (file
-or stdin), matching the human-in-the-loop seam documented in
-`experiments/regression_recall/LOCAL_RUN.md`.
+The CLI itself never drives a browser; the brain does, through a Playwright
+MCP. regress / explore are self-driving console test runners: by default they
+shell out to the local Claude Code CLI headless (`claude -p`) on the user's
+subscription with no API key (ADR-0027), so a bare `praxis regress` runs every
+believed goal and prints a pytest-style OK / REGRESSED / STALE / AUTH-EXPIRED
+summary (ADR-0023, ADR-0026). `--from-file PATH` feeds agent observations as
+JSON instead (deterministic; what the tests and the regression-recall harness
+drive). The same brain seam is what CI wires its API-key agent into (ADR-0024).
 
 Stdlib argparse + pyyaml only (AGENTS.md: ask before adding deps).
 """

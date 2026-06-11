@@ -92,3 +92,8 @@ nav:
       - 0024 CI integration by invoking commands: adr/0024-ci-integration-invoking-commands.md
       - 0025 Landing page and docs site: adr/0025-landing-page-and-docs-site.md
       - 0026 Persistent auth session reuse: adr/0026-persistent-auth-session-reuse.md
+      - 0027 Console runner and claude -p brain: adr/0027-console-test-runner-and-claude-p-brain.md
+      - 0028 Regress signal-type contract: adr/0028-regress-signal-type-contract.md
+      - 0029 Oracle no self-certification: adr/0029-oracle-no-self-certification.md
+      - 0030 Signals as checkable facts: adr/0030-signals-as-checkable-facts.md
+      - 0031 Signals as structured checks: adr/0031-signals-as-structured-checks.md
