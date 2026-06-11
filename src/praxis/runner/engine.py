@@ -268,6 +268,7 @@ def explore_aggregate_engine(
     budget_wall_seconds_per_goal: float | None = None,
     committed_sink: CommittedSink | None = None,
     jobs: int = 1,
+    on_goal_start: "Callable[[str], None] | None" = None,
 ) -> ExploreAggregateOutcome:
     """Hunt off-happy-path across EVERY believed goal, surface-independent
     (ADR-0023 decisions 1, 2, 7, 8).
@@ -303,6 +304,7 @@ def explore_aggregate_engine(
         budget_actions_per_goal=budget_actions_per_goal,
         budget_wall_seconds_per_goal=budget_wall_seconds_per_goal,
         jobs=jobs,
+        on_goal_start=on_goal_start,
     )
     committed: list[Any] = []
     if committed_sink is not None:

@@ -24,6 +24,29 @@ observation JSON) RAISES, so the engine's per-goal try/except turns it into a
 loud per-goal ERROR (ADR-0023 decision 4); the brain never returns a green
 sentinel on failure.
 
+For an authenticated goal whose login is a PRECONDITION (not the subject under
+test), the brain loads the saved Playwright storage state for the goal's role
+and runs the goal authenticated WITHOUT a fresh login, hence without a fresh 2FA
+(ADR-0026 decisions 1, 3; ADR-0027 decision 2). The session is loaded through the
+EXISTING `auth_session` helpers (env wins over file, ADR-0026 decision 3); when
+the resolved session lives only in the env var `PRAXIS_AUTH_STATE_<ROLE>` and not
+on disk (the CI runner-secret case) the brain materializes it to a TEMP file so
+`@playwright/mcp --storage-state <path>` can read it. The temp file is created
+with `0600` and removed after the run, so the session secret never leaks to a
+persistent path or a log. A goal whose `auth_state.being_tested` is true (the
+login IS the test) does NOT load a session: it performs a real login every run
+(ADR-0027 decision 2). An anonymous / non-authenticated goal never loads one.
+
+When an authenticated precondition goal needs a session but none is resolvable
+(no env var, no file: `auth_session.MissingSession`), the brain does NOT silently
+run logged out and produce a false REGRESSED (ADR-0026 decision 5, ADR-0027
+decision 8). It short-circuits WITHOUT driving the browser and returns an
+observation dict with `authenticated: False`, no success observations, and a note
+naming the role, so the engine's `classify_goal` routes the goal to the loud
+AUTH-EXPIRED verdict (it expects an authenticated scope but the run observed a
+logged-out browser), never a false green and never a false red. The session VALUE
+never crosses into the note: only the role name is named.
+
 The exact `claude -p` invocation and the Playwright MCP config are settled live
 against the real target app (ADR-0027 Open decision 4 / the live proof);
 `extra_args` and `mcp_config_path` keep that wiring injectable without changing
@@ -32,12 +55,26 @@ the parse-and-raise contract this module guarantees.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from ..auth_session import (
+    MissingSession,
+    env_var_name,
+    load_session_for_role,
+    role_for_session_reuse,
+    session_file_path,
+)
+
+if TYPE_CHECKING:
+    from ..model import AuthState
 
 # Live progress while the claude -p subprocess blocks (ADR-0027 decision 6 /
 # Pablo's feedback: a silent multi-minute run reads as broken). On a real
@@ -59,7 +96,12 @@ _HEARTBEAT_SECONDS = 30  # s, non-TTY plain-line cadence
 _SPINNER_COLOR = "\x1b[36m"  # cyan (ANSI, ASCII escape)
 _SPINNER_RESET = "\x1b[0m"
 
-__all__ = ["make_claude_brain", "ClaudeBrainError"]
+__all__ = [
+    "make_claude_brain",
+    "ClaudeBrainError",
+    "StorageStateResolution",
+    "resolve_storage_state",
+]
 
 
 # The headless, non-interactive contract prepended to every per-goal prompt
@@ -92,6 +134,14 @@ _HEADLESS_PREAMBLE = (
     '  membership  -> "observed": {"identifier": "<the concrete id you saw>", '
     '"present": <true|false>}\n'
     "Omit `observed` for a plain signal that has no `structured check` line.\n\n"
+    "If the goal needs you to log in fresh (no saved session was injected for "
+    "this run), log in the way a QA tester does: read the credentials from the "
+    "gitignored `.praxis.secrets` file at the repo root (an environment variable "
+    "wins over the file) and type them into the login form. NEVER write a "
+    "credential, cookie, token, session id, or 2FA code into any file under "
+    "`.praxis/`. If a needed credential is absent you cannot ask anyone (you are "
+    "headless): emit what you observed with \"authenticated\": false and stop, do "
+    "NOT guess a credential.\n\n"
     "--- TASK ---\n"
 )
 
@@ -103,6 +153,226 @@ class ClaudeBrainError(RuntimeError):
     into a loud AggregateVerdict.ERROR (ADR-0023 decision 4); the message names
     the failure mode without echoing any secret.
     """
+
+
+# --- saved-session reuse for the console brain (ADR-0026, ADR-0027) -------
+#
+# A goal whose login is a PRECONDITION (not the subject under test) runs
+# authenticated by reusing the saved Playwright storage state instead of doing a
+# fresh login: `@playwright/mcp` reads it natively via `--storage-state <path>`
+# (ADR-0026 decision 1). The role a goal reuses a session for is the ADR-0017
+# `auth_state.scope`, resolved by the EXISTING `role_for_session_reuse` helper,
+# which already returns None for a `being_tested` (auth-subject) goal and for an
+# anonymous / non-authenticated goal, so those goals never load a session
+# (ADR-0027 decision 2). The session VALUE is resolved through the EXISTING
+# `load_session_for_role` (env wins over file, ADR-0026 decision 3); this module
+# never re-implements that resolution.
+
+
+class StorageStateResolution:
+    """The per-goal outcome of resolving a `--storage-state` for the brain.
+
+    Exactly one of three shapes (mutually exclusive):
+
+      - `path` set, `missing_role` None: a storage-state file the brain points
+        `@playwright/mcp --storage-state` at. `is_tempfile` marks an env-var
+        session materialized to a temp file (the CI runner-secret case, ADR-0026
+        decision 3) that the brain deletes after the run; a False `is_tempfile`
+        is the gitignored `.praxis.auth/<role>.json` file, left in place.
+      - `path` None, `missing_role` set: the goal needs an authenticated session
+        for that role but none is resolvable (no env var, no file). The brain
+        must NOT run logged out; it surfaces the loud AUTH-EXPIRED path naming
+        the role (ADR-0026 decision 5, ADR-0027 decision 8).
+      - both None: the goal needs no saved session (anonymous, non-authenticated,
+        or `being_tested`); the brain drives a normal run (a fresh login if the
+        goal itself requires one).
+
+    Only role NAMES and a file PATH ever live here; a session VALUE never does
+    (ADR-0026: the session is a secret named only by role).
+    """
+
+    __slots__ = ("path", "is_tempfile", "missing_role")
+
+    def __init__(
+        self,
+        *,
+        path: str | None = None,
+        is_tempfile: bool = False,
+        missing_role: str | None = None,
+    ) -> None:
+        self.path = path
+        self.is_tempfile = is_tempfile
+        self.missing_role = missing_role
+
+
+def resolve_storage_state(
+    auth_state: "AuthState | None",
+    *,
+    repo_root: Path | None = None,
+    auth_dir: Path | None = None,
+    environ: dict[str, str] | None = None,
+) -> StorageStateResolution:
+    """Resolve the `--storage-state` a goal's run should use, or its absence.
+
+    Decides per goal (ADR-0026, ADR-0027 decision 2):
+
+      1. `role_for_session_reuse(auth_state)` is the role a run MAY reuse a saved
+         session for; it is None for a `being_tested` auth-subject goal (a real
+         login every run) and for an anonymous / non-authenticated goal. No role
+         -> no session needed (`StorageStateResolution()` with both fields None).
+      2. With a role, prefer a session FILE on disk so `--storage-state` reads it
+         directly. The env var WINS over the file (ADR-0026 decision 3), so when
+         the env var is set the file path is NOT used even if it exists: the env
+         session is materialized to a temp file (step 3) because `--storage-state`
+         takes a path, not raw JSON.
+      3. When only the env var carries the session (the CI runner-secret case, no
+         file), materialize the resolved storage state to a 0600 temp file and
+         return it with `is_tempfile=True` so the brain deletes it after the run.
+      4. `auth_session.MissingSession` (no env var, no file) -> `missing_role` set
+         so the brain surfaces the loud AUTH-EXPIRED path; never a silent
+         logged-out run (ADR-0026 decision 5, AGENTS.md loud-over-silent).
+
+    `repo_root` / `auth_dir` / `environ` are passed through to the EXISTING
+    `auth_session` helpers for tests and pinned callers; the env-wins-over-file
+    precedence is theirs, not re-implemented here.
+    """
+    role = role_for_session_reuse(auth_state)
+    if role is None:
+        return StorageStateResolution()
+
+    env = os.environ if environ is None else environ
+    env_present = bool(env.get(env_var_name(role)))
+    if not env_present:
+        # No env override: a gitignored `.praxis.auth/<role>.json` file, if
+        # present, is what `--storage-state` reads directly (no temp file).
+        file_path = session_file_path(
+            role, repo_root=repo_root, auth_dir=auth_dir,
+        )
+        if file_path is not None and file_path.is_file():
+            return StorageStateResolution(path=str(file_path), is_tempfile=False)
+        return StorageStateResolution(missing_role=role)
+
+    # The env var WINS over the file (ADR-0026 decision 3). `--storage-state`
+    # needs a PATH, so materialize the env session to a temp file. `load_session_
+    # for_role` reuses the env-wins resolution; a MissingSession here means the
+    # env value is empty / malformed, which is still an unresolvable session.
+    try:
+        # Pass the original `environ` (a dict or None); `load_session_for_role`
+        # reads `os.environ` itself when it is None, so env-wins precedence holds
+        # without forcing the `_Environ` type across the boundary.
+        session = load_session_for_role(
+            role, repo_root=repo_root, auth_dir=auth_dir, environ=environ,
+        )
+    except MissingSession:
+        return StorageStateResolution(missing_role=role)
+    tmp_path = _materialize_session_tempfile(session)
+    return StorageStateResolution(path=tmp_path, is_tempfile=True)
+
+
+def _materialize_session_tempfile(session: dict[str, Any]) -> str:
+    """Write a storage-state dict to a private temp file and return its path.
+
+    The session is a secret (ADR-0026 decision 2): the file is created `0600`
+    (owner-only) via `mkstemp`, the JSON is written to the fd, and nothing is
+    printed. The caller deletes it after the run. Used only for the env-var /
+    CI-runner-secret case where `--storage-state` needs a path, not raw JSON.
+    """
+    fd, name = tempfile.mkstemp(prefix="praxis-auth-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(session, fh)
+    except Exception:
+        # Never leave a half-written secret file behind on a write failure.
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+        raise
+    return name
+
+
+def _synthesize_mcp_config_with_storage_state(
+    base_mcp_config_path: str | None, storage_state_path: str,
+) -> str:
+    """Write a per-run MCP config that adds `--storage-state <path>` to the
+    Playwright server args, and return its path.
+
+    `@playwright/mcp` reads the saved session via a `--storage-state <path>`
+    SERVER argument (ADR-0026 decision 1: native support), so the flag lives in
+    the MCP config's `args` array, not on the `claude -p` command line. This
+    clones the project's base Playwright MCP config (the `--mcp-config` the run
+    would otherwise use), appends `--storage-state <storage_state_path>` to every
+    stdio server's `args`, and writes the result to a temp file the caller passes
+    via `--mcp-config` for THIS goal only. The base config is left untouched.
+
+    When there is no base config, a minimal default Playwright stdio server is
+    synthesized (mirroring `cli.main`'s scaffolded template) so a run with a
+    session but no declared MCP still loads `--storage-state`. The temp file is
+    plain config (the storage-state PATH, not the session value), but it is
+    created `0600` and deleted after the run for tidiness. Returns the temp path.
+    """
+    config: dict[str, Any] | None = None
+    if base_mcp_config_path:
+        try:
+            loaded = json.loads(
+                Path(base_mcp_config_path).read_text(encoding="utf-8")
+            )
+            if isinstance(loaded, dict):
+                config = loaded
+        except (OSError, json.JSONDecodeError):
+            config = None
+    if config is None:
+        config = {
+            "mcpServers": {
+                "playwright": {
+                    "type": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "@playwright/mcp@latest", "--headless"],
+                    "env": {},
+                }
+            }
+        }
+    servers = config.get("mcpServers")
+    if isinstance(servers, dict):
+        for server in servers.values():
+            if not isinstance(server, dict):
+                continue
+            args = server.get("args")
+            if not isinstance(args, list):
+                args = []
+            # Idempotent: never double-add if a base config already carries it.
+            if "--storage-state" not in args:
+                args = [*args, "--storage-state", storage_state_path]
+            server["args"] = args
+    fd, name = tempfile.mkstemp(prefix="praxis-mcp-", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(config, fh)
+    return name
+
+
+def _auth_expired_observations(role: str) -> dict[str, Any]:
+    """The observation dict for a goal whose saved session is unresolvable.
+
+    Returns `authenticated: False` with NO success observations and a note that
+    names the ROLE (never a session value), so the engine's `classify_goal`
+    routes the goal to the loud AUTH-EXPIRED verdict (it expected an
+    authenticated scope but the run observed a logged-out browser, ADR-0026
+    decision 5) rather than a false REGRESSED or a false green. The brain returns
+    this WITHOUT driving the browser: with no session there is nothing to drive.
+    """
+    return {
+        "observations": [],
+        "actions": 0,
+        "tokens": None,
+        "authenticated": False,
+        "notes": [
+            f"no saved auth session for role {role!r}: set "
+            f"{env_var_name(role)} to the storageState JSON, or save one to "
+            f".praxis.auth/{role}.json (seed it with a teach login). The run did "
+            f"not drive the app logged out; this is AUTH-EXPIRED, not a "
+            f"regression."
+        ],
+    }
 
 
 def _iter_balanced_objects(text: str) -> list[str]:
@@ -194,6 +464,7 @@ def make_claude_brain(
     mcp_config_path: str | None = None,
     extra_args: list[str] | None = None,
     progress: Callable[[], tuple[str, str] | None] | None = None,
+    session_for_goal: "Callable[[], AuthState | None] | None" = None,
 ) -> Callable[[str], dict[str, Any]]:
     """Build a `Brain` that drives one goal through a headless `claude -p` run.
 
@@ -211,6 +482,18 @@ def make_claude_brain(
     falls back to the generic `driving the browser` line. The CLI installs it
     only for sequential runs (one in-place line, one goal at a time).
 
+    `session_for_goal`, when given, is read once at the start of each goal's run
+    and returns the goal's ADR-0017 `auth_state` (or None). The brain resolves it
+    through `resolve_storage_state`: a precondition authenticated goal gets its
+    saved Playwright storage state injected via a synthesized per-goal MCP config
+    carrying `--storage-state <path>` (ADR-0026 decisions 1, 3); a `being_tested`
+    auth-subject goal or an anonymous goal gets no session (ADR-0027 decision 2);
+    a goal whose session is unresolvable short-circuits to the loud AUTH-EXPIRED
+    observation WITHOUT driving the browser, never a silent logged-out run
+    (ADR-0026 decision 5). The CLI sets the current goal in the same thread that
+    will run it (sequential or the worker thread of a `--jobs > 1` run), so the
+    read is thread-correct.
+
     The returned brain takes the engine's per-goal prompt, wraps it with the
     headless / non-interactive preamble and the output contract, runs `claude -p`
     capturing stdout, and returns the parsed observation dict. It RAISES on a
@@ -219,15 +502,38 @@ def make_claude_brain(
     """
 
     def brain(prompt: str) -> dict[str, Any]:
+        # Resolve the goal's saved session FIRST (ADR-0026, ADR-0027 decision 2):
+        # a precondition authenticated goal reuses a saved storage state; an
+        # auth-subject (`being_tested`) or anonymous goal does not; an
+        # unresolvable session short-circuits loudly to AUTH-EXPIRED.
+        auth_state = session_for_goal() if session_for_goal is not None else None
+        resolution = resolve_storage_state(auth_state)
+        if resolution.missing_role is not None:
+            # No env var and no file for a goal that needs the session: do NOT
+            # drive the browser logged out (a false REGRESSED). Return the
+            # AUTH-EXPIRED-routing observation naming only the role.
+            return _auth_expired_observations(resolution.missing_role)
+
+        # When a session resolved, synthesize a per-goal MCP config that adds
+        # `--storage-state <path>` to the Playwright server args (the flag is a
+        # SERVER arg, not a `claude -p` flag); else use the base config as-is.
+        run_mcp_config = mcp_config_path
+        synthesized_mcp_config: str | None = None
+        if resolution.path is not None:
+            synthesized_mcp_config = _synthesize_mcp_config_with_storage_state(
+                mcp_config_path, resolution.path,
+            )
+            run_mcp_config = synthesized_mcp_config
+
         full_prompt = _HEADLESS_PREAMBLE + prompt
         argv = [claude_bin, "-p", full_prompt]
         if model:
             argv += ["--model", model]
-        if mcp_config_path:
+        if run_mcp_config:
             # `--strict-mcp-config` so the run uses ONLY our Playwright MCP, not
             # whatever ambient MCP servers the user's global config defines: the
             # console runner must be deterministic about which browser it drives.
-            argv += ["--mcp-config", mcp_config_path, "--strict-mcp-config"]
+            argv += ["--mcp-config", run_mcp_config, "--strict-mcp-config"]
         # Headless / non-interactive: there is no human to approve a tool call,
         # so a permission prompt would hang the run (the Finding-A failure on the
         # brain side; Pablo's constraint that the brain can never ask). Bypass
@@ -304,36 +610,59 @@ def make_claude_brain(
         hb = threading.Thread(target=_spinner, daemon=True)
         hb.start()
         try:
-            proc = subprocess.run(
-                argv,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                env=_merged_env(env_hint),
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ClaudeBrainError(
-                f"claude -p timed out after {timeout_seconds}s"
-            ) from exc
-        except FileNotFoundError as exc:
-            raise ClaudeBrainError(
-                f"claude binary not found: {claude_bin!r}. Install Claude Code or "
-                f"pass --from-file."
-            ) from exc
+            try:
+                proc = subprocess.run(
+                    argv,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                    env=_merged_env(env_hint),
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise ClaudeBrainError(
+                    f"claude -p timed out after {timeout_seconds}s"
+                ) from exc
+            except FileNotFoundError as exc:
+                raise ClaudeBrainError(
+                    f"claude binary not found: {claude_bin!r}. Install Claude "
+                    f"Code or pass --from-file."
+                ) from exc
+            finally:
+                stop.set()
+                hb.join(timeout=1)
+            if proc.returncode != 0:
+                # Name the failure without echoing stdout (it may carry app
+                # content); the trimmed stderr tail is enough to diagnose.
+                tail = (proc.stderr or "").strip()[-300:]
+                raise ClaudeBrainError(
+                    f"claude -p exited {proc.returncode}: {tail}"
+                )
+            return _extract_observations(proc.stdout)
         finally:
-            stop.set()
-            hb.join(timeout=1)
-        if proc.returncode != 0:
-            # Name the failure without echoing stdout (it may carry app content);
-            # the trimmed stderr tail is enough to diagnose.
-            tail = (proc.stderr or "").strip()[-300:]
-            raise ClaudeBrainError(
-                f"claude -p exited {proc.returncode}: {tail}"
-            )
-        return _extract_observations(proc.stdout)
+            # Always remove the per-goal temp files: the session storage state
+            # is a secret (ADR-0026 decision 2), and the synthesized MCP config
+            # is run-scoped. Both are removed whether the run succeeded, raised,
+            # or timed out, so no session ever lingers on disk.
+            if resolution.is_tempfile and resolution.path is not None:
+                _unlink_quietly(resolution.path)
+            if synthesized_mcp_config is not None:
+                _unlink_quietly(synthesized_mcp_config)
 
     return brain
+
+
+def _unlink_quietly(path: str) -> None:
+    """Delete a temp file, ignoring an already-removed / missing file.
+
+    Cleanup must never raise over an absent file (a double cleanup, or a file the
+    OS reaped), so it can run unconditionally in a `finally` without masking the
+    real result of the run.
+    """
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _merged_env(extra: dict[str, str] | None) -> dict[str, str] | None:
@@ -345,8 +674,6 @@ def _merged_env(extra: dict[str, str] | None) -> dict[str, str] | None:
     """
     if not extra:
         return None
-    import os
-
     merged = dict(os.environ)
     merged.update(extra)
     return merged
