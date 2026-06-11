@@ -252,6 +252,7 @@ def run_explore_aggregate(
     budget_actions_per_goal: int | None = None,
     budget_wall_seconds_per_goal: float | None = None,
     jobs: int = 1,
+    on_goal_start: "Callable[[str], None] | None" = None,
 ) -> list[ExploreGoalOutcome]:
     """Hunt off-happy-path across EVERY believed goal (ADR-0023 decision 2).
 
@@ -331,4 +332,10 @@ def run_explore_aggregate(
         return kf is not None and kf.auth_state is not None \
             and kf.auth_state.being_tested
 
-    return run_partitioned(goal_ids, _one, is_subject=_is_subject, jobs=jobs)
+    # `on_goal_start` fires once per goal just before its run (in the worker
+    # thread under `jobs > 1`), so the CLI can set the per-goal auth context the
+    # claude -p brain reads to reuse a saved session (ADR-0026, ADR-0027 dec. 2).
+    return run_partitioned(
+        goal_ids, _one, is_subject=_is_subject, jobs=jobs,
+        on_start=on_goal_start,
+    )

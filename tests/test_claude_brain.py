@@ -9,16 +9,20 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from praxis.auth_session import env_var_name, save_session
 from praxis.cli.claude_brain import (
     _HEADLESS_PREAMBLE,
     ClaudeBrainError,
     _extract_observations,
     make_claude_brain,
+    resolve_storage_state,
 )
+from praxis.model import AuthState
 
 
 def test_preamble_documents_the_structured_check_observed_payload() -> None:
@@ -172,3 +176,194 @@ def test_extract_observations_prefers_the_last_object(monkeypatch: Any) -> None:
     last = json.dumps(_OBS)
     got = _extract_observations(f"{first}\nfinal:\n{last}")
     assert got == _OBS
+
+
+# --- saved-session reuse via --storage-state (ADR-0026, ADR-0027) ---------
+#
+# These tests never start a browser and never invoke claude: subprocess.run is
+# patched, so they pin only that the brain synthesizes the right MCP config (or
+# routes the missing-session loud path) per goal's auth_state.
+
+
+def _storage_states_in(config: dict[str, Any]) -> list[str]:
+    """Pull every `--storage-state <path>` pair out of an MCP config's servers.
+
+    The `--storage-state` flag lives inside the Playwright SERVER args (a server
+    arg, not a claude flag), so a test reads the synthesized config dict and
+    collects each path the flag points at.
+    """
+    out: list[str] = []
+    for server in config["mcpServers"].values():
+        args = server.get("args", [])
+        for i, a in enumerate(args):
+            if a == "--storage-state":
+                out.append(args[i + 1])
+    return out
+
+
+def _capture_synth_config(monkeypatch: Any, proc: "_FakeProc") -> dict[str, Any]:
+    """Patch subprocess.run to read the synthesized MCP config WHILE the run is
+    in flight (before the brain deletes it in its finally) and stash the parsed
+    config under `seen["mcp_config"]`, plus the argv.
+    """
+    seen: dict[str, Any] = {}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> _FakeProc:
+        seen["argv"] = argv
+        if "--mcp-config" in argv:
+            synth = argv[argv.index("--mcp-config") + 1]
+            seen["mcp_config"] = json.loads(Path(synth).read_text())
+        return proc
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return seen
+
+
+def test_resolve_storage_state_skips_being_tested_and_anonymous(tmp_path: Path) -> None:
+    # An auth-SUBJECT goal (being_tested) and an anonymous / unauth goal never
+    # reuse a session (ADR-0027 decision 2): no role, no storage state.
+    auth_dir = tmp_path / ".praxis.auth"
+    save_session("user", {"cookies": [], "origins": []}, auth_dir=auth_dir)
+    subject = AuthState(authenticated=True, scope="user", being_tested=True)
+    anon = AuthState(authenticated=False, scope=None)
+    for state in (subject, anon, None):
+        res = resolve_storage_state(state, auth_dir=auth_dir, environ={})
+        assert res.path is None
+        assert res.missing_role is None
+
+
+def test_resolve_storage_state_uses_the_file_for_a_precondition_goal(tmp_path: Path) -> None:
+    auth_dir = tmp_path / ".praxis.auth"
+    path = save_session("user", {"cookies": [], "origins": []}, auth_dir=auth_dir)
+    state = AuthState(authenticated=True, scope="user")  # precondition (default)
+    res = resolve_storage_state(state, auth_dir=auth_dir, environ={})
+    assert res.missing_role is None
+    assert res.path == str(path)
+    assert res.is_tempfile is False  # the file is read in place, never copied
+
+
+def test_resolve_storage_state_env_wins_and_materializes_a_tempfile(tmp_path: Path) -> None:
+    # CI supplies the session as a runner secret with NO file: env wins and the
+    # raw JSON is materialized to a temp file so --storage-state has a path
+    # (ADR-0026 decision 3). The temp file carries the env session, not the file.
+    auth_dir = tmp_path / ".praxis.auth"
+    save_session("user", {"cookies": [{"name": "from-file"}]}, auth_dir=auth_dir)
+    env_session = {"cookies": [{"name": "from-env"}], "origins": []}
+    state = AuthState(authenticated=True, scope="user")
+    res = resolve_storage_state(
+        state, auth_dir=auth_dir,
+        environ={env_var_name("user"): json.dumps(env_session)},
+    )
+    assert res.missing_role is None
+    assert res.is_tempfile is True
+    assert json.loads(Path(res.path).read_text()) == env_session
+    Path(res.path).unlink()
+
+
+def test_resolve_storage_state_missing_session_names_the_role(tmp_path: Path) -> None:
+    # An authenticated precondition goal with no env var and no file is the loud
+    # missing-session case: the role is named, no path is produced (the brain
+    # routes this to AUTH-EXPIRED, never a silent logged-out run).
+    auth_dir = tmp_path / ".praxis.auth"  # empty
+    state = AuthState(authenticated=True, scope="admin")
+    res = resolve_storage_state(state, auth_dir=auth_dir, environ={})
+    assert res.path is None
+    assert res.missing_role == "admin"
+
+
+def test_brain_injects_storage_state_for_an_authenticated_non_subject_goal(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """An authenticated precondition goal injects --storage-state pointing at the
+    resolved session, inside a synthesized MCP config (ADR-0026, ADR-0027)."""
+    auth_dir = tmp_path / ".praxis.auth"
+    session_path = save_session("user", {"cookies": [], "origins": []}, auth_dir=auth_dir)
+    state = AuthState(authenticated=True, scope="user")
+
+    import praxis.cli.claude_brain as cb
+
+    # Pin the resolution to this temp auth dir regardless of cwd.
+    orig = cb.resolve_storage_state
+    monkeypatch.setattr(
+        cb, "resolve_storage_state",
+        lambda s, **kw: orig(s, auth_dir=auth_dir, environ={}),
+    )
+    seen = _capture_synth_config(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    brain = make_claude_brain(session_for_goal=lambda: state)
+    out = brain("p")
+    assert out == _OBS
+    # The synthesized MCP config carries --storage-state at the saved file.
+    assert "--mcp-config" in seen["argv"]
+    assert _storage_states_in(seen["mcp_config"]) == [str(session_path)]
+
+
+def test_brain_does_not_inject_storage_state_for_a_being_tested_goal(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """An auth-SUBJECT goal performs a real login and does NOT load a session
+    (ADR-0027 decision 2): no --storage-state, no synthesized config."""
+    auth_dir = tmp_path / ".praxis.auth"
+    save_session("user", {"cookies": [], "origins": []}, auth_dir=auth_dir)
+    state = AuthState(authenticated=True, scope="user", being_tested=True)
+
+    import praxis.cli.claude_brain as cb
+    orig = cb.resolve_storage_state
+    monkeypatch.setattr(
+        cb, "resolve_storage_state",
+        lambda s, **kw: orig(s, auth_dir=auth_dir, environ={}),
+    )
+    seen = _patch_run(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    make_claude_brain(session_for_goal=lambda: state, mcp_config_path=None)("p")
+    assert "--storage-state" not in json.dumps(seen["argv"])
+    # No mcp-config is synthesized when there is no base and no session.
+    assert "--mcp-config" not in seen["argv"]
+
+
+def test_brain_does_not_inject_storage_state_for_an_anonymous_goal(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """An anonymous / non-authenticated goal never loads a session."""
+    state = AuthState(authenticated=False, scope=None)
+    seen = _patch_run(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    make_claude_brain(session_for_goal=lambda: state, mcp_config_path=None)("p")
+    assert "--storage-state" not in json.dumps(seen["argv"])
+
+
+def test_brain_surfaces_auth_expired_when_session_missing_instead_of_running(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """A missing session for an authenticated goal surfaces the loud path:
+    authenticated=False with no observations, naming the role, and the browser
+    is NEVER driven (subprocess.run must not be called), so the engine routes it
+    to AUTH-EXPIRED rather than a silent logged-out REGRESSED."""
+    auth_dir = tmp_path / ".praxis.auth"  # empty: no session for the role
+    state = AuthState(authenticated=True, scope="admin")
+
+    import praxis.cli.claude_brain as cb
+    orig = cb.resolve_storage_state
+    monkeypatch.setattr(
+        cb, "resolve_storage_state",
+        lambda s, **kw: orig(s, auth_dir=auth_dir, environ={}),
+    )
+
+    called = {"run": False}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> _FakeProc:
+        called["run"] = True
+        return _FakeProc(stdout=json.dumps(_OBS))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    out = make_claude_brain(session_for_goal=lambda: state)("p")
+    assert called["run"] is False  # the browser was never driven
+    assert out["authenticated"] is False
+    assert out["observations"] == []
+    assert any("admin" in n for n in out["notes"])
+
+
+def test_preamble_documents_the_secrets_login_path() -> None:
+    """The complementary fix: the console brain preamble tells the agent
+    `.praxis.secrets` exists and how to use it for a fresh login (mirroring the
+    skill text), so an authenticated goal with no session can still log in."""
+    assert ".praxis.secrets" in _HEADLESS_PREAMBLE
+    # The session secret rule carries over: never write secrets under .praxis/.
+    assert ".praxis/" in _HEADLESS_PREAMBLE

@@ -329,6 +329,141 @@ def test_regress_uses_the_project_mcp_config_default(
     assert str(tmp_path) in got
 
 
+def _seed_authed_yaml(*, being_tested: bool = False) -> str:
+    """A seed for an authenticated goal: `auth_state.authenticated: true,
+    scope: user`. `being_tested` makes authentication the SUBJECT under test."""
+    bt = "true" if being_tested else "false"
+    return f"""\
+schema_version: "0"
+goal_id: dashboard
+goal: a logged-in user reaches the dashboard
+target:
+  app: testapp
+  environment: local
+auth_state:
+  authenticated: true
+  scope: user
+  being_tested: {bt}
+success_signals:
+  - type: behavioral
+    value: the dashboard renders for the authenticated user
+    confidence: 1.0
+    status: believed
+    provenance:
+      source_type: human
+      source_id: pablo
+      last_verified: "2026-06-07T00:00:00Z"
+      observation_count: 1
+meta:
+  created_at: "2026-06-07T00:00:00Z"
+  updated_at: "2026-06-07T00:00:00Z"
+"""
+
+
+def _fake_brain_factory(captured: dict):
+    """A make_claude_brain replacement that captures kwargs and returns a brain
+    which records the auth_state `session_for_goal` resolves to for the goal."""
+    def factory(**kwargs):
+        captured.update(kwargs)
+
+        def brain(prompt: str) -> dict:
+            sfg = kwargs.get("session_for_goal")
+            captured["resolved_auth_state"] = sfg() if sfg is not None else None
+            return {
+                "observations": [{
+                    "kind": "success", "type": "behavioral",
+                    "value": "the dashboard renders for the authenticated user",
+                    "source_type": "agent", "source_id": "praxis-cli",
+                }],
+                "actions": 1, "tokens": 10, "authenticated": True,
+            }
+        return brain
+    return factory
+
+
+def test_regress_wires_session_for_goal_with_the_goals_auth_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The console regress brain gets a `session_for_goal` that resolves to the
+    goal's `auth_state`, so the claude -p brain can reuse the saved session for an
+    authenticated precondition goal (ADR-0026, ADR-0027 decision 2)."""
+    _run(["init"], tmp_path)
+    seed = tmp_path / "dashboard.yaml"
+    seed.write_text(_seed_authed_yaml())
+    _run(["learn", "dashboard", "--from-file", str(seed)], tmp_path)
+
+    import sys
+    cli_mod = sys.modules["praxis.cli.main"]
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _name: "/usr/bin/claude")
+    captured: dict = {}
+    monkeypatch.setattr(cli_mod, "make_claude_brain", _fake_brain_factory(captured))
+
+    rc = _run(["regress", "--goal", "dashboard"], tmp_path)
+    assert rc == 0
+    # session_for_goal was passed and resolved to this goal's auth_state.
+    assert "session_for_goal" in captured
+    resolved = captured["resolved_auth_state"]
+    assert resolved is not None
+    assert resolved.authenticated is True
+    assert resolved.scope == "user"
+    assert resolved.being_tested is False
+
+
+def test_regress_missing_session_surfaces_auth_expired_not_a_false_red(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An authenticated precondition goal whose saved session is MISSING (no env
+    var, no `.praxis.auth/<role>.json`) is reported AUTH-EXPIRED naming the role,
+    never a false REGRESSED and never a silent green (ADR-0026 decision 5). The
+    real claude -p brain drives this: no `--from-file`, no real claude needed
+    because the brain short-circuits WITHOUT driving the browser when the session
+    is missing, so subprocess is never reached."""
+    _run(["init"], tmp_path)
+    seed = tmp_path / "dashboard.yaml"
+    seed.write_text(_seed_authed_yaml())
+    _run(["learn", "dashboard", "--from-file", str(seed)], tmp_path)
+
+    import sys
+    cli_mod = sys.modules["praxis.cli.main"]
+    # `claude` appears available so the real claude -p brain is selected; the
+    # brain never shells out because the missing session short-circuits first.
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _name: "/usr/bin/claude")
+    capsys.readouterr()
+    # Default-all aggregate run (the documented CI contract): the missing session
+    # routes to AUTH-EXPIRED through classify_goal.
+    rc = _run(["regress"], tmp_path)
+    out = capsys.readouterr().out
+    # AUTH-EXPIRED is a loud non-OK that fails the run (exit 1), not a false RED
+    # and not a green.
+    assert rc == 1
+    assert "AUTH-EXPIRED" in out or "auth-expired" in out.lower()
+    assert "user" in out  # the expired role is named
+
+
+def test_regress_single_goal_missing_session_is_loud_not_a_false_green(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`praxis regress --goal <g>` on an authenticated goal with a missing
+    session is AUTH-EXPIRED, not a silent UNCERTAIN green: the single-goal path
+    re-classifies through `classify_goal` and fails the run (ADR-0026 dec. 5)."""
+    _run(["init"], tmp_path)
+    seed = tmp_path / "dashboard.yaml"
+    seed.write_text(_seed_authed_yaml())
+    _run(["learn", "dashboard", "--from-file", str(seed)], tmp_path)
+
+    import sys
+    cli_mod = sys.modules["praxis.cli.main"]
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _name: "/usr/bin/claude")
+    capsys.readouterr()
+    rc = _run(["regress", "--goal", "dashboard"], tmp_path)
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "AUTH-EXPIRED" in err
+    assert "user" in err  # the expired role is named
+
+
 # --- explore --------------------------------------------------------------
 
 

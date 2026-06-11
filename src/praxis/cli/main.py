@@ -17,6 +17,7 @@ import argparse
 import json
 import shutil
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -31,7 +32,9 @@ from ..merge import contested_candidates, project_candidates
 from ..model import KnowledgeFile, Target, dump, load
 from ..resources import iter_skill_files, skills_root
 from ..runner import (
+    AggregateVerdict,
     aggregate_run_failed,
+    classify_goal,
     color_agg_verdict,
     explore_aggregate_engine,
     explore_engine,
@@ -428,9 +431,52 @@ def _cmd_learn(args: argparse.Namespace) -> int:
     return 0
 
 
+class _GoalAuthContext:
+    """Per-goal `auth_state` holder the claude -p brain reads to reuse a session.
+
+    The brain seam is `brain(prompt)` with no goal id (ADR-0019), so the CLI must
+    tell the brain WHICH goal it is about to run. This holds a `goal_id ->
+    auth_state` map from the seeds, plus a THREAD-LOCAL "current goal" set just
+    before each goal runs. The brain reads `current()` at the start of each call
+    and resolves that goal's saved session (ADR-0026, ADR-0027 decision 2).
+
+    Thread-local is correct under `--jobs > 1`: `run_partitioned` calls
+    `on_goal_start` in the SAME worker thread that then runs the brain, so each
+    worker sets and reads its own goal with no cross-goal contention. The
+    sequential and single-goal paths set the goal in the one thread that runs it.
+    """
+
+    def __init__(self, auth_states: dict[str, Any]) -> None:
+        self._auth_states = auth_states
+        self._local = threading.local()
+
+    def set_current(self, goal_id: str) -> None:
+        self._local.goal_id = goal_id
+
+    def current(self) -> Any:
+        """The current goal's `auth_state`, or None when none is set / known."""
+        goal_id = getattr(self._local, "goal_id", None)
+        if goal_id is None:
+            return None
+        return self._auth_states.get(goal_id)
+
+
+def _auth_states_for(proj: "ProjectContext", goals: list[str]) -> dict[str, Any]:
+    """Map each goal id to its seed's ADR-0017 `auth_state` (or None).
+
+    Reads the committed seeds, so the brain keys session reuse off the same
+    `auth_state` the regress classifier reads (ADR-0026 decision 4: the role a
+    session is reused under is the role the verdict expects).
+    """
+    seeds = proj.seeds()
+    return {gid: (seeds[gid].auth_state if gid in seeds else None)
+            for gid in goals}
+
+
 def _select_console_brain(
     args: argparse.Namespace, *, default_mcp_config: str | None = None,
     progress: "Callable[[], tuple[str, str] | None] | None" = None,
+    session_for_goal: "Callable[[], Any] | None" = None,
 ) -> Any:
     """Pick the brain that drives a console regress / explore run (ADR-0027
     decision 7).
@@ -448,6 +494,11 @@ def _select_console_brain(
     The Playwright MCP config resolves `--mcp-config` first, else the project's
     `mcp_config` default (`default_mcp_config`, from `.praxis/config.yaml`), so a
     project can declare its MCP once and runs need no flag.
+
+    `session_for_goal`, when given, is forwarded to the claude -p brain so a
+    precondition authenticated goal reuses its saved Playwright storage state via
+    `--storage-state` (ADR-0026, ADR-0027 decision 2). The `--from-file` path
+    ignores it: a scripted run feeds observations directly and drives no browser.
     """
     if args.from_file:
         return _executor_from_file(Path(args.from_file))
@@ -489,6 +540,7 @@ def _select_console_brain(
         timeout_seconds=args.budget_wall_seconds,
         mcp_config_path=getattr(args, "mcp_config", None) or default_mcp_config,
         progress=progress,
+        session_for_goal=session_for_goal,
     )
 
 
@@ -519,8 +571,15 @@ def _cmd_regress(args: argparse.Namespace) -> int:
             return None
         return (f"[{_prog['idx']}/{_prog['total']}]", str(_prog["label"]))
 
+    # Per-goal auth context: the claude -p brain reuses a saved session per goal
+    # (ADR-0026, ADR-0027 decision 2). Cover every seed so both the aggregate and
+    # the single-goal paths can set the current goal before each run.
+    all_goals = sorted(proj.seeds().keys())
+    auth_ctx = _GoalAuthContext(_auth_states_for(proj, all_goals))
+
     brain = _select_console_brain(
         args, default_mcp_config=proj.mcp_config, progress=_progress_label,
+        session_for_goal=auth_ctx.current,
     )
 
     # Default-all aggregate (ADR-0023 decision 2): no `--goal` runs EVERY
@@ -548,8 +607,15 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         use_color = sys.stdout.isatty()
 
         def _on_goal_start(gid: str) -> None:
-            _prog["idx"] += 1
-            _prog["label"] = gid
+            # Always set the per-goal auth context so the brain reuses that
+            # goal's saved session (in the worker thread under --jobs > 1, where
+            # this fires; thread-local makes it worker-correct). The rich in-place
+            # progress label only makes sense sequentially, so it stays off when
+            # goals run concurrently (set below) to avoid clobbering one line.
+            auth_ctx.set_current(gid)
+            if not concurrent:
+                _prog["idx"] += 1
+                _prog["label"] = gid
 
         def _on_goal_done(r: Any) -> None:
             progress["done"] += 1
@@ -575,10 +641,11 @@ def _cmd_regress(args: argparse.Namespace) -> int:
             budget_actions_per_goal=args.budget_actions,
             budget_wall_seconds_per_goal=args.budget_wall_seconds,
             jobs=args.jobs,
-            # The rich single in-place running line only makes sense
-            # sequentially; under `--jobs > 1` concurrent goals would clobber it,
-            # so the label stays off and the brain shows its generic line.
-            on_goal_start=None if concurrent else _on_goal_start,
+            # `_on_goal_start` ALWAYS fires so the brain gets the per-goal auth
+            # context (it sets the rich in-place running line only when
+            # sequential; under `--jobs > 1` it sets the auth context but leaves
+            # the label off, since concurrent goals would clobber one line).
+            on_goal_start=_on_goal_start,
             on_goal_done=_on_goal_done,
         )
         run_dir = proj.run_dir()
@@ -602,10 +669,13 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     goals = [args.goal]
     print(f"running 1 goal: {args.goal}...")
     # One goal: set the running label directly (no aggregate loop / start hook),
-    # so the spinner reads `[1/1] Running <goal>` like the aggregate path.
+    # so the spinner reads `[1/1] Running <goal>` like the aggregate path. Set the
+    # auth context too so this goal reuses its saved session if it is a
+    # precondition authenticated goal (ADR-0026, ADR-0027 decision 2).
     _prog["total"] = 1
     _prog["idx"] = 1
     _prog["label"] = args.goal
+    auth_ctx.set_current(args.goal)
     # The console surface drives the SAME engine a skill driver calls
     # (ADR-0019 decision 4); the only difference is which brain the seam
     # carries (here: the file/claude-p executor; in a skill: the local Claude
@@ -639,6 +709,24 @@ def _cmd_regress(args: argparse.Namespace) -> int:
             results[0], believed_total=believed_total,
             color=sys.stdout.isatty()))
     print(f"report: {last_md}")
+    # AUTH-EXPIRED guard on the single-goal path (ADR-0026 decision 5): the
+    # single-goal verdict is the bare RegressionVerdict, which has no AUTH-EXPIRED
+    # routing, so a goal that expected an authenticated scope but ran logged out
+    # (the saved session missing or expired) would otherwise read UNCERTAIN and
+    # NOT fail the run, a silent false green. Re-classify through the same
+    # `classify_goal` the aggregate path uses: when it is AUTH-EXPIRED, surface it
+    # LOUDLY naming the expired role and fail the run, never a silent green and
+    # never a false REGRESSED.
+    if kf is not None and results:
+        report = classify_goal(
+            kf, results[0], current_version=proj.observed_app_version,
+        )
+        if report.verdict == AggregateVerdict.AUTH_EXPIRED:
+            role = report.signals[0] if report.signals else "?"
+            print(f"AUTH-EXPIRED: {args.goal} could not authenticate as role "
+                  f"{role!r}; refresh the saved session. This is not a "
+                  f"regression and not stale knowledge.", file=sys.stderr)
+            return 1
     return 1 if regress_failed(results) else 0
 
 
@@ -650,6 +738,7 @@ def _explore_aggregate(
     budget_actions: int | None = None,
     budget_wall_seconds: float | None = None,
     jobs: int = 1,
+    auth_ctx: "_GoalAuthContext | None" = None,
 ) -> int:
     """Default-all explore: hunt off-happy-path across EVERY believed goal,
     write candidate files on the committed tree, and emit ONE trigger-grouped
@@ -698,6 +787,9 @@ def _explore_aggregate(
         budget_wall_seconds_per_goal=budget_wall_seconds,
         committed_sink=_commit_new_candidates,
         jobs=jobs,
+        # Set the per-goal auth context before each goal runs so the claude -p
+        # brain reuses that goal's saved session (ADR-0026, ADR-0027 dec. 2).
+        on_goal_start=auth_ctx.set_current if auth_ctx is not None else None,
     )
 
     # Build the trigger-grouped report from the committed candidate tree, the
@@ -756,7 +848,17 @@ def _explore_aggregate(
 def _cmd_explore(args: argparse.Namespace) -> int:
     proj = discover_project()
     adapter = proj.adapter()
-    brain = _select_console_brain(args, default_mcp_config=proj.mcp_config)
+
+    # Per-goal auth context so the claude -p brain reuses a saved session per
+    # goal (ADR-0026, ADR-0027 decision 2). Cover every seed so both the
+    # aggregate and the single-goal paths can set the current goal.
+    all_goals = sorted(proj.seeds().keys())
+    auth_ctx = _GoalAuthContext(_auth_states_for(proj, all_goals))
+
+    brain = _select_console_brain(
+        args, default_mcp_config=proj.mcp_config,
+        session_for_goal=auth_ctx.current,
+    )
 
     # Default-all aggregate (ADR-0023 decision 2): no `--goal` hunts off-happy-
     # path across EVERY believed goal under .praxis/knowledge/, writes candidate
@@ -768,6 +870,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
             budget_actions=args.budget_actions,
             budget_wall_seconds=args.budget_wall_seconds,
             jobs=args.jobs,
+            auth_ctx=auth_ctx,
         )
 
     # Snapshot the candidate event ids already in the per-machine log for this
@@ -789,6 +892,9 @@ def _cmd_explore(args: argparse.Namespace) -> int:
         return proj.candidate_files().write_all(new_events)
 
     happy = args.happy_path or []
+    # One goal: set the auth context so this goal reuses its saved session if it
+    # is a precondition authenticated goal (ADR-0026, ADR-0027 decision 2).
+    auth_ctx.set_current(args.goal)
     # The console surface drives the SAME engine a skill driver calls; the seam
     # carries the paste/file executor here, the local Claude session in a skill.
     outcome = explore_engine(
