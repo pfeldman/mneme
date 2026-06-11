@@ -5,11 +5,19 @@
 # calls the `praxis` console commands and gates on the exit code. Everything
 # around that command is YOUR CI, owned by your team:
 #   - the push, the pull request, and the runner auth are standard git you own
-#   - the API key (the CI brain), the app login credential, and the saved
+#   - the brain credential, the app login credential, and the saved
 #     authenticated session are YOUR runner secrets, never written into this
 #     repo and never echoed into the logs
 #   - promoting a discovered candidate into trusted knowledge is a HUMAN git
 #     merge, never an auto-merge and never an auto-promote
+#
+# About the CI brain: `praxis regress` / `praxis explore` drive the browser by
+# shelling out to the Claude Code CLI headless (`claude -p`, ADR-0027), the SAME
+# brain the local console runner uses. So the runner needs the `claude` binary on
+# PATH plus whatever credential Claude Code authenticates with (an
+# `ANTHROPIC_API_KEY` for the autonomous, no-human CI case). The pip `[live]`
+# extra is NOT what runs here: nothing in the installed wheel imports the
+# `anthropic` SDK, so installing it would not make `praxis regress` self-drive.
 #
 # About the saved authenticated session (PRAXIS_AUTH_STATE_USER, ADR-0026): if
 # your app's login needs two-factor, a human passes two-factor ONCE locally and
@@ -45,11 +53,17 @@ jobs:
         with:
           python-version: "3.11"
 
-      # The CI brain is the API-key `live` extra (ADR-0019). The local Claude
-      # Code skills are NOT used in CI: there is no human subscription session
-      # to borrow, so CI uses the API-key agent.
-      - name: Install Praxis with the CI brain
-        run: pip install "praxis-qa[live]"
+      - name: Install Praxis
+        run: pip install praxis-qa
+
+      # The CI brain is the Claude Code CLI driven headless (`claude -p`,
+      # ADR-0027), the SAME brain the local console runner uses; CI has no human
+      # session, so it authenticates Claude Code with a runner secret
+      # (ANTHROPIC_API_KEY below). Install the CLI on the runner so `praxis
+      # regress` can shell out to it. There is no Praxis-specific brain to install
+      # from pip; the `[live]` extra is only for the offline experiment harness.
+      - name: Install the Claude Code CLI (the headless brain)
+        run: npm install -g @anthropic-ai/claude-code
 
       # Run the gate over every believed goal under .praxis/knowledge/.
       # A REGRESSED or ERROR goal exits non-zero and names the goal and the
@@ -101,8 +115,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Praxis with the CI brain
-        run: pip install "praxis-qa[live]"
+      - name: Install Praxis
+        run: pip install praxis-qa
+
+      - name: Install the Claude Code CLI (the headless brain)
+        run: npm install -g @anthropic-ai/claude-code
 
       # Same runner secrets as the regress job, including the saved
       # authenticated session PRAXIS_AUTH_STATE_USER (ADR-0026): a human-seeded

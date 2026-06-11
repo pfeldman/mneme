@@ -41,19 +41,26 @@ not a Praxis behavior.
 
 ## The CI brain and the credentials
 
-When the commands run autonomously in CI there is no human session to borrow, so they use
-the API-key agent from the `live` extra
-([ADR-0019](../adr/0019-brain-pluggability-and-execution-surfaces.md)). Install it with:
+When the commands run autonomously in CI there is no human session to borrow, but the brain
+is the SAME one the local console runner uses: `praxis regress` / `praxis explore` shell out
+to the Claude Code CLI headless (`claude -p`,
+[ADR-0027](../adr/0027-console-test-runner-and-claude-p-brain.md)). Nothing in the installed
+wheel imports the `anthropic` SDK, so the `[live]` pip extra is NOT what drives a CI run; it
+exists only for the offline experiment harness. What a runner needs is Praxis plus the
+`claude` binary on PATH:
 
 ```
-pip install "praxis-qa[live]"
+pip install praxis-qa
+npm install -g @anthropic-ai/claude-code
 ```
 
-The API key, and any app login credential a run needs, are supplied as runner secrets read
-from the environment (the [ADR-0021](../adr/0021-praxis-directory-convention.md) secrets
-channel). An environment variable wins over any `.praxis.secrets` file, so in CI you pass
-them purely as secrets with no file on disk. Praxis reads them at runtime and never writes
-them into the repo or the logs.
+The brain credential (an `ANTHROPIC_API_KEY` for the autonomous, no-human CI case, the way
+the Claude Code CLI authenticates), and any app login credential a run needs, are supplied
+as runner secrets read from the environment (the
+[ADR-0021](../adr/0021-praxis-directory-convention.md) secrets channel). An environment
+variable wins over any `.praxis.secrets` file, so in CI you pass them purely as secrets with
+no file on disk. Praxis reads them at runtime and never writes them into the repo or the
+logs.
 
 If the app's login needs two-factor, the run also reads a saved authenticated session as a
 runner secret (`PRAXIS_AUTH_STATE_USER` in the example,
