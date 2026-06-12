@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -118,6 +119,21 @@ BRAIN_MODEL_ENV = "PRAXIS_BRAIN_MODEL"
 # onto run records at run time and never enters an assertion.
 PRAXIS_ENV_VAR = "PRAXIS_ENV"
 
+# A declared project's run directory is `runs/<timestamp>__<env>/` (ADR-0035
+# decision 8): the sortable timestamp prefix is unchanged and the suffix makes
+# "the last prod run" findable with `ls`. The env name in the DIRECTORY NAME is
+# sanitized conservatively: declared names come from the config map, but a
+# filesystem-hostile character in one (slash, colon, space) must not break or
+# escape the runs/ tree, so anything outside [A-Za-z0-9._-] maps to "-" here.
+# Reports, banners, and events carry the environment name verbatim; only the
+# dirname is sanitized.
+_ENV_DIRNAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _env_dirname(name: str) -> str:
+    """The run-dir-safe form of a declared environment name (see above)."""
+    return _ENV_DIRNAME_UNSAFE.sub("-", name)
+
 # `praxis init` scaffolds the `brain_model` key COMMENTED OUT (ADR-0034): the
 # pin is discoverable in the committed config without forcing a model choice,
 # and no model name is ever hardcoded as a default (the default stays whatever
@@ -167,6 +183,11 @@ class ProjectContext:
         # writes into the SAME `runs/<run_id>/` subtree, while reads fold across
         # all run subtrees. Lazily assigned on the first `store()` call.
         self._run_id: str | None = None
+        # The run DIRECTORY name: the run id, suffixed `__<env>` when an
+        # environment is selected (ADR-0035 decision 8). Pinned on first use so
+        # the run dir and the store write target can never diverge within one
+        # invocation.
+        self._run_dirname: str | None = None
         self._store: RunsEventStore | None = None
         self._candidate_files: CandidateFileStore | None = None
 
@@ -287,17 +308,39 @@ class ProjectContext:
     def target(self) -> Target:
         return Target(app=self.app, environment=self.environment)
 
+    def _run_dir_name(self) -> str:
+        """The current invocation's run directory NAME, pinned on first use.
+
+        With an environment selected the name is `<timestamp>__<env>` (ADR-0035
+        decision 8: the sortable timestamp prefix keeps run dirs ordered, the
+        suffix makes "the last prod run" findable with `ls`; the env name is
+        sanitized for the dirname only, see `_env_dirname`). On an undeclared
+        project (no selection) the name is the bare timestamp, byte-identical
+        to pre-ADR-0035. Pinning on first use means the run dir and the store
+        write target always agree within one invocation.
+        """
+        if self._run_id is None:
+            self._run_id = new_run_id()
+        if self._run_dirname is None:
+            if self._selected_env is not None:
+                self._run_dirname = (
+                    f"{self._run_id}__{_env_dirname(self._selected_env)}"
+                )
+            else:
+                self._run_dirname = self._run_id
+        return self._run_dirname
+
     def run_dir(self) -> Path:
-        """The current invocation's `runs/<timestamp>/` directory, created lazily.
+        """The current invocation's `runs/<timestamp>/` directory (suffixed
+        `__<env>` when an environment is selected, ADR-0035 decision 8),
+        created lazily.
 
         Holds the per-run raw event log plus any per-run artifacts (reports).
         The directory is gitignored (init writes the ignore line); the run id is
         fixed for the lifetime of this context so all writes in one CLI
         invocation share one subtree.
         """
-        if self._run_id is None:
-            self._run_id = new_run_id()
-        rd = self.runs_dir / self._run_id
+        rd = self.runs_dir / self._run_dir_name()
         rd.mkdir(parents=True, exist_ok=True)
         return rd
 
@@ -305,15 +348,16 @@ class ProjectContext:
         """Per-machine append-only event log spread over `runs/<timestamp>/`.
 
         Writes land in this invocation's run subtree; reads fold across every
-        run subtree so the believed-state projection sees the whole log even
+        run subtree - suffixed (`<timestamp>__<env>`) and unsuffixed alike,
+        since `RunsEventStore` treats run-dir names opaquely (ADR-0035
+        decision 8) - so the believed-state projection sees the whole log even
         across separate CLI invocations (ADR-0021 decision 3).
         """
         if self._store is None:
             # Touch the current run dir so the store has a stable write target.
             self.run_dir()
-            assert self._run_id is not None
             self.runs_dir.mkdir(parents=True, exist_ok=True)
-            self._store = RunsEventStore(str(self.runs_dir), self._run_id)
+            self._store = RunsEventStore(str(self.runs_dir), self._run_dir_name())
         return self._store
 
     def candidate_files(self) -> CandidateFileStore:
@@ -887,6 +931,15 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     # undeclared project's scaffolded, possibly-dead top-level base_url is
     # NEVER injected, so its rendered prompts stay byte-identical to today.
     run_base_url = proj.base_url if selected_env is not None else None
+    # JUnit suite name tagged by environment (ADR-0035 decision 8): a declared
+    # run's suite is `praxis-regress[<env>]` so a CI job matrix over PRAXIS_ENV
+    # renders one distinguishable suite per deployment; undeclared keeps
+    # today's `praxis-regress` byte-identically. Testcase mapping, counts, and
+    # exit codes are untouched.
+    junit_suite = (
+        f"praxis-regress[{selected_env}]" if selected_env is not None
+        else "praxis-regress"
+    )
     adapter = proj.adapter()
 
     # Live progress label the claude -p spinner reads so the running line reads
@@ -984,11 +1037,14 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         run_dir = proj.run_dir()
         report_md = run_dir / "regress-aggregate.md"
         report_xml = run_dir / "regress-aggregate.xml"
-        write_aggregate_markdown(reports, report_md)
+        # Reports are tagged by the selected environment (ADR-0035 decision 8):
+        # the markdown header names the deployment, the JUnit suite carries it
+        # in brackets. Undeclared runs (environment None) stay byte-identical.
+        write_aggregate_markdown(reports, report_md, environment=selected_env)
         # The aggregate path is the CI path (ADR-0024: `praxis regress` with no
         # --goal). Emit JUnit XML here too, one testcase per goal, so a CI that
         # renders test reports gets the aggregate run, not only single-goal runs.
-        write_aggregate_junit_xml(reports, report_xml)
+        write_aggregate_junit_xml(reports, report_xml, suite_name=junit_suite)
         # Per-goal verdict lines were printed live by `_on_goal_done` as each
         # goal completed (ADR-0027 decision 6); the named signal for a non-OK
         # goal is in the final summary below and the markdown report.
@@ -1033,8 +1089,10 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     run_dir = proj.run_dir()
     last_md = run_dir / "last-regress.md"
     last_xml = run_dir / "last-regress.xml"
-    write_markdown_report(results, last_md)
-    write_junit_xml(results, last_xml)
+    # Same env tagging as the aggregate artifacts (ADR-0035 decision 8);
+    # byte-identical when no environment is selected.
+    write_markdown_report(results, last_md, environment=selected_env)
+    write_junit_xml(results, last_xml, suite_name=junit_suite)
     # Show the verdict ON THE CONSOLE (ADR-0027 decision 6): a human should see
     # whether the goal passed without opening the markdown report. believed_total
     # is the count the verdict needed all of (ADR-0009); read it from the
@@ -1080,6 +1138,7 @@ def _explore_aggregate(
     jobs: int = 1,
     auth_ctx: "_GoalAuthContext | None" = None,
     base_url: str | None = None,
+    environment: str | None = None,
 ) -> int:
     """Default-all explore: hunt off-happy-path across EVERY believed goal,
     write candidate files on the committed tree, and emit ONE trigger-grouped
@@ -1159,8 +1218,12 @@ def _explore_aggregate(
 
     run_dir = proj.run_dir()
     report_md = run_dir / "explore-candidates.md"
+    # The explore report header is tagged by the selected environment exactly
+    # as the regress reports are (ADR-0035 decision 8); byte-identical when no
+    # environment is selected.
     write_candidate_markdown(
         groups, report_md, off_path_fractions=off_path, errors=errors,
+        environment=environment,
     )
 
     n_believed = sum(1 for g in groups if g.believed)
@@ -1225,6 +1288,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
             jobs=args.jobs,
             auth_ctx=auth_ctx,
             base_url=run_base_url,
+            environment=selected_env,
         )
 
     # Snapshot the candidate event ids already in the per-machine log for this

@@ -133,6 +133,65 @@ def test_concurrent_writes_across_runs_lose_no_knowledge(tmp_path) -> None:
     assert believed, "diversity over two run subtrees must reach believed"
 
 
+# --- ADR-0035 decision 8: run dirs may be `<timestamp>__<env>` -------------
+
+
+def test_reads_fold_across_suffixed_and_unsuffixed_run_dirs(tmp_path) -> None:
+    """One runs/ tree mixing BOTH dir shapes folds into ONE log (ADR-0035
+    decision 8): a declared project writes `runs/<timestamp>__<env>/` while its
+    pre-declaration history sits in bare `runs/<timestamp>/` dirs. The store
+    treats run-dir names opaquely (sorted iterdir), so the cross-run read sees
+    every subtree regardless of shape, in (ts, event_id) order."""
+    # A bare pre-declaration run dir...
+    bare = RunsEventStore(
+        tmp_path, new_run_id(datetime(2026, 6, 1, tzinfo=timezone.utc)))
+    bare.append(ObservationEvent(
+        agent_id="m::p", goal_id="g", signals=[_sig("bare-run-signal")]))
+    # ...two env-suffixed run dirs (the ADR-0035 declared shape)...
+    dev2 = RunsEventStore(
+        tmp_path,
+        new_run_id(datetime(2026, 6, 2, tzinfo=timezone.utc)) + "__dev2")
+    dev2.append(ObservationEvent(
+        agent_id="m::p", goal_id="g", signals=[_sig("dev2-run-signal")]))
+    prod = RunsEventStore(
+        tmp_path,
+        new_run_id(datetime(2026, 6, 3, tzinfo=timezone.utc)) + "__prod")
+    prod.append(ObservationEvent(
+        agent_id="m::p", goal_id="g", signals=[_sig("prod-run-signal")]))
+
+    # Each suffixed dir exists on disk with the suffix in its NAME.
+    assert (tmp_path / dev2.run_id).name.endswith("__dev2")
+    assert (tmp_path / prod.run_id / "local" / "events").is_dir()
+
+    # The fold from ANY of the three stores sees all three events, time-ordered:
+    # the dir-name shape never partitions the read (partitioning is the
+    # adapter's environment FIELD filter, never the path, ADR-0035 decision 4).
+    expected = ["bare-run-signal", "dev2-run-signal", "prod-run-signal"]
+    for store in (bare, dev2, prod):
+        assert [e.signals[0].value for e in store.read(goal_id="g")] == expected
+
+
+def test_candidates_fold_across_suffixed_and_unsuffixed_run_dirs(tmp_path) -> None:
+    """The candidate fold crosses both dir shapes too: a candidate written in a
+    bare run dir is visible to a later env-suffixed run, and vice versa."""
+    bare = RunsEventStore(
+        tmp_path, new_run_id(datetime(2026, 6, 1, tzinfo=timezone.utc)))
+    bare.append_candidate(CandidateEvent(
+        agent_identity="m::p", goal_id="g",
+        payload=CandidateRiskPayload(risk=_risk("r-bare")),
+    ))
+    suffixed = RunsEventStore(
+        tmp_path,
+        new_run_id(datetime(2026, 6, 2, tzinfo=timezone.utc)) + "__prod")
+    suffixed.append_candidate(CandidateEvent(
+        agent_identity="m::p", goal_id="g", environment="prod",
+        payload=CandidateRiskPayload(risk=_risk("r-prod")),
+    ))
+    for store in (bare, suffixed):
+        ids = [c.payload.risk.id for c in store.read_candidates(goal_id="g")]
+        assert ids == ["r-bare", "r-prod"]
+
+
 # --- environment field on candidates (ADR-0035 decisions 4 + 6): the env rides
 # as provenance on the event, the shared candidate layout is unchanged, and a
 # pre-ADR-0035 candidate JSON (no `environment` key) keeps parsing.
