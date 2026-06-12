@@ -62,7 +62,16 @@ interactively.
    `.praxis/knowledge/`. If there are no seeds, tell the user to seed a goal
    with `/praxis:teach` first and stop.
 
-2. If a run must authenticate, reuse the saved session ONLY when the goal's
+2. Resolve the environment FIRST, before driving anything. If
+   `.praxis/config.yaml` declares an `environments` map (ADR-0035), the run
+   hunts on exactly ONE deployment, resolved as: `--env` flag > `PRAXIS_ENV`
+   env var > committed `default_env` > a single-entry map auto-selects (the
+   console prints the resolved environment and its source on stderr). Name the
+   environment in the report; goals say "the app under test" and the selected
+   environment's `base_url` is that app. A project with no `environments` map
+   has no environment and nothing below changes.
+
+3. If a run must authenticate, reuse the saved session ONLY when the goal's
    `auth_state.being_tested` is false (the login is a precondition, the common
    case for an explore run). When `being_tested` is true the login is the subject
    under test (ADR-0027 decision 2): perform a REAL login, do NOT reuse a session.
@@ -72,17 +81,25 @@ interactively.
    fresh login, hence without a fresh 2FA. Load it with this one-liner (you do
    not need to read any library code):
 
-       python -c "import json,sys; from praxis.auth_session import load_session_for_role; json.dump(load_session_for_role(sys.argv[1]), open('session.json','w'))" <role>
+       python -c "import json,sys; from praxis.auth_session import load_session_for_role; json.dump(load_session_for_role(sys.argv[1], environment=(sys.argv[2] if len(sys.argv) > 2 else None)), open('session.json','w'))" <role> <env-if-any>
 
-   It resolves an environment / CI runner secret `PRAXIS_AUTH_STATE_<ROLE>`
-   first, else the gitignored `.praxis.auth/<role>.json` local file. Then inject
+   With an environment resolved it reads the CI runner secret
+   `PRAXIS_AUTH_STATE_<ENV>_<ROLE>` first, else the gitignored
+   `.praxis.auth/<env>/<role>.json` - and NOTHING else: a session is
+   domain-bound, so there is deliberately NO fallback to the unscoped session
+   or to another environment's; a missing env-scoped session is a loud
+   MissingSession naming the role AND the environment. With no environment it
+   resolves `PRAXIS_AUTH_STATE_<ROLE>` first, else
+   `.praxis.auth/<role>.json`, exactly as before. Then inject
    the session cookies into the browser context (with `browser_run_code_unsafe`
    calling `context.addCookies(...)`) before you navigate. The session is a
    SECRET: never echo it to the user or into a log, and it never lives in
    knowledge.
 
    If a run also needs an app credential, read it from the ADR-0021 secrets
-   channel: an environment variable wins, else the gitignored `.praxis.secrets`
+   channel: an environment variable wins, else (on a multi-environment project)
+   the per-env overlay `.praxis.secrets.<env>` for the keys it defines, else
+   the gitignored `.praxis.secrets`
    (`KEY=value`) at the repo root. The credential NEVER lives in knowledge. If a
    needed credential is absent, ASK the user for it and offer to append it (for
    example `echo "KEY=value" >> .praxis.secrets`). Never echo a secret value
@@ -94,34 +111,44 @@ interactively.
    THIS skill surface a human is present, so ASK the human to re-authenticate:
    they pass 2FA ONCE through the `/praxis:teach` credential prompt, you EXPORT
    the refreshed storageState via the Playwright MCP and RE-SAVE it for the role
-   through `auth_session.save_session_for_role(...)`, then re-run with the fresh
-   session. On the console / CI surface (no human) the run instead fails LOUDLY
-   naming AUTH-EXPIRED and the expired role with a non-zero exit, never a silent
-   green; a human then refreshes the CI secret (`PRAXIS_AUTH_STATE_<ROLE>`). Cost
+   through `auth_session.save_session_for_role(...)` (passing the resolved
+   `environment=` so the refreshed session lands env-scoped), then re-run with
+   the fresh session. On the console / CI surface (no human) the run instead
+   fails LOUDLY naming AUTH-EXPIRED, the expired role, and the environment
+   (when one is selected) with a non-zero exit, never a silent green; a human
+   then refreshes the CI secret (`PRAXIS_AUTH_STATE_<ROLE>`, or
+   `PRAXIS_AUTH_STATE_<ENV>_<ROLE>` per environment). Cost
    note: an email-delivered 2FA code cannot be refreshed in CI (no inbox), so the
    refresh is a periodic MANUAL human action; a TOTP authenticator-app second
    factor has a storable seed, so CI can self-refresh (ADR-0026 decision 6).
 
-3. Run the engine across the believed set. Default-all is the aggregate run:
+4. Run the engine across the believed set. Default-all is the aggregate run:
 
        praxis explore
 
    That hunts off-happy-path across EVERY goal under `.praxis/knowledge/`,
    writes one candidate file per observation under
    `.praxis/candidates/<goal>/<observation_id>.yaml`, and writes ONE report
-   under `.praxis/runs/<timestamp>/explore-candidates.md` GROUPED by the
+   under `.praxis/runs/<timestamp>/explore-candidates.md`
+   (`runs/<timestamp>__<env>/` on a multi-environment project) GROUPED by the
    structured `trigger`. To scope to one goal, run
    `praxis explore --goal <name>`. Each goal gets its own token-and-wall-time
    budget slice (ADR-0023 decision 7); a goal that exhausts its slice is a loud
    ERROR for that goal, not a silent skip.
 
-4. Surface what the run just found, grouped by trigger. Each finding appears
+5. Surface what the run just found, grouped by trigger. Each finding appears
    ONCE, annotated with how many times it was observed and how many DISTINCT
    `source_id`s attest to it. Remember the source rule: N observations from the
    same `agent_identity` are ONE source (ADR-0008). Show the trigger, the
    description / question, the confidence, and the distinct-source count.
+   On a multi-environment project each candidate is stamped with the
+   environment it was observed on, and `praxis review` and the explore report
+   annotate each finding with where it was seen ("seen on dev2 only") -
+   exactly the datum a human needs to decide whether a finding is
+   product-level or just not shipped everywhere yet. The environment adds
+   NO corroboration: the same agent on two environments is still ONE source.
 
-5. Triage each FRESH finding inline with the user. For each one, offer three
+6. Triage each FRESH finding inline with the user. For each one, offer three
    choices and apply the choice immediately as the matching review action:
 
    - **promote**: the user judges this finding worth believing. This is a HUMAN
@@ -138,14 +165,15 @@ interactively.
      do not delete the immutable candidate event (ADR-0001). Discarding means
      "do not promote," not "rewrite history."
 
-6. The aggregate contested queue stays `praxis review`. Your inline triage
+7. The aggregate contested queue stays `praxis review`. Your inline triage
    handles ONLY what THIS explore run just produced. The candidates the user
    was not present to triage (a teammate's runs after `git pull`, autonomous CI
    runs, the history) are surfaced by `praxis review`, which folds the
    committed candidate tree. Point the user there for the backlog; do not try
    to triage the whole queue inline.
 
-7. Report the roll-up honestly: goals explored, committed candidates written
+8. Report the roll-up honestly: the environment hunted (when one is selected),
+   goals explored, committed candidates written
    (one file per observation), findings by trigger (believed vs contested), and
    the per-goal `off_path_fraction`. If any goal ERRORED, name it loudly; an
    errored goal fails the run and is never silently skipped.

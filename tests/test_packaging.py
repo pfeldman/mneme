@@ -316,3 +316,57 @@ def test_regress_skill_loads_session_before_run_and_reauths_on_auth_expired() ->
 
 def test_explore_skill_loads_session_before_run_and_reauths_on_auth_expired() -> None:
     _assert_load_before_run_and_reauth(EXPLORE_SKILL_REL)
+
+
+# --- the ADR-0035 multi-environment guidance in the three skills ------------
+
+
+def test_teach_skill_seeds_deployment_agnostic() -> None:
+    # ADR-0035 decision 3: teach seeds are deployment-agnostic - goal text and
+    # signal values carry no host ("the app under test" is the phrase),
+    # url-type signals are path-shaped, and the environment name never appears
+    # inside a signal value (provenance, not content). The session save is
+    # env-scoped on a declared project.
+    text = _skills_by_rel()[TEACH_SKILL_REL].read_text(encoding="utf-8").lower()
+    assert "the app under test" in text
+    assert "path-shaped" in text, "teach must require path-shaped url signals"
+    assert "never appears inside a signal value" in text
+    assert "environment='<env>'" in text, "teach save one-liner must be env-aware"
+
+
+def _assert_env_resolved_first_and_env_scoped_session(rel: Path) -> None:
+    """Regress and explore resolve the environment FIRST (ADR-0035 decision 2)
+    and use the env-scoped session channel with no cross-env fallback
+    (decision 7)."""
+    text = " ".join(_skills_by_rel()[rel].read_text(encoding="utf-8").lower().split())
+    assert "resolve the environment first" in text, (
+        f"{rel} must resolve the environment before driving anything"
+    )
+    assert "praxis_auth_state_<env>_<role>" in text, (
+        f"{rel} must name the env-scoped session env var"
+    )
+    assert "no fallback to the unscoped session" in text, (
+        f"{rel} must state the no-cross-env-fallback rule"
+    )
+
+
+def test_regress_skill_resolves_env_first_and_names_the_deployment_skew() -> None:
+    # ADR-0035 decision 8: the STALE triage carries the deployment-skew wording
+    # (OK on one env, STALE on another over SHARED knowledge; per-env knowledge
+    # forks forbidden).
+    _assert_env_resolved_first_and_env_scoped_session(REGRESS_SKILL_REL)
+    text = _skills_by_rel()[REGRESS_SKILL_REL].read_text(encoding="utf-8").lower()
+    assert "deployment-skew signal" in text
+    assert "forking knowledge per environment" in text or (
+        "per-env copies of a goal are forbidden" in text
+    )
+
+
+def test_explore_skill_resolves_env_first_and_annotates_candidates() -> None:
+    # ADR-0035 decision 6: candidates are stamped with the environment and
+    # review / the report annotate where each finding was seen; the environment
+    # adds no corroboration.
+    _assert_env_resolved_first_and_env_scoped_session(EXPLORE_SKILL_REL)
+    text = _skills_by_rel()[EXPLORE_SKILL_REL].read_text(encoding="utf-8").lower()
+    assert "seen on dev2 only" in text
+    assert "no corroboration" in text

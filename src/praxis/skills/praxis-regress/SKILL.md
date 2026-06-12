@@ -84,7 +84,17 @@ not load, read, or reference any auditor scenario while regressing.
    That is the only manual MCP step; the user does not edit any config file by
    hand (a fresh `praxis init` scaffolds the project's `playwright-mcp.json`).
 
-2. If a run must authenticate, decide FIRST whether the login is the test or
+2. Resolve the environment FIRST, before driving anything. If
+   `.praxis/config.yaml` declares an `environments` map (ADR-0035), the run
+   checks exactly ONE deployment, resolved as: `--env` flag > `PRAXIS_ENV` env
+   var > committed `default_env` > a single-entry map auto-selects (the console
+   prints the resolved environment and its source on stderr). Name the
+   environment in every triage line and in the roll-up: a verdict is about one
+   deployment, never "the product". Goals say "the app under test"; the
+   selected environment's `base_url` is that app. A project with no
+   `environments` map has no environment and nothing below changes.
+
+3. If a run must authenticate, decide FIRST whether the login is the test or
    just setup (ADR-0027 decisions 1, 2). When the goal's `auth_state.being_tested`
    is true, the login IS the subject under test: do NOT reuse a saved session,
    perform a REAL login every run so the flow is actually exercised. When
@@ -96,10 +106,16 @@ not load, read, or reference any auditor scenario while regressing.
    fresh login, hence without a fresh 2FA. Load it with this one-liner (you do
    not need to read any library code):
 
-       python -c "import json,sys; from praxis.auth_session import load_session_for_role; json.dump(load_session_for_role(sys.argv[1]), open('session.json','w'))" <role>
+       python -c "import json,sys; from praxis.auth_session import load_session_for_role; json.dump(load_session_for_role(sys.argv[1], environment=(sys.argv[2] if len(sys.argv) > 2 else None)), open('session.json','w'))" <role> <env-if-any>
 
-   It resolves an environment / CI runner secret `PRAXIS_AUTH_STATE_<ROLE>`
-   first, else the gitignored `.praxis.auth/<role>.json` local file. Then inject
+   With an environment resolved it reads the CI runner secret
+   `PRAXIS_AUTH_STATE_<ENV>_<ROLE>` first, else the gitignored
+   `.praxis.auth/<env>/<role>.json` - and NOTHING else: a session is
+   domain-bound, so there is deliberately NO fallback to the unscoped session
+   or to another environment's; a missing env-scoped session is a loud
+   MissingSession naming the role AND the environment. With no environment it
+   resolves `PRAXIS_AUTH_STATE_<ROLE>` first, else
+   `.praxis.auth/<role>.json`, exactly as before. Then inject
    the session cookies into the browser context (with `browser_run_code_unsafe`
    calling `context.addCookies(...)`) before you navigate. The session is a
    SECRET: never echo it to the user or into a log, and it never lives in
@@ -107,31 +123,37 @@ not load, read, or reference any auditor scenario while regressing.
    `.praxis.secrets`, ask the human for the 2FA code) and the run proceeds.
 
    If a run also needs an app credential, read it from the ADR-0021 secrets
-   channel: an environment variable wins, else the gitignored `.praxis.secrets`
-   (`KEY=value`) at the repo root. The credential NEVER lives in knowledge. If a
-   needed credential is absent, ASK the user for it and offer to append it (for
-   example `echo "KEY=value" >> .praxis.secrets`); the console and CI surfaces
-   fail loudly instead of asking. Never echo a secret value back to the user or
+   channel: an environment variable wins, else (on a multi-environment project)
+   the per-env overlay `.praxis.secrets.<env>` for the keys it defines, else
+   the gitignored `.praxis.secrets` (`KEY=value`) at the repo root. The
+   credential NEVER lives in knowledge. If a needed credential is absent, ASK
+   the user for it and offer to append it (for example
+   `echo "KEY=value" >> .praxis.secrets`); the console and CI surfaces fail
+   loudly instead of asking. Never echo a secret value back to the user or
    into a log.
 
-3. Run the engine across the believed set. Default-all is the aggregate run:
+4. Run the engine across the believed set. Default-all is the aggregate run:
 
        praxis regress
 
    That runs EVERY goal under `.praxis/knowledge/` and writes ONE aggregate
-   markdown report under `.praxis/runs/<timestamp>/regress-aggregate.md`. To
+   markdown report under `.praxis/runs/<timestamp>/regress-aggregate.md`
+   (`runs/<timestamp>__<env>/` and an environment-named report header on a
+   multi-environment project). To
    scope to a single goal, run `praxis regress --goal <name>`. Each goal gets
    its own token-and-wall-time budget slice (ADR-0023 decision 7): one
    pathological goal cannot starve the rest, and a goal that exhausts its slice
    surfaces as a loud ERROR for that goal, not a silent skip.
 
-4. Read the per-goal verdicts. Each goal gets exactly one of OK / REGRESSED /
+5. Read the per-goal verdicts. Each goal gets exactly one of OK / REGRESSED /
    STALE / AUTH-EXPIRED (or ERROR if it could not reach a verdict). The verdict
    ships with its evidence (the signal that flipped, the ADR-0013 version anchor
    for STALE, the expired role for AUTH-EXPIRED), so the routing below is
    traceable, not a guess.
 
-5. Triage every NON-OK goal and propose the next step for a human:
+6. Triage every NON-OK goal and propose the next step for a human. On a
+   multi-environment project, every triage line names the environment the
+   verdict was observed on:
 
    - **REGRESSED** (a believed `success_signal` is now absent, or a
      `failure_signal` fired): this looks like the APP broke. Tell the user
@@ -152,6 +174,19 @@ not load, read, or reference any auditor scenario while regressing.
      the goal, or review and merge a candidate. Do NOT edit the knowledge
      yourself; a STALE verdict NEVER auto-mutates committed knowledge.
 
+     Deployment skew (multi-environment projects): the same goal MAY honestly
+     read OK on prod and STALE on dev2. That is the deployment-skew signal
+     itself (one deployment runs ahead of the other), not a contradiction, and
+     it is non-blocking by construction (STALE alone never fails a run). Name
+     BOTH facts in the triage ("STALE on dev2; the same goal is OK on prod").
+     Knowledge is SHARED across environments, so a re-seed updates the
+     contract for ALL of them: propose re-seeding now if the leading
+     environment's behavior is the new intended contract everywhere, or
+     waiting until the change ships if the trailing environment's behavior
+     still is the contract. NEVER propose silencing one environment's STALE by
+     forking knowledge per environment; per-env copies of a goal are forbidden
+     (ADR-0035).
+
    - **AUTH-EXPIRED** (the goal expected an authenticated scope but the run hit
      an auth wall / a logged-out browser because the saved session is expired or
      invalid): this is NOT a regression (the app did not break) and NOT stale
@@ -159,11 +194,14 @@ not load, read, or reference any auditor scenario while regressing.
      present, so ASK the human to re-authenticate: they pass 2FA ONCE through the
      `/praxis:teach` credential prompt, you EXPORT the refreshed storageState via
      the Playwright MCP and RE-SAVE it for the role through
-     `auth_session.save_session_for_role(...)`, then re-run the goal with the
-     fresh session. On the console / CI surface (no human) the run instead fails
-     LOUDLY naming AUTH-EXPIRED and the expired role with a non-zero exit, never
-     a silent green and never a false REGRESSED; a human then refreshes the CI
-     secret (`PRAXIS_AUTH_STATE_<ROLE>`). Cost note: an email-delivered 2FA code
+     `auth_session.save_session_for_role(...)` (passing the resolved
+     `environment=` so the refreshed session lands env-scoped), then re-run the
+     goal with the fresh session. On the console / CI surface (no human) the run
+     instead fails LOUDLY naming AUTH-EXPIRED, the expired role, and the
+     environment (when one is selected) with a non-zero exit, never a silent
+     green and never a false REGRESSED; a human then refreshes the CI secret
+     (`PRAXIS_AUTH_STATE_<ROLE>`, or `PRAXIS_AUTH_STATE_<ENV>_<ROLE>` per
+     environment). Cost note: an email-delivered 2FA code
      cannot be refreshed in CI (no inbox), so the refresh is a periodic MANUAL
      human action; a TOTP authenticator-app second factor has a storable seed, so
      CI can self-refresh (ADR-0026 decision 6).
@@ -172,7 +210,8 @@ not load, read, or reference any auditor scenario while regressing.
      exhausted): surface it loudly with the goal name and the reason. It fails
      the run; it is never OK and never dropped.
 
-6. Report the roll-up honestly. State how many goals are OK, REGRESSED, STALE,
+7. Report the roll-up honestly. Name the environment the run checked (when one
+   is selected) and state how many goals are OK, REGRESSED, STALE,
    AUTH-EXPIRED, ERROR. If any goal is REGRESSED, AUTH-EXPIRED, or ERROR, say the
    run FAILS and name those goals; the console surface exits non-zero for exactly
    this reason. STALE alone does not fail the run (the app changed on purpose;
