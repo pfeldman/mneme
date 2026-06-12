@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -55,6 +56,7 @@ from ..runner import (
     write_junit_xml,
     write_markdown_report,
 )
+from ..runner.report import format_environment_annotation
 from ..store import (
     RUNS_SUBDIR,
     CandidateFileStore,
@@ -97,10 +99,16 @@ _MCP_CONFIG_TEMPLATE = (
 # gitignored, regenerable per-machine log; `.praxis.secrets` is the credentials
 # channel that must never be committed; `.praxis.auth/` is the authenticated-
 # session secret channel (a sibling of `.praxis.secrets`) that holds the saved
-# Playwright storageState and must never be committed either. All are appended
-# idempotently (never duplicated on re-init).
+# Playwright storageState and must never be committed either (the directory
+# pattern covers the per-env `.praxis.auth/<env>/` subdirs of ADR-0035
+# decision 7 too); `.praxis.secrets.*` covers the per-environment secrets
+# overlay files `.praxis.secrets.<env>` (ADR-0035 decision 7) so a per-env
+# credential can never be committed either. All are appended idempotently
+# (never duplicated on re-init), so re-running init on a pre-ADR-0035 repo
+# adds exactly the missing overlay line.
 GITIGNORE_RUNS_LINE = f"{PROJECT_DIR}/{RUNS_SUBDIR}/"
 GITIGNORE_SECRETS_LINE = SECRETS_FILE
+GITIGNORE_SECRETS_OVERLAYS_LINE = f"{SECRETS_FILE}.*"
 GITIGNORE_AUTH_LINE = f"{AUTH_DIRNAME}/"
 
 # The env-var surface of the brain-model pin (ADR-0034). For CI: the runner
@@ -109,6 +117,40 @@ GITIGNORE_AUTH_LINE = f"{AUTH_DIRNAME}/"
 # the ADR-0021 secrets channel. The model name is NOT a secret; it is an
 # operational input to the brain and never enters knowledge.
 BRAIN_MODEL_ENV = "PRAXIS_BRAIN_MODEL"
+
+# The env-var surface of the per-run environment selection (ADR-0035). For CI:
+# a job matrix exports PRAXIS_ENV per leg and every `praxis regress` /
+# `praxis explore` in that leg runs against that declared environment,
+# mirroring the ADR-0034 flag > env var > committed config precedence. The
+# environment NAME is operational provenance, never knowledge: it is stamped
+# onto run records at run time and never enters an assertion.
+PRAXIS_ENV_VAR = "PRAXIS_ENV"
+
+# A declared project's run directory is `runs/<timestamp>__<env>/` (ADR-0035
+# decision 8): the sortable timestamp prefix is unchanged and the suffix makes
+# "the last prod run" findable with `ls`. The env name in the DIRECTORY NAME is
+# sanitized conservatively: declared names come from the config map, but a
+# filesystem-hostile character in one (slash, colon, space) must not break or
+# escape the runs/ tree, so anything outside [A-Za-z0-9._-] maps to "-" here.
+# Reports, banners, and events carry the environment name verbatim; only the
+# dirname is sanitized.
+_ENV_DIRNAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _env_dirname(name: str) -> str:
+    """The run-dir-safe form of a declared environment name (see above)."""
+    return _ENV_DIRNAME_UNSAFE.sub("-", name)
+
+
+# What `praxis init --environment NAME=URL` accepts as a NAME. Stricter than
+# `_env_dirname` on purpose: a declared name enters file paths
+# (`runs/<ts>__<env>/`, `.praxis.auth/<env>/`, `.praxis.secrets.<env>`) AND
+# env-var names (`PRAXIS_AUTH_STATE_<ENV>_<ROLE>`, the name uppercased), and
+# only [A-Za-z0-9_] round-trips through BOTH channels (`-` and `.` survive a
+# path but are not legal in a POSIX env-var name). Rejecting at init time
+# keeps a non-round-tripping name from ever entering a committed config; a
+# hand-edited config is still sanitized per-channel at use time.
+_ENV_NAME_OK = re.compile(r"^[A-Za-z0-9_]+$")
 
 # `praxis init` scaffolds the `brain_model` key COMMENTED OUT (ADR-0034): the
 # pin is discoverable in the committed config without forcing a model choice,
@@ -123,6 +165,29 @@ _BRAIN_MODEL_CONFIG_COMMENT = (
     "# PRAXIS_BRAIN_MODEL env var override it per run; unset = the claude CLI\n"
     "# default (ADR-0034). Uncomment and set to enable:\n"
     "# brain_model: <model-name>\n"
+)
+
+# `praxis init` (without `--environment`) scaffolds the `environments` map
+# COMMENTED OUT, the ADR-0034 `brain_model` discoverability pattern: the
+# multi-env mechanism is visible in every committed config without changing
+# any undeclared-project behavior. Pure YAML comments, so a parsed config has
+# NO `environments` key until a human uncomments it (and an undeclared
+# project stays byte-identical in behavior, the ADR-0035 zero-ceremony bar).
+_ENVIRONMENTS_CONFIG_COMMENT = (
+    "# environments: declare the deployments this product runs on, so ONE set\n"
+    "# of goal YAMLs runs against each of them (ADR-0035). Pick one per run\n"
+    "# with --env on regress/explore/status, the PRAXIS_ENV env var, or the\n"
+    "# committed default_env. Declaring a map shadows the top-level base_url /\n"
+    "# environment / observed_app_version keys; per-env credentials go in\n"
+    "# .praxis.secrets.<env>, per-env sessions in .praxis.auth/<env>/.\n"
+    "# Uncomment and edit to enable:\n"
+    "# environments:\n"
+    "#   dev2:\n"
+    "#     base_url: https://dev2.example.com\n"
+    "#     observed_app_version: 2.6.0\n"
+    "#   prod:\n"
+    "#     base_url: https://example.com\n"
+    "# default_env: dev2\n"
 )
 
 
@@ -150,15 +215,90 @@ class ProjectContext:
         self.runs_dir = self.dir / RUNS_SUBDIR
         self.praxisignore_path = self.dir / PRAXISIGNORE_NAME
         self.config = yaml.safe_load(self.config_path.read_text()) or {}
+        # The environment THIS invocation runs against (ADR-0035), pinned by
+        # `select_environment`. None until selected, and always None on an
+        # undeclared project, so every env-aware property below degenerates to
+        # today's single-deployment reads.
+        self._selected_env: str | None = None
         # One run id per CLI invocation: every `store()` call on this context
         # writes into the SAME `runs/<run_id>/` subtree, while reads fold across
         # all run subtrees. Lazily assigned on the first `store()` call.
         self._run_id: str | None = None
+        # The run DIRECTORY name: the run id, suffixed `__<env>` when an
+        # environment is selected (ADR-0035 decision 8). Pinned on first use so
+        # the run dir and the store write target can never diverge within one
+        # invocation.
+        self._run_dirname: str | None = None
         self._store: RunsEventStore | None = None
         self._candidate_files: CandidateFileStore | None = None
 
     @property
+    def environments(self) -> dict[str, dict[str, Any]] | None:
+        """The committed per-deployment map (ADR-0035 decision 1), or None on
+        an undeclared project. Shape: name -> {base_url: <str>, optionally
+        observed_app_version: <str>}. A malformed map fails loudly at read
+        time instead of mid-run: silently treating it as undeclared would
+        flip the project back to single-env behavior without a trace."""
+        raw = self.config.get("environments")
+        if not raw:
+            return None
+        if not isinstance(raw, dict):
+            raise SystemExit(
+                f"{self.config_path}: `environments` must be a map of "
+                "name -> {base_url: <url>, ...} (ADR-0035)."
+            )
+        out: dict[str, dict[str, Any]] = {}
+        for name, entry in raw.items():
+            if not isinstance(entry, dict) or not entry.get("base_url"):
+                raise SystemExit(
+                    f"{self.config_path}: environments.{name} must be a map "
+                    "with a non-empty base_url (ADR-0035)."
+                )
+            out[str(name)] = entry
+        return out
+
+    @property
+    def default_env(self) -> str | None:
+        """The committed per-project environment default teammates share
+        (ADR-0035 decision 2). Empty string counts as unset."""
+        raw = self.config.get("default_env")
+        return str(raw) if raw else None
+
+    @property
+    def legacy_env(self) -> str | None:
+        """Which declared environment pre-declaration events (those with
+        `environment: None`) are attributed to, as a projection INPUT - no
+        event file is ever rewritten (ADR-0035 decision 4, the ADR-0013
+        caller-supplied-anchor posture). Parsed here; the read-side use lives
+        in the adapter partition. Empty string counts as unset."""
+        raw = self.config.get("legacy_env")
+        return str(raw) if raw else None
+
+    def select_environment(
+        self, flag: str | None = None, *, unresolved_ok: bool = False,
+    ) -> tuple[str | None, str | None]:
+        """Resolve and pin THIS invocation's environment (ADR-0035 decision 2).
+
+        Returns `(name, source)` exactly like `_resolve_brain_model`;
+        `(None, None)` on an undeclared project. Once a name is selected,
+        `base_url`, `environment`, and `observed_app_version` read from the
+        selected entry of the declared map; the now-shadowed top-level keys
+        are ignored in declared mode. Loud-error cases live in `_resolve_env`;
+        `unresolved_ok` is the read-only `status` posture (see there).
+        """
+        name, source = _resolve_env(
+            flag, self.environments, self.default_env,
+            unresolved_ok=unresolved_ok,
+        )
+        self._selected_env = name
+        return name, source
+
+    @property
     def base_url(self) -> str:
+        if self._selected_env is not None:
+            envs = self.environments
+            assert envs is not None
+            return str(envs[self._selected_env]["base_url"])
         return self.config.get("base_url", "http://127.0.0.1:8000")
 
     @property
@@ -167,6 +307,8 @@ class ProjectContext:
 
     @property
     def environment(self) -> str | None:
+        if self._selected_env is not None:
+            return self._selected_env
         return self.config.get("environment")
 
     @property
@@ -175,6 +317,11 @@ class ProjectContext:
 
     @property
     def observed_app_version(self) -> str | None:
+        if self._selected_env is not None:
+            envs = self.environments
+            assert envs is not None
+            raw = envs[self._selected_env].get("observed_app_version")
+            return str(raw) if raw else None
         return self.config.get("observed_app_version")
 
     @property
@@ -202,17 +349,39 @@ class ProjectContext:
     def target(self) -> Target:
         return Target(app=self.app, environment=self.environment)
 
+    def _run_dir_name(self) -> str:
+        """The current invocation's run directory NAME, pinned on first use.
+
+        With an environment selected the name is `<timestamp>__<env>` (ADR-0035
+        decision 8: the sortable timestamp prefix keeps run dirs ordered, the
+        suffix makes "the last prod run" findable with `ls`; the env name is
+        sanitized for the dirname only, see `_env_dirname`). On an undeclared
+        project (no selection) the name is the bare timestamp, byte-identical
+        to pre-ADR-0035. Pinning on first use means the run dir and the store
+        write target always agree within one invocation.
+        """
+        if self._run_id is None:
+            self._run_id = new_run_id()
+        if self._run_dirname is None:
+            if self._selected_env is not None:
+                self._run_dirname = (
+                    f"{self._run_id}__{_env_dirname(self._selected_env)}"
+                )
+            else:
+                self._run_dirname = self._run_id
+        return self._run_dirname
+
     def run_dir(self) -> Path:
-        """The current invocation's `runs/<timestamp>/` directory, created lazily.
+        """The current invocation's `runs/<timestamp>/` directory (suffixed
+        `__<env>` when an environment is selected, ADR-0035 decision 8),
+        created lazily.
 
         Holds the per-run raw event log plus any per-run artifacts (reports).
         The directory is gitignored (init writes the ignore line); the run id is
         fixed for the lifetime of this context so all writes in one CLI
         invocation share one subtree.
         """
-        if self._run_id is None:
-            self._run_id = new_run_id()
-        rd = self.runs_dir / self._run_id
+        rd = self.runs_dir / self._run_dir_name()
         rd.mkdir(parents=True, exist_ok=True)
         return rd
 
@@ -220,15 +389,16 @@ class ProjectContext:
         """Per-machine append-only event log spread over `runs/<timestamp>/`.
 
         Writes land in this invocation's run subtree; reads fold across every
-        run subtree so the believed-state projection sees the whole log even
+        run subtree - suffixed (`<timestamp>__<env>`) and unsuffixed alike,
+        since `RunsEventStore` treats run-dir names opaquely (ADR-0035
+        decision 8) - so the believed-state projection sees the whole log even
         across separate CLI invocations (ADR-0021 decision 3).
         """
         if self._store is None:
             # Touch the current run dir so the store has a stable write target.
             self.run_dir()
-            assert self._run_id is not None
             self.runs_dir.mkdir(parents=True, exist_ok=True)
-            self._store = RunsEventStore(str(self.runs_dir), self._run_id)
+            self._store = RunsEventStore(str(self.runs_dir), self._run_dir_name())
         return self._store
 
     def candidate_files(self) -> CandidateFileStore:
@@ -260,6 +430,14 @@ class ProjectContext:
             target=self.target(),
             seeds=self.seeds(),
             current_version=self.observed_app_version,
+            # ADR-0035 decisions 4 + 5: evidence partitions by the SELECTED
+            # environment (the `select_environment` pin; None on an undeclared
+            # project = no filter, today's reads exactly), NOT the legacy
+            # single-env `environment` config label, which is a prompt label
+            # and never a partition key - mirroring how session reuse scopes
+            # by the selected name (decision 7).
+            environment=self._selected_env,
+            legacy_env=self.legacy_env,
         )
 
 
@@ -347,7 +525,87 @@ def _scaffold_skills(repo_root: Path) -> int:
     return written
 
 
+def _parse_init_environments(
+    specs: list[str], default_env: str | None,
+) -> dict[str, dict[str, str]]:
+    """Parse the repeated `--environment NAME=URL` flags into the committed
+    `environments` map (ADR-0035 decisions 1 and 9).
+
+    Every mistake is loud at init time, BEFORE anything touches disk: a spec
+    without `NAME=URL` shape, a name that would not round-trip through the
+    per-env file paths and env-var names (see `_ENV_NAME_OK`), a duplicate
+    name (including two names that collide once uppercased into
+    `PRAXIS_AUTH_STATE_<ENV>_<ROLE>`), and a `--default-env` that does not
+    name a declared `--environment`. A single entry with no `--default-env`
+    is fine: the single-entry map auto-selects at run time (decision 2).
+    """
+    if not specs:
+        raise SystemExit(
+            "praxis init: --default-env requires at least one "
+            "--environment NAME=URL (ADR-0035)."
+        )
+    envs: dict[str, dict[str, str]] = {}
+    seen_upper: dict[str, str] = {}
+    for spec in specs:
+        name, sep, url = spec.partition("=")
+        if not sep or not name or not url:
+            raise SystemExit(
+                f"praxis init: --environment expects NAME=URL "
+                f"(e.g. dev2=https://dev2.example.com), got {spec!r}."
+            )
+        if not _ENV_NAME_OK.match(name):
+            raise SystemExit(
+                f"praxis init: invalid environment name {name!r}: the name "
+                f"enters file paths (runs/<ts>__<env>/, {AUTH_DIRNAME}/<env>/, "
+                f"{SECRETS_FILE}.<env>) and env-var names "
+                f"(PRAXIS_AUTH_STATE_<ENV>_<ROLE>), so only letters, digits, "
+                f"and underscores round-trip ([A-Za-z0-9_])."
+            )
+        prior = seen_upper.get(name.upper())
+        if prior == name:
+            raise SystemExit(
+                f"praxis init: environment {name!r} is declared twice."
+            )
+        if prior is not None:
+            raise SystemExit(
+                f"praxis init: environment names {prior!r} and {name!r} "
+                f"collide once uppercased into the "
+                f"PRAXIS_AUTH_STATE_<ENV>_<ROLE> env-var channel; rename one."
+            )
+        seen_upper[name.upper()] = name
+        envs[name] = {"base_url": url}
+    if default_env and default_env not in envs:
+        raise SystemExit(
+            f"praxis init: --default-env {default_env!r} is not a declared "
+            f"--environment. Declared environments: {', '.join(envs)}."
+        )
+    return envs
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
+    # The two scaffold styles are mutually exclusive (ADR-0035 decision 9):
+    # `--environment NAME=URL` (repeatable) + `--default-env` declare the
+    # multi-env map; the legacy `--env` / `--base-url` pair writes the
+    # single-deployment keys. Mixing them would scaffold a config whose
+    # top-level keys are silently shadowed by the map (decision 1), so the
+    # combination errors loudly before anything touches disk. (`getattr`,
+    # like `mcp_config` below: callers that drive `_cmd_init` with a partial
+    # args object stay on the legacy path.)
+    env_specs: list[str] | None = getattr(args, "environment", None)
+    default_env: str | None = getattr(args, "default_env", None)
+    declared_style = bool(env_specs) or bool(default_env)
+    if declared_style and (args.env is not None or args.base_url is not None):
+        raise SystemExit(
+            "praxis init: --environment/--default-env (the multi-environment "
+            "scaffold, ADR-0035) cannot be combined with the legacy "
+            "single-env --env/--base-url pair. Declare every deployment with "
+            "--environment NAME=URL (repeatable) + --default-env, or keep "
+            "the single-env flags."
+        )
+    environments = (
+        _parse_init_environments(env_specs or [], default_env)
+        if declared_style else None
+    )
     root = Path(args.path or Path.cwd()).resolve()
     pdir = root / PROJECT_DIR
     if pdir.exists() and not args.force:
@@ -375,38 +633,65 @@ def _cmd_init(args: argparse.Namespace) -> int:
             mcp_path.write_text(_MCP_CONFIG_TEMPLATE, encoding="utf-8")
             mcp_scaffolded = True
         mcp_config_value = MCP_CONFIG_NAME
-    config = {
-        "base_url": args.base_url,
-        "app": args.app or root.name,
-        "environment": args.env,
-        "agent_id": args.agent_id,
-        "observed_app_version": None,
-        # Default Playwright MCP config for the claude -p console brain
-        # (ADR-0027): a JSON file path (relative to the project root) so
-        # `praxis regress` / `praxis explore` need no --mcp-config flag; the flag
-        # overrides it. Scaffolded above so a fresh project is browser-ready.
-        "mcp_config": mcp_config_value,
-    }
+    config: dict[str, Any]
+    if environments is not None:
+        # Declared scaffold (ADR-0035 decision 9): the committed map +
+        # default_env, and NO top-level base_url / environment /
+        # observed_app_version keys - those are shadowed in declared mode
+        # (decision 1) and scaffolding dead keys invites drift.
+        config = {
+            "app": args.app or root.name,
+            "agent_id": args.agent_id,
+            "mcp_config": mcp_config_value,
+            "environments": environments,
+        }
+        if default_env:
+            config["default_env"] = default_env
+    else:
+        config = {
+            "base_url": args.base_url or "http://127.0.0.1:8000",
+            "app": args.app or root.name,
+            "environment": args.env,
+            "agent_id": args.agent_id,
+            "observed_app_version": None,
+            # Default Playwright MCP config for the claude -p console brain
+            # (ADR-0027): a JSON file path (relative to the project root) so
+            # `praxis regress` / `praxis explore` need no --mcp-config flag; the
+            # flag overrides it. Scaffolded above so a fresh project is
+            # browser-ready.
+            "mcp_config": mcp_config_value,
+        }
     # The brain-model pin ships COMMENTED OUT below the live keys (ADR-0034):
     # discoverable per project without forcing a choice, and never a hardcoded
     # model-name default. Comments only, so the parsed config has no
-    # `brain_model` key until a human uncomments it.
-    (pdir / CONFIG_NAME).write_text(
-        yaml.safe_dump(config, sort_keys=False, allow_unicode=True)
-        + _BRAIN_MODEL_CONFIG_COMMENT,
-        encoding="utf-8",
-    )
+    # `brain_model` key until a human uncomments it. An UNdeclared scaffold
+    # additionally carries the `environments` map commented out the same way
+    # (ADR-0035 decision 9): discoverable, zero behavior change; a declared
+    # scaffold has the real map instead.
+    config_text = yaml.safe_dump(config, sort_keys=False, allow_unicode=True)
+    config_text += _BRAIN_MODEL_CONFIG_COMMENT
+    if environments is None:
+        config_text += _ENVIRONMENTS_CONFIG_COMMENT
+    (pdir / CONFIG_NAME).write_text(config_text, encoding="utf-8")
     praxisignore = pdir / PRAXISIGNORE_NAME
     if not praxisignore.exists():
         praxisignore.write_text(_PRAXISIGNORE_TEMPLATE, encoding="utf-8")
 
-    # Gitignore the per-machine run logs, the secrets file, and the auth-session
-    # directory. This runs on every init (idempotent), so a re-init never
-    # duplicates the lines and both `.praxis.secrets` and `.praxis.auth/` are
-    # gitignored BEFORE any secret or saved session could be written (ADR-0021
-    # decisions 5 and 6; ADR-0026 decisions 2 and 3).
+    # Gitignore the per-machine run logs, the secrets file (and its per-env
+    # `.praxis.secrets.<env>` overlays), and the auth-session directory (whose
+    # directory pattern already covers the per-env `.praxis.auth/<env>/`
+    # subdirs). This runs on every init (idempotent), so a re-init never
+    # duplicates the lines and every secret channel is gitignored BEFORE any
+    # secret or saved session could be written (ADR-0021 decisions 5 and 6;
+    # ADR-0026 decisions 2 and 3; ADR-0035 decision 7).
     added = _append_gitignore_lines(
-        root, [GITIGNORE_RUNS_LINE, GITIGNORE_SECRETS_LINE, GITIGNORE_AUTH_LINE]
+        root,
+        [
+            GITIGNORE_RUNS_LINE,
+            GITIGNORE_SECRETS_LINE,
+            GITIGNORE_SECRETS_OVERLAYS_LINE,
+            GITIGNORE_AUTH_LINE,
+        ],
     )
 
     # Scaffold the local-brain Claude Code skills from package data.
@@ -435,6 +720,17 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print(f"Saved auth sessions go in a gitignored {AUTH_DIRNAME}/ at the repo "
           "root (one storageState JSON per role), never inside .praxis/ "
           "(ADR-0026 decisions 2 and 3).")
+    if environments is not None:
+        # The env workflow, named only when a map was declared: an undeclared
+        # init prints exactly what it printed before (ADR-0035 zero-ceremony).
+        names = ", ".join(environments)
+        print(f"Environments declared: {names}. Pick one per run with "
+              f"`praxis regress --env <name>` (or `explore` / `status`), the "
+              f"{PRAXIS_ENV_VAR} env var, or the committed default_env "
+              "(ADR-0035).")
+        print(f"Per-environment credentials overlay the base file as "
+              f"{SECRETS_FILE}.<env>; per-environment sessions live in "
+              f"{AUTH_DIRNAME}/<env>/<role>.json (both gitignored).")
     print("Next: drop a *.knowledge.yaml seed file under "
           f"{pdir / 'knowledge'}/ (one per goal, source_type=human or spec), "
           "or import one with `praxis learn <goal-id> --from-file PATH`.")
@@ -555,11 +851,129 @@ def _resolve_brain_model(
     return None, None
 
 
+def _resolve_env(
+    flag: str | None,
+    environments: dict[str, dict[str, Any]] | None,
+    default_env: str | None,
+    *,
+    environ: dict[str, str] | None = None,
+    unresolved_ok: bool = False,
+) -> tuple[str | None, str | None]:
+    """Resolve which declared environment this run checks, and name its source.
+
+    Precedence (ADR-0035 decision 2, mirroring the ADR-0034 model pin):
+
+      1. the `--env` flag: an explicit per-run override;
+      2. the `PRAXIS_ENV` env var: the CI channel (one job matrix variable);
+      3. the committed `.praxis/config.yaml` `default_env` key;
+      4. a single-entry `environments` map auto-selects its only entry
+         (unambiguous, no ceremony for the one-env project that opted in).
+
+    An empty string at any level counts as unset (the ADR-0034 posture).
+    Resolution failures are LOUD, never silent:
+
+      - a name (flag or env var) not in the declared map errors naming the
+        declared environments;
+      - a `default_env` naming an undeclared environment errors the same way
+        (a committed typo must not silently fall through to auto-select);
+      - a declared multi-entry map that resolves to nothing errors naming the
+        declared environments and the three ways to pick one;
+      - `--env` on an UNDECLARED project errors: the user explicitly asked
+        for something the config cannot honor;
+      - `PRAXIS_ENV` on an undeclared project is ignored with a one-line
+        stderr notice (warn-and-ignore), so a pipeline-wide export cannot
+        break repos that have not adopted environments.
+
+    `unresolved_ok=True` softens exactly ONE of those cases: a declared
+    multi-entry map that resolves to nothing returns `(None, None)` instead
+    of raising. That is the read-only `status` posture (a user runs status
+    precisely to SEE what environments exist); every explicit-mistake error
+    above (unknown name, flag on undeclared, default_env typo) stays loud.
+
+    Returns `(name, source)` where source names the winning level for the
+    run banner; `(None, None)` on an undeclared project (today's behavior).
+    """
+    env = os.environ if environ is None else environ
+    flag = flag or None
+    env_value = env.get(PRAXIS_ENV_VAR) or None
+    default_env = default_env or None
+    if not environments:
+        if flag:
+            raise SystemExit(
+                f"--env {flag!r} was given but no environments are declared "
+                "in .praxis/config.yaml. Declare an `environments:` map "
+                "(ADR-0035) to select one."
+            )
+        if env_value:
+            print(
+                f"warning: {PRAXIS_ENV_VAR}={env_value!r} is set but no "
+                "environments are declared in .praxis/config.yaml; ignoring "
+                "it (ADR-0035).",
+                file=sys.stderr,
+            )
+        return None, None
+    declared = ", ".join(sorted(environments))
+    if flag:
+        if flag not in environments:
+            raise SystemExit(
+                f"unknown environment {flag!r} (from --env). Declared "
+                f"environments: {declared}."
+            )
+        return flag, "--env flag"
+    if env_value:
+        if env_value not in environments:
+            raise SystemExit(
+                f"unknown environment {env_value!r} (from {PRAXIS_ENV_VAR}). "
+                f"Declared environments: {declared}."
+            )
+        return env_value, f"{PRAXIS_ENV_VAR} env"
+    if default_env:
+        if default_env not in environments:
+            raise SystemExit(
+                f"config.yaml default_env {default_env!r} is not a declared "
+                f"environment. Declared environments: {declared}."
+            )
+        return default_env, "config.yaml default_env"
+    if len(environments) == 1:
+        only = next(iter(environments))
+        return only, "single declared environment"
+    if unresolved_ok:
+        return None, None
+    raise SystemExit(
+        f"no environment selected: this project declares environments "
+        f"({declared}) and none was picked. Select one with --env <name>, "
+        f"the {PRAXIS_ENV_VAR} env var, or default_env in "
+        ".praxis/config.yaml (ADR-0035)."
+    )
+
+
+def _select_environment_for_run(
+    proj: "ProjectContext", args: argparse.Namespace, *,
+    unresolved_ok: bool = False,
+) -> str | None:
+    """Resolve the run's environment and print the one-line stderr banner.
+
+    Mirrors the ADR-0034 model banner posture: printed only when an
+    environment is resolved, naming the winning source, so a run's output
+    records WHICH deployment produced the verdicts. An undeclared project
+    prints nothing and the run proceeds byte-identically to pre-ADR-0035.
+    `unresolved_ok` (status only) makes an unresolvable declared map proceed
+    unselected, with no banner, instead of erroring (see `_resolve_env`).
+    """
+    name, source = proj.select_environment(
+        getattr(args, "env", None), unresolved_ok=unresolved_ok,
+    )
+    if name is not None:
+        print(f"  environment: {name} (from {source})", file=sys.stderr)
+    return name
+
+
 def _select_console_brain(
     args: argparse.Namespace, *, default_mcp_config: str | None = None,
     default_brain_model: str | None = None,
     progress: "Callable[[], tuple[str, str] | None] | None" = None,
     session_for_goal: "Callable[[], Any] | None" = None,
+    environment: str | None = None,
 ) -> Any:
     """Pick the brain that drives a console regress / explore run (ADR-0027
     decision 7).
@@ -582,6 +996,14 @@ def _select_console_brain(
     precondition authenticated goal reuses its saved Playwright storage state via
     `--storage-state` (ADR-0026, ADR-0027 decision 2). The `--from-file` path
     ignores it: a scripted run feeds observations directly and drives no browser.
+
+    `environment` is the run's SELECTED environment (ADR-0035 decision 7, the
+    value `_select_environment_for_run` resolved; None on an undeclared
+    project). It is forwarded to the claude -p brain so session reuse resolves
+    the env-scoped sources (`PRAXIS_AUTH_STATE_<ENV>_<ROLE>`,
+    `.praxis.auth/<env>/<role>.json`, no unscoped fallback) and the AUTH-EXPIRED
+    note names the role AND the environment. The `--from-file` path ignores it:
+    a scripted run loads no session.
 
     The brain model resolves `--model` flag > `PRAXIS_BRAIN_MODEL` env >
     `default_brain_model` (the project's committed `brain_model` pin) > unset
@@ -640,6 +1062,7 @@ def _select_console_brain(
         mcp_config_path=getattr(args, "mcp_config", None) or default_mcp_config,
         progress=progress,
         session_for_goal=session_for_goal,
+        environment=environment,
     )
 
 
@@ -656,6 +1079,26 @@ def _executor_from_file(path: Path):
 
 def _cmd_regress(args: argparse.Namespace) -> int:
     proj = discover_project()
+    # Resolve the environment BEFORE building the adapter (ADR-0035): the
+    # selected env supplies base_url / environment / observed_app_version to
+    # everything downstream. Undeclared projects resolve to None silently.
+    # The SELECTED name (not the legacy single-env `environment` config label)
+    # is what scopes session reuse below (ADR-0035 decision 7).
+    selected_env = _select_environment_for_run(proj, args)
+    # The "App under test:" prompt line carries the base_url ONLY when an
+    # environment was selected from a declared map (ADR-0035 decision 3): an
+    # undeclared project's scaffolded, possibly-dead top-level base_url is
+    # NEVER injected, so its rendered prompts stay byte-identical to today.
+    run_base_url = proj.base_url if selected_env is not None else None
+    # JUnit suite name tagged by environment (ADR-0035 decision 8): a declared
+    # run's suite is `praxis-regress[<env>]` so a CI job matrix over PRAXIS_ENV
+    # renders one distinguishable suite per deployment; undeclared keeps
+    # today's `praxis-regress` byte-identically. Testcase mapping, counts, and
+    # exit codes are untouched.
+    junit_suite = (
+        f"praxis-regress[{selected_env}]" if selected_env is not None
+        else "praxis-regress"
+    )
     adapter = proj.adapter()
 
     # Live progress label the claude -p spinner reads so the running line reads
@@ -680,6 +1123,7 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         args, default_mcp_config=proj.mcp_config,
         default_brain_model=proj.brain_model, progress=_progress_label,
         session_for_goal=auth_ctx.current,
+        environment=selected_env,
     )
 
     # Default-all aggregate (ADR-0023 decision 2): no `--goal` runs EVERY
@@ -737,6 +1181,7 @@ def _cmd_regress(args: argparse.Namespace) -> int:
             adapter, brain, goals,
             agent_id=proj.agent_id,
             observed_app_version=proj.observed_app_version,
+            base_url=run_base_url,
             budget_tokens_per_goal=args.budget_tokens,
             budget_actions_per_goal=args.budget_actions,
             budget_wall_seconds_per_goal=args.budget_wall_seconds,
@@ -751,11 +1196,14 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         run_dir = proj.run_dir()
         report_md = run_dir / "regress-aggregate.md"
         report_xml = run_dir / "regress-aggregate.xml"
-        write_aggregate_markdown(reports, report_md)
+        # Reports are tagged by the selected environment (ADR-0035 decision 8):
+        # the markdown header names the deployment, the JUnit suite carries it
+        # in brackets. Undeclared runs (environment None) stay byte-identical.
+        write_aggregate_markdown(reports, report_md, environment=selected_env)
         # The aggregate path is the CI path (ADR-0024: `praxis regress` with no
         # --goal). Emit JUnit XML here too, one testcase per goal, so a CI that
         # renders test reports gets the aggregate run, not only single-goal runs.
-        write_aggregate_junit_xml(reports, report_xml)
+        write_aggregate_junit_xml(reports, report_xml, suite_name=junit_suite)
         # Per-goal verdict lines were printed live by `_on_goal_done` as each
         # goal completed (ADR-0027 decision 6); the named signal for a non-OK
         # goal is in the final summary below and the markdown report.
@@ -791,6 +1239,7 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         adapter, brain, goals,
         agent_id=proj.agent_id,
         observed_app_version=proj.observed_app_version,
+        base_url=run_base_url,
         budget_tokens=args.budget_tokens,
         budget_actions=args.budget_actions,
         stop_on_fail=args.stop_on_fail,
@@ -799,8 +1248,10 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     run_dir = proj.run_dir()
     last_md = run_dir / "last-regress.md"
     last_xml = run_dir / "last-regress.xml"
-    write_markdown_report(results, last_md)
-    write_junit_xml(results, last_xml)
+    # Same env tagging as the aggregate artifacts (ADR-0035 decision 8);
+    # byte-identical when no environment is selected.
+    write_markdown_report(results, last_md, environment=selected_env)
+    write_junit_xml(results, last_xml, suite_name=junit_suite)
     # Show the verdict ON THE CONSOLE (ADR-0027 decision 6): a human should see
     # whether the goal passed without opening the markdown report. believed_total
     # is the count the verdict needed all of (ADR-0009); read it from the
@@ -845,6 +1296,8 @@ def _explore_aggregate(
     budget_wall_seconds: float | None = None,
     jobs: int = 1,
     auth_ctx: "_GoalAuthContext | None" = None,
+    base_url: str | None = None,
+    environment: str | None = None,
 ) -> int:
     """Default-all explore: hunt off-happy-path across EVERY believed goal,
     write candidate files on the committed tree, and emit ONE trigger-grouped
@@ -888,6 +1341,7 @@ def _explore_aggregate(
         adapter, brain, goals,
         agent_id=proj.agent_id,
         observed_app_version=proj.observed_app_version,
+        base_url=base_url,
         budget_tokens_per_goal=budget_tokens,
         budget_actions_per_goal=budget_actions,
         budget_wall_seconds_per_goal=budget_wall_seconds,
@@ -923,8 +1377,12 @@ def _explore_aggregate(
 
     run_dir = proj.run_dir()
     report_md = run_dir / "explore-candidates.md"
+    # The explore report header is tagged by the selected environment exactly
+    # as the regress reports are (ADR-0035 decision 8); byte-identical when no
+    # environment is selected.
     write_candidate_markdown(
         groups, report_md, off_path_fractions=off_path, errors=errors,
+        environment=environment,
     )
 
     n_believed = sum(1 for g in groups if g.believed)
@@ -953,7 +1411,16 @@ def _explore_aggregate(
 
 def _cmd_explore(args: argparse.Namespace) -> int:
     proj = discover_project()
+    # Resolve the environment BEFORE building the adapter (ADR-0035), exactly
+    # as regress does; undeclared projects resolve to None silently. The
+    # SELECTED name scopes session reuse below (ADR-0035 decision 7).
+    selected_env = _select_environment_for_run(proj, args)
     adapter = proj.adapter()
+
+    # The "App under test:" prompt line carries the base_url ONLY when an
+    # environment was selected from a declared map (ADR-0035 decision 3); an
+    # undeclared project's prompts stay byte-identical to today.
+    run_base_url = proj.base_url if selected_env is not None else None
 
     # Per-goal auth context so the claude -p brain reuses a saved session per
     # goal (ADR-0026, ADR-0027 decision 2). Cover every seed so both the
@@ -965,6 +1432,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
         args, default_mcp_config=proj.mcp_config,
         default_brain_model=proj.brain_model,
         session_for_goal=auth_ctx.current,
+        environment=selected_env,
     )
 
     # Default-all aggregate (ADR-0023 decision 2): no `--goal` hunts off-happy-
@@ -978,6 +1446,8 @@ def _cmd_explore(args: argparse.Namespace) -> int:
             budget_wall_seconds=args.budget_wall_seconds,
             jobs=args.jobs,
             auth_ctx=auth_ctx,
+            base_url=run_base_url,
+            environment=selected_env,
         )
 
     # Snapshot the candidate event ids already in the per-machine log for this
@@ -1008,6 +1478,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
         adapter, brain, args.goal,
         agent_id=proj.agent_id,
         observed_app_version=proj.observed_app_version,
+        base_url=run_base_url,
         happy_path_urls=happy,
         budget_tokens=args.budget_tokens,
         budget_actions=args.budget_actions,
@@ -1086,6 +1557,15 @@ def _cmd_review(args: argparse.Namespace) -> int:
             print(f"  [contested failure / {s.type.value}] {s.value}  "
                   f"(confidence={s.confidence:.2f}, by {s.provenance.source_id})")
         for pc in contested_cands:
+            # ADR-0035 decision 6: review is cross-env (the adapter here is
+            # built without selecting an environment); each candidate carries
+            # an annotation naming the env(s) it was observed on - exactly the
+            # datum a human needs to decide product-level vs not-yet-shipped.
+            # Display-only: it never changes status or the source count
+            # (decision 5). None when every observation is env-less (the pure
+            # single-env project), keeping that output byte-identical.
+            env_note = format_environment_annotation(pc.environments)
+            env_line = f"\n     {env_note}" if env_note is not None else ""
             if pc.risk is not None:
                 trig = pc.risk.trigger
                 trig_str = (
@@ -1100,6 +1580,7 @@ def _cmd_review(args: argparse.Namespace) -> int:
                     f"     confidence={pc.risk.confidence:.2f}  "
                     f"sources={{{src_list}}}  "
                     f"events={len(pc.corroborating_events)}"
+                    f"{env_line}"
                 )
             elif pc.uncertainty is not None:
                 src_list = ", ".join(sorted(pc.distinct_source_ids))
@@ -1109,6 +1590,7 @@ def _cmd_review(args: argparse.Namespace) -> int:
                     f"     raised_by={pc.uncertainty.raised_by}  "
                     f"sources={{{src_list}}}  "
                     f"events={len(pc.corroborating_events)}"
+                    f"{env_line}"
                 )
     if not any_contested:
         print("nothing contested. Nothing to review.")
@@ -1126,6 +1608,15 @@ def _cmd_review(args: argparse.Namespace) -> int:
 
 def _cmd_status(args: argparse.Namespace) -> int:
     proj = discover_project()
+    # Resolve the environment first (ADR-0035): status reports the selected
+    # env's base_url / version, and a declared project lists its whole map
+    # below. Undeclared projects resolve to None and print exactly as today.
+    # Resolution is BEST-EFFORT here, unlike regress/explore: status is the
+    # read-only discovery command a user runs precisely to SEE what
+    # environments exist, so an unresolvable multi-entry map prints the map
+    # unselected (no banner) instead of hard-erroring. Explicit mistakes
+    # (unknown --env name, --env on an undeclared project) stay loud.
+    _select_environment_for_run(proj, args, unresolved_ok=True)
     adapter = proj.adapter()
     seeds = proj.seeds()
     if not seeds:
@@ -1134,6 +1625,18 @@ def _cmd_status(args: argparse.Namespace) -> int:
     print(f"project: {proj.root}")
     print(f"app:     {proj.app}  env={proj.environment or '-'}  base_url={proj.base_url}")
     print(f"version: {proj.observed_app_version or '-'}")
+    envs = proj.environments
+    if envs:
+        # A declared project shows its whole committed map plus the default
+        # (ADR-0035 decision 2), so a teammate can see every deployment and
+        # how the bare command picks one without opening config.yaml.
+        print("environments:")
+        for name in sorted(envs):
+            entry = envs[name]
+            ver = entry.get("observed_app_version")
+            ver_str = f"  version={ver}" if ver else ""
+            marker = "  (default)" if name == proj.default_env else ""
+            print(f"  {name}: {entry['base_url']}{ver_str}{marker}")
     print()
     for gid in sorted(seeds.keys()):
         kf = adapter.read_knowledge(gid)
@@ -1169,9 +1672,27 @@ def _build_parser() -> argparse.ArgumentParser:
 
     init = sub.add_parser("init", help="Bootstrap .praxis/ in the current dir.")
     init.add_argument("--path", help="Project root (default: cwd).")
-    init.add_argument("--base-url", default="http://127.0.0.1:8000")
+    init.add_argument("--base-url", default=None,
+                       help="Single-deployment base URL written to config.yaml "
+                            "(default: http://127.0.0.1:8000). Mutually "
+                            "exclusive with --environment/--default-env.")
     init.add_argument("--app", help="App name (default: cwd directory name).")
-    init.add_argument("--env", default=None, help="Environment label.")
+    init.add_argument("--env", default=None,
+                       help="Environment label written to the top-level "
+                            "config.yaml `environment` key (legacy single-env "
+                            "scaffold). Mutually exclusive with "
+                            "--environment/--default-env.")
+    init.add_argument("--environment", action="append", default=None,
+                       metavar="NAME=URL",
+                       help="Declare a deployment in the committed config.yaml "
+                            "`environments` map (repeatable, ADR-0035). "
+                            "Mutually exclusive with the legacy single-env "
+                            "--env/--base-url pair.")
+    init.add_argument("--default-env", default=None,
+                       help="The committed default_env teammates share; must "
+                            "name a declared --environment (ADR-0035). "
+                            "Optional with a single --environment, which "
+                            "auto-selects.")
     init.add_argument("--agent-id", default="praxis-cli")
     init.add_argument("--mcp-config", default=None,
                        help="Default Playwright MCP config path for the claude -p "
@@ -1201,6 +1722,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     regress.add_argument("--goal", help="Run only this goal (default: aggregate "
                                         "over all seeds).")
+    regress.add_argument("--env", default=None,
+                          help="Environment to run against: a name from the "
+                               "config.yaml `environments` map; overrides "
+                               "PRAXIS_ENV and default_env (ADR-0035).")
     regress.add_argument("--budget-tokens", type=int, default=None,
                           help="Per-goal token slice in aggregate mode "
                                "(ADR-0023 decision 7).")
@@ -1237,6 +1762,10 @@ def _build_parser() -> argparse.ArgumentParser:
     explore.add_argument("--goal", required=False,
                           help="Explore only this goal (default: aggregate over "
                                "all seeds, one report grouped by trigger).")
+    explore.add_argument("--env", default=None,
+                          help="Environment to run against: a name from the "
+                               "config.yaml `environments` map; overrides "
+                               "PRAXIS_ENV and default_env (ADR-0035).")
     explore.add_argument("--budget-tokens", type=int, default=None,
                           help="Per-goal token slice in aggregate mode "
                                "(ADR-0023 decision 7).")
@@ -1280,6 +1809,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "status",
         help="Print a believed-knowledge summary for all goals.",
     )
+    status.add_argument("--env", default=None,
+                         help="Environment to report against: a name from the "
+                              "config.yaml `environments` map; overrides "
+                              "PRAXIS_ENV and default_env (ADR-0035).")
     status.set_defaults(func=_cmd_status)
 
     return p

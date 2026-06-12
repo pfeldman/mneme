@@ -345,6 +345,92 @@ def test_decay_collision_anchor_is_write_order_independent() -> None:
     assert {de.signal_value for de in dec1} == {de.signal_value for de in dec2}
 
 
+# ---------------------------------------------------------------- ADR-0035 partition
+
+
+def test_dev2_ahead_of_prod_version_bump_cannot_stale_prod_evidence(tmp_path) -> None:
+    """The ADR-0035 decay collision, fixed by partitioning (decision 5 /
+    analysis section 4.1): dev2 runs 2.6.0, prod runs 2.3.0, N=2 minors.
+
+    Folded (the pre-ADR-0035 failure mode), the anchor derives from the
+    highest semver across BOTH deployments (2.6.0), so prod's fresh 2.3.0
+    evidence lands 3 minors back and stales - a healthy prod decayed by a
+    dev2 deploy. Partitioned at the adapter read path, prod's anchor derives
+    from prod's OWN supporting set (2.3.0), nothing stales, and `decay.py`
+    itself is unchanged."""
+    from praxis.adapters import BrowserUseAdapter
+    from praxis.store import FileEventStore
+
+    store = FileEventStore(tmp_path)
+    target = Target(app="acme")
+    prod = BrowserUseAdapter(store, target=target, environment="prod",
+                             current_version="2.3.0")
+    dev2 = BrowserUseAdapter(store, target=target, environment="dev2",
+                             current_version="2.6.0")
+    # Prod earned believed: behavioral (a1) + network (a2), both fresh at 2.3.0.
+    prod.write_observations(
+        "g", "a1", [_obs("logout", "behavioral", src_id="a1", ver="2.3.0")])
+    prod.write_observations(
+        "g", "a2", [_obs("POST /session 2xx", "network", src_id="a2", ver="2.3.0")])
+    # A dev2 run observes the goal on the deployment that ships ahead.
+    dev2.write_observations(
+        "g", "a1", [_obs("logout", "behavioral", src_id="a1", ver="2.6.0")])
+
+    # The FOLDED stream is the failure mode the partition exists to kill:
+    # anchor 2.6.0 stales prod's day-fresh evidence and flips its belief.
+    _, folded_decay = project_with_decay(
+        store.read("g"), goal_id="g", goal="auth", target=target,
+        current_version=None,
+    )
+    assert any(de.signal_value == "POST /session 2xx" for de in folded_decay)
+
+    # PARTITIONED (what the prod adapter actually feeds the projection):
+    # prod's own stream only -> anchor 2.3.0 -> no flip, belief intact.
+    prod_events = prod.read_events("g")
+    assert {e.environment for e in prod_events} == {"prod"}
+    kf, decay_events = project_with_decay(
+        prod_events, goal_id="g", goal="auth", target=target,
+        current_version=None,
+    )
+    assert decay_events == []
+    statuses = {(s.type.value, s.value): s.status.value
+                for s in kf.success_signals}
+    assert statuses[("behavioral", "logout")] == "believed"
+    assert statuses[("network", "POST /session 2xx")] == "believed"
+
+
+def test_decay_event_replay_is_partitioned_by_environment(tmp_path) -> None:
+    """A decay flip recorded for one environment must not retire another
+    environment's observations on replay: `read_decay_events` filters the
+    prior-decay input with the same partition rule as the event stream
+    (ADR-0035 decision 4), so replaying one env's log reconstructs that
+    env's flips without touching the other's."""
+    from praxis.adapters import BrowserUseAdapter
+    from praxis.store import DecayEvent, FileEventStore
+
+    store = FileEventStore(tmp_path)
+    target = Target(app="acme")
+    prod = BrowserUseAdapter(store, target=target, environment="prod")
+    dev2_flip = DecayEvent(
+        goal_id="g", environment="dev2",
+        signal_kind="success", signal_type="network",
+        signal_value="POST /session 2xx",
+        from_status="believed", to_status="stale",
+        retired_event_ids=["e1"], anchor_current_version="2.6.0",
+        anchor_now=NOW, rule="version",
+    )
+    store.append_decay(dev2_flip)
+    # The dev2 flip is invisible to prod's partition...
+    assert prod.read_decay_events("g") == []
+    # ...and visible to dev2's and to an undeclared (unfiltered) read.
+    dev2 = BrowserUseAdapter(store, target=target, environment="dev2")
+    unfiltered = BrowserUseAdapter(store, target=target)
+    assert [de.event_id for de in dev2.read_decay_events("g")] \
+        == [dev2_flip.event_id]
+    assert [de.event_id for de in unfiltered.read_decay_events("g")] \
+        == [dev2_flip.event_id]
+
+
 # ---------------------------------------------------------------- evaluate_decay pure
 
 

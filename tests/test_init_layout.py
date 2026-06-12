@@ -75,8 +75,12 @@ def test_gitignore_contains_all_lines_once(tmp_path: Path) -> None:
     lines = _gitignore_lines(tmp_path)
     assert lines.count(".praxis/runs/") == 1
     assert lines.count(".praxis.secrets") == 1
+    # ADR-0035 decision 7: the per-environment secrets overlays
+    # (`.praxis.secrets.<env>`) are gitignored by the glob line.
+    assert lines.count(".praxis.secrets.*") == 1
     # ADR-0026 decisions 2 and 3: the saved auth-session directory is gitignored
-    # too, so the session secret can never be committed by accident.
+    # too, so the session secret can never be committed by accident. The
+    # directory pattern also covers the per-env `.praxis.auth/<env>/` subdirs.
     assert lines.count(".praxis.auth/") == 1
 
 
@@ -87,7 +91,24 @@ def test_second_init_does_not_duplicate_ignore_lines(tmp_path: Path) -> None:
     lines = _gitignore_lines(tmp_path)
     assert lines.count(".praxis/runs/") == 1
     assert lines.count(".praxis.secrets") == 1
+    assert lines.count(".praxis.secrets.*") == 1
     # A second init must not duplicate the auth-session line either.
+    assert lines.count(".praxis.auth/") == 1
+
+
+def test_reinit_on_pre_adr0035_gitignore_adds_only_the_overlay_line(
+    tmp_path: Path,
+) -> None:
+    # A repo inited BEFORE ADR-0035 already carries the three old lines; a
+    # re-init adds exactly the missing `.praxis.secrets.*` overlay line, once.
+    (tmp_path / ".gitignore").write_text(
+        ".praxis/runs/\n.praxis.secrets\n.praxis.auth/\n", encoding="utf-8"
+    )
+    _run(["init"], tmp_path)
+    lines = _gitignore_lines(tmp_path)
+    assert lines.count(".praxis/runs/") == 1
+    assert lines.count(".praxis.secrets") == 1
+    assert lines.count(".praxis.secrets.*") == 1
     assert lines.count(".praxis.auth/") == 1
 
 
@@ -100,6 +121,7 @@ def test_init_appends_to_a_preexisting_gitignore(tmp_path: Path) -> None:
     assert "*.log" in lines
     assert lines.count(".praxis/runs/") == 1
     assert lines.count(".praxis.secrets") == 1
+    assert lines.count(".praxis.secrets.*") == 1
     assert lines.count(".praxis.auth/") == 1
 
 
@@ -110,17 +132,22 @@ def test_init_creates_gitignore_when_absent(tmp_path: Path) -> None:
     lines = _gitignore_lines(tmp_path)
     assert ".praxis/runs/" in lines
     assert ".praxis.secrets" in lines
+    assert ".praxis.secrets.*" in lines
     assert ".praxis.auth/" in lines
 
 
 def test_secrets_gitignored_before_any_secret_written(tmp_path: Path) -> None:
     # The whole secret contract rests on .praxis.secrets being gitignored from
     # the moment init runs, so a credential dropped in next can never be
-    # committed. After init the ignore line exists and the secrets file does NOT
-    # (no secret has been written yet).
+    # committed. After init the ignore lines exist (the base file AND the
+    # per-env overlay glob, ADR-0035 decision 7) and no secrets file exists
+    # yet (no secret has been written).
     _run(["init"], tmp_path)
-    assert ".praxis.secrets" in _gitignore_lines(tmp_path)
+    lines = _gitignore_lines(tmp_path)
+    assert ".praxis.secrets" in lines
+    assert ".praxis.secrets.*" in lines
     assert not (tmp_path / ".praxis.secrets").exists()
+    assert not list(tmp_path.glob(".praxis.secrets.*"))
 
 
 def test_auth_session_gitignored_before_any_session_written(tmp_path: Path) -> None:
@@ -232,3 +259,111 @@ def test_init_with_explicit_mcp_config_does_not_scaffold(tmp_path: Path) -> None
     assert not (tmp_path / "playwright-mcp.json").exists()
     config = yaml.safe_load((tmp_path / ".praxis" / "config.yaml").read_text())
     assert config["mcp_config"] == "my-mcp.json"
+
+
+# --- the multi-environment scaffold (ADR-0035 decision 9) -------------------
+
+
+def test_init_environment_flags_scaffold_a_parseable_map(tmp_path: Path) -> None:
+    """`praxis init --environment NAME=URL` (repeatable) + `--default-env`
+    write the committed `environments` map exactly as the env-resolution
+    reader expects it (name -> {base_url}), plus `default_env`. The shadowed
+    single-deployment top-level keys are NOT scaffolded in declared mode."""
+    import yaml
+
+    rc = _run([
+        "init", "--app", "demo",
+        "--environment", "dev2=https://dev2.example.com",
+        "--environment", "prod=https://example.com",
+        "--default-env", "dev2",
+    ], tmp_path)
+    assert rc == 0
+    config = yaml.safe_load((tmp_path / ".praxis" / "config.yaml").read_text())
+    assert config["environments"] == {
+        "dev2": {"base_url": "https://dev2.example.com"},
+        "prod": {"base_url": "https://example.com"},
+    }
+    assert config["default_env"] == "dev2"
+    assert config["app"] == "demo"
+    # The top-level single-deployment keys are shadowed in declared mode
+    # (ADR-0035 decision 1); scaffolding dead keys would invite drift.
+    assert "base_url" not in config
+    assert "environment" not in config
+    assert "observed_app_version" not in config
+
+    # The scaffold round-trips through the step-2 reader: the map parses and
+    # default_env resolves with the committed-config precedence.
+    from praxis.cli.main import ProjectContext
+
+    proj = ProjectContext(tmp_path)
+    envs = proj.environments
+    assert envs is not None and set(envs) == {"dev2", "prod"}
+    assert proj.select_environment(None) == ("dev2", "config.yaml default_env")
+    assert proj.base_url == "https://dev2.example.com"
+
+
+def test_init_single_environment_without_default_env_auto_selects(
+    tmp_path: Path,
+) -> None:
+    """One `--environment` with no `--default-env` is fine: the single-entry
+    map auto-selects at run time (ADR-0035 decision 2), so init writes no
+    `default_env` key."""
+    import yaml
+
+    rc = _run(["init", "--environment", "prod=https://example.com"], tmp_path)
+    assert rc == 0
+    config = yaml.safe_load((tmp_path / ".praxis" / "config.yaml").read_text())
+    assert config["environments"] == {"prod": {"base_url": "https://example.com"}}
+    assert "default_env" not in config
+
+    from praxis.cli.main import ProjectContext
+
+    proj = ProjectContext(tmp_path)
+    assert proj.select_environment(None) == ("prod", "single declared environment")
+
+
+def test_init_undeclared_scaffolds_environments_commented_out(
+    tmp_path: Path,
+) -> None:
+    """ADR-0035 decision 9 (the ADR-0034 `brain_model` pattern): an undeclared
+    `praxis init` scaffolds the `environments` map COMMENTED OUT. The
+    mechanism is discoverable in every committed config, but the parsed
+    config carries NO `environments` key, so the project stays undeclared and
+    behaves byte-identically to a single-deployment project."""
+    import yaml
+
+    _run(["init", "--app", "demo"], tmp_path)
+    text = (tmp_path / ".praxis" / "config.yaml").read_text(encoding="utf-8")
+    assert "# environments:" in text
+    assert "# default_env:" in text
+    config = yaml.safe_load(text)
+    assert "environments" not in config
+    assert "default_env" not in config
+
+
+def test_init_undeclared_config_keys_are_unchanged(tmp_path: Path) -> None:
+    """The ADR-0035 zero-ceremony bar: an undeclared init writes exactly the
+    same parsed config as before (the comment block is comments only)."""
+    import yaml
+
+    _run(["init", "--app", "demo", "--env", "local"], tmp_path)
+    config = yaml.safe_load((tmp_path / ".praxis" / "config.yaml").read_text())
+    assert config == {
+        "base_url": "http://127.0.0.1:8000",
+        "app": "demo",
+        "environment": "local",
+        "agent_id": "praxis-cli",
+        "observed_app_version": None,
+        "mcp_config": "playwright-mcp.json",
+    }
+
+
+def test_init_declared_scaffold_keeps_the_commented_brain_model(
+    tmp_path: Path,
+) -> None:
+    """The declared scaffold has the REAL map (no commented environments
+    block) but still ships the ADR-0034 commented brain_model pin."""
+    _run(["init", "--environment", "prod=https://example.com"], tmp_path)
+    text = (tmp_path / ".praxis" / "config.yaml").read_text(encoding="utf-8")
+    assert "# brain_model:" in text
+    assert "# environments:" not in text

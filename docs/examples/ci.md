@@ -113,6 +113,59 @@ loudly and fails the run, never silently. Before trusting a cheaper pin, validat
 with a few runs against a known-good app state: if it false-alarms there, it will
 false-alarm in your gate.
 
+## Multiple environments: one job matrix over PRAXIS_ENV
+
+If the project declares an `environments` map in `.praxis/config.yaml`
+([ADR-0035](../adr/0035-multi-environment-support.md); the full setup is walked through in
+[One app, two deployments](multi-env.md)), a CI run selects its deployment with the
+`PRAXIS_ENV` variable. That is the entire multi-env CI surface: Praxis ships no matrix
+machinery (ADR-0024 stands), so a multi-env pipeline is your own job matrix over that one
+variable.
+
+```yaml
+jobs:
+  regress:
+    strategy:
+      fail-fast: false
+      matrix:
+        praxis_env: [dev2, prod]
+    runs-on: ubuntu-latest
+    steps:
+      # ... checkout, install Praxis and the Claude Code CLI exactly as above ...
+      - name: praxis regress (the gate, one environment per leg)
+        env:
+          PRAXIS_ENV: ${{ matrix.praxis_env }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Saved sessions are PER ENVIRONMENT (ADR-0035): the variable name a
+          # run reads encodes the environment (PRAXIS_AUTH_STATE_<ENV>_<ROLE>),
+          # so name the runner secrets the same way, export every environment's
+          # secret on every leg, and each run reads only the one for its
+          # selected environment. There is no fallback to the unscoped
+          # PRAXIS_AUTH_STATE_<ROLE> name on a declared project.
+          PRAXIS_AUTH_STATE_DEV2_USER: ${{ secrets.PRAXIS_AUTH_STATE_DEV2_USER }}
+          PRAXIS_AUTH_STATE_PROD_USER: ${{ secrets.PRAXIS_AUTH_STATE_PROD_USER }}
+        run: praxis regress
+```
+
+Each leg gates independently: one run checks one environment, and the exit-code contract
+is unchanged per run, so a dev2 regression fails the dev2 leg no matter how green prod is
+(and vice versa; the two deployments' evidence is never folded together). The JUnit suite
+name carries the environment (`praxis-regress[dev2]`, `praxis-regress[prod]`), so the
+legs stay distinguishable in your CI's test UI, and the STALE warning above applies per
+leg: read each leg's report, not just its exit code.
+
+The session secret is one per role PER ENVIRONMENT: a human seeds
+`PRAXIS_AUTH_STATE_DEV2_USER` by logging in against dev2 once and
+`PRAXIS_AUTH_STATE_PROD_USER` against prod, because a saved session is domain-bound and
+Praxis deliberately never borrows one environment's session for another. An app login
+credential that differs per deployment can be scoped the GitHub-native way (a GitHub
+`environment:` per matrix leg with its own secrets) or selected per leg in the workflow
+expression; a credential both deployments share is just the one secret, as before.
+
+Exporting `PRAXIS_ENV` pipeline-wide is safe for repos that have not adopted
+environments: on a project with no declared `environments` map the variable is ignored
+with a one-line stderr notice, and the run behaves exactly as today.
+
 ## Optional: scheduled exploration
 
 If you want autonomous exploration, run `praxis explore` on a schedule. It hunts off the

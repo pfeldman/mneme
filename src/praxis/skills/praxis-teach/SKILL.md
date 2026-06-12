@@ -38,6 +38,18 @@ manual setup; the user does not need to touch any MCP config file by hand (a
 fresh `praxis init` already scaffolds the project's `playwright-mcp.json` for the
 console runner).
 
+## Multi-environment projects: know which deployment you are teaching against
+
+If `.praxis/config.yaml` declares an `environments` map (ADR-0035), resolve the
+environment the same way the console does before opening anything: the
+`PRAXIS_ENV` env var, else the committed `default_env`, else a single-entry map
+auto-selects its only entry; if nothing resolves, ask the human which declared
+environment to teach against. Tell the human which environment you are teaching
+against and open THAT environment's `base_url`. The environment is a run input
+only: it is stamped on sessions and run records, NEVER on the knowledge you
+write. A project with no `environments` map has no environment; everything
+below behaves exactly as written.
+
 ## Credentials: just log in like a tester would
 
 To get past a login, log in the way a QA tester does: take the username and
@@ -45,7 +57,9 @@ password and type them into the form. Nothing clever.
 
 - Read them from the secrets file. The gitignored `.praxis.secrets` at the
   project root holds `APP_USERNAME` and `APP_PASSWORD` (an environment variable
-  of the same name wins over the file). If they are present, USE them: type them
+  of the same name wins over the file; on a multi-environment project a per-env
+  overlay `.praxis.secrets.<env>` wins over the shared file for the keys it
+  defines). If they are present, USE them: type them
   straight into the email and password fields with `browser_fill_form` or
   `browser_type`.
 - If a needed credential is missing, ASK the human for it (a credential typed
@@ -97,15 +111,20 @@ hence without another 2FA:
   logged-in browser) via the Playwright MCP and write it to a temp file, for
   example `session.json`.
 - Save it for the role with this one-liner (you do not need to read any library
-  code to do this):
+  code to do this); on a multi-environment project pass the resolved
+  environment so the session lands env-scoped (omit `environment=` when no
+  environments are declared):
 
-      python -c "import json; from praxis.auth_session import save_session_for_role; save_session_for_role('<role>', json.load(open('session.json')))"
+      python -c "import json; from praxis.auth_session import save_session_for_role; save_session_for_role('<role>', json.load(open('session.json')), environment='<env>')"
 
 - The saved session is a SECRET, like a password. It lives in the gitignored
-  `.praxis.auth/<role>.json` locally, or as a CI runner secret
-  `PRAXIS_AUTH_STATE_<ROLE>` (the environment value wins). It is NEVER committed,
-  NEVER written anywhere under `.praxis/`, and NEVER recorded into knowledge.
-  Delete the temp `session.json` after saving.
+  `.praxis.auth/<role>.json` locally (`.praxis.auth/<env>/<role>.json` with an
+  environment), or as a CI runner secret `PRAXIS_AUTH_STATE_<ROLE>`
+  (`PRAXIS_AUTH_STATE_<ENV>_<ROLE>` with an environment; the environment value
+  wins). A session is domain-bound: an env-scoped session never falls back to
+  another environment's, so save it under the environment you logged in on.
+  It is NEVER committed, NEVER written anywhere under `.praxis/`, and it is
+  NEVER recorded into knowledge. Delete the temp `session.json` after saving.
 
 ## The dual end condition with a backstop
 
@@ -126,6 +145,22 @@ budget AND a wall-clock limit. When either is exhausted before both halves hold,
 stop LOUDLY as not converged: write NO goal and tell the human plainly what you
 reached and what was missing, so the run is visible and re-runnable rather than a
 silent empty file. Never pretend a half-taught goal is believed.
+
+## Seed deployment-agnostic: no hosts, path-shaped urls, no env names
+
+Knowledge is product-level and shared by every environment (ADR-0035), so what
+you seed must hold on ALL deployments:
+
+- Goal text and signal values NEVER contain a host or a full URL. Say
+  "the app under test"; the selected environment supplies the URL at run time.
+- A `url`-type signal is PATH-shaped: `/dashboard/settings`, never
+  `https://dev2.example.com/dashboard/settings`. The host varies per
+  deployment; the path is the product fact.
+- The environment name never appears inside a signal value. It is provenance
+  stamped on run records, not content of the knowledge.
+- An existing goal that embeds a URL goes deployment-agnostic by a human
+  re-seed of that signal through teach (this skill), one signal at a time,
+  never a bulk rewrite.
 
 ## Write the goal (only after the human confirms)
 
@@ -270,7 +305,9 @@ session's view.
 ## Protocol, end to end
 
 1. Confirm you are in a project with a `.praxis/` tree (run `praxis init` first
-   if not). Get the plain-language intent and a stable `goal_id` from the human.
+   if not). If the project declares environments, resolve and announce the one
+   you are teaching against (the section above). Get the plain-language intent
+   and a stable `goal_id` from the human.
 2. If the goal already exists believed, switch to the re-teach path (a contested
    candidate, not a new seed) and say so up front.
 3. Open the app in the browser and work toward the happy path. At the login,

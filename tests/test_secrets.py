@@ -191,3 +191,162 @@ def test_missing_credential_message_carries_no_value(tmp_path: Path) -> None:
         secrets.get_credential("ABSENT_KEY", secrets_path=secrets_path, environ={})
     assert SECRET_VALUE not in str(ei.value)
     assert "ABSENT_KEY" in str(ei.value)
+
+
+# --- per-environment overlay (ADR-0035 decision 7) -------------------------
+
+ENV = "dev2"
+OVERLAY_VALUE = "overlay-s3cr3t-must-not-leak-7c1b"
+
+
+def _write_overlay(tmp_path: Path, env: str, **pairs: str) -> Path:
+    return _write_secrets(tmp_path / secrets.overlay_filename(env), **pairs)
+
+
+def test_overlay_filename_is_base_plus_env_suffix() -> None:
+    assert secrets.overlay_filename(ENV) == f"{secrets.SECRETS_FILENAME}.{ENV}"
+
+
+def test_overlay_wins_over_base_for_a_key_it_defines(tmp_path: Path) -> None:
+    secrets_path = _write_secrets(tmp_path / secrets.SECRETS_FILENAME, **{KEY: "from-base"})
+    _write_overlay(tmp_path, ENV, **{KEY: OVERLAY_VALUE})
+    got = secrets.get_credential(KEY, environment=ENV, secrets_path=secrets_path, environ={})
+    assert got == OVERLAY_VALUE
+
+
+def test_key_absent_from_overlay_falls_through_to_base(tmp_path: Path) -> None:
+    # It is an OVERLAY, not a replacement: shared keys live once in the base.
+    secrets_path = _write_secrets(tmp_path / secrets.SECRETS_FILENAME, **{KEY: SECRET_VALUE})
+    _write_overlay(tmp_path, ENV, OTHER_KEY="overlay-only")
+    got = secrets.get_credential(KEY, environment=ENV, secrets_path=secrets_path, environ={})
+    assert got == SECRET_VALUE
+
+
+def test_env_var_wins_over_overlay_and_base(tmp_path: Path) -> None:
+    # The KEY environment variable stays the absolute winner (ADR-0021 dec. 6).
+    secrets_path = _write_secrets(tmp_path / secrets.SECRETS_FILENAME, **{KEY: "from-base"})
+    _write_overlay(tmp_path, ENV, **{KEY: "from-overlay"})
+    got = secrets.get_credential(
+        KEY, environment=ENV, secrets_path=secrets_path, environ={KEY: "from-env"}
+    )
+    assert got == "from-env"
+
+
+def test_missing_overlay_file_falls_through_to_base(tmp_path: Path) -> None:
+    # An environment selected but no overlay file written: base resolves, no error.
+    secrets_path = _write_secrets(tmp_path / secrets.SECRETS_FILENAME, **{KEY: SECRET_VALUE})
+    got = secrets.get_credential(KEY, environment=ENV, secrets_path=secrets_path, environ={})
+    assert got == SECRET_VALUE
+
+
+def test_environment_none_never_consults_the_overlay(tmp_path: Path) -> None:
+    # Undeclared projects are byte-identical to today: a present overlay file is
+    # invisible when no environment is selected.
+    secrets_path = _write_secrets(tmp_path / secrets.SECRETS_FILENAME, **{KEY: SECRET_VALUE})
+    _write_overlay(tmp_path, ENV, **{KEY: "poison-if-read"})
+    got = secrets.get_credential(KEY, secrets_path=secrets_path, environ={})
+    assert got == SECRET_VALUE
+
+
+def test_empty_string_environment_counts_as_unset(tmp_path: Path) -> None:
+    # ADR-0034 posture: an empty string at any level counts as unset.
+    secrets_path = _write_secrets(tmp_path / secrets.SECRETS_FILENAME, **{KEY: SECRET_VALUE})
+    _write_overlay(tmp_path, "", **{KEY: "poison-if-read"})
+    got = secrets.get_credential(KEY, environment="", secrets_path=secrets_path, environ={})
+    assert got == SECRET_VALUE
+
+
+def test_missing_credential_message_unchanged_without_environment(tmp_path: Path) -> None:
+    # The env=None message is pinned byte-for-byte: backward compatibility is a
+    # hard requirement (ADR-0035 zero-ceremony bar).
+    with pytest.raises(secrets.MissingCredential) as ei:
+        secrets.get_credential(KEY, secrets_path=tmp_path / secrets.SECRETS_FILENAME, environ={})
+    assert str(ei.value) == (
+        f"missing credential {KEY!r}: set it as an environment "
+        f"variable or add it to {secrets.SECRETS_FILENAME} "
+        f"(KEY=value, one per line)."
+    )
+    assert ei.value.environment is None
+
+
+def test_missing_credential_with_environment_names_the_overlay(tmp_path: Path) -> None:
+    with pytest.raises(secrets.MissingCredential) as ei:
+        secrets.get_credential(
+            KEY,
+            environment=ENV,
+            secrets_path=tmp_path / secrets.SECRETS_FILENAME,
+            environ={},
+        )
+    assert ei.value.key == KEY
+    assert ei.value.environment == ENV
+    msg = str(ei.value)
+    assert KEY in msg
+    assert secrets.overlay_filename(ENV) in msg
+    assert secrets.SECRETS_FILENAME in msg
+
+
+def test_require_credential_reads_the_overlay(tmp_path: Path) -> None:
+    secrets_path = _write_secrets(tmp_path / secrets.SECRETS_FILENAME, **{KEY: "from-base"})
+    _write_overlay(tmp_path, ENV, **{KEY: OVERLAY_VALUE})
+    got = secrets.require_credential(
+        KEY, environment=ENV, secrets_path=secrets_path, environ={}
+    )
+    assert got == OVERLAY_VALUE
+
+
+def test_require_credential_loud_failure_names_the_overlay(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    secrets_path = tmp_path / secrets.SECRETS_FILENAME  # absent, overlay absent too
+    with pytest.raises(SystemExit) as ei:
+        secrets.require_credential(KEY, environment=ENV, secrets_path=secrets_path, environ={})
+    assert ei.value.code != 0
+    err = capsys.readouterr().err
+    assert KEY in err
+    assert secrets.SECRETS_FILENAME in err
+    assert secrets.overlay_filename(ENV) in err
+
+
+def test_require_credential_loud_failure_message_unchanged_without_environment(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The env=None loud message is pinned byte-for-byte (no overlay line).
+    with pytest.raises(SystemExit):
+        secrets.require_credential(
+            KEY, secrets_path=tmp_path / secrets.SECRETS_FILENAME, environ={}
+        )
+    err = capsys.readouterr().err
+    assert err == (
+        f"ERROR: missing credential {KEY!r}.\n"
+        f"  set it as an environment variable:  export {KEY}=...\n"
+        f"  or add it to {secrets.SECRETS_FILENAME}:        "
+        f'echo "{KEY}=<value>" >> {secrets.SECRETS_FILENAME}\n'
+        f"  ({secrets.SECRETS_FILENAME} is gitignored; the value is never "
+        f"committed or logged.)\n"
+    )
+
+
+def test_no_overlay_path_prints_a_secret_value(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The no-echo contract extends to the overlay channel: a value read from
+    # the overlay never reaches stdout, stderr, or an exception message.
+    secrets_path = _write_secrets(tmp_path / secrets.SECRETS_FILENAME, **{KEY: SECRET_VALUE})
+    _write_overlay(tmp_path, ENV, **{KEY: OVERLAY_VALUE})
+
+    got = secrets.get_credential(KEY, environment=ENV, secrets_path=secrets_path, environ={})
+    assert got == OVERLAY_VALUE
+    captured = capsys.readouterr()
+    assert OVERLAY_VALUE not in captured.out
+    assert OVERLAY_VALUE not in captured.err
+
+    # The loud failure for a DIFFERENT, absent key surfaces neither the base
+    # nor the overlay value.
+    with pytest.raises(SystemExit):
+        secrets.require_credential(
+            "ABSENT_KEY", environment=ENV, secrets_path=secrets_path, environ={}
+        )
+    err = capsys.readouterr().err
+    assert "ABSENT_KEY" in err
+    assert OVERLAY_VALUE not in err
+    assert SECRET_VALUE not in err

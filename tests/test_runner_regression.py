@@ -342,6 +342,59 @@ def test_exploration_prompt_omits_quarantined_risks() -> None:
     assert "lockout" not in p
 
 
+# --- the "App under test:" deployment line (ADR-0035 decision 3) ------------
+
+
+_RUN_BASE_URL = "https://dev2.example.com"
+
+
+def test_regression_prompt_carries_app_under_test_line() -> None:
+    """With a base_url, the R-mode prompt names the deployment under test and
+    binds the phrase "the app under test" to THIS deployment, BEFORE the
+    enumerated signals, so a cold agent reads where to start ahead of what to
+    check (ADR-0035 decision 3)."""
+    kf = _login_kf()
+    p = render_regression_prompt(kf, budget_actions=10, base_url=_RUN_BASE_URL)
+    assert f"App under test: {_RUN_BASE_URL}" in p
+    assert ('(when the goal or a signal says "the app under test", it means '
+            "THIS deployment; start here)") in p
+    # The line sits between the App: header and the success-signal list.
+    assert p.index("App under test:") < p.index("Success signals")
+    assert p.index("App: testapp") < p.index("App under test:")
+
+
+def test_regression_prompt_without_base_url_is_byte_identical() -> None:
+    """No base_url = no new line, no new bytes: the undeclared-project prompt
+    is pinned byte-identical to the pre-ADR-0035 rendering, and an empty
+    string counts as unset (the ADR-0034 posture)."""
+    kf = _login_kf()
+    today = render_regression_prompt(kf, budget_actions=10)
+    assert render_regression_prompt(kf, budget_actions=10, base_url=None) == today
+    assert render_regression_prompt(kf, budget_actions=10, base_url="") == today
+    assert "App under test" not in today
+
+
+def test_exploration_prompt_carries_app_under_test_line() -> None:
+    """The E-mode prompt carries the same deployment line, ahead of the risks
+    block (ADR-0035 decision 3)."""
+    kf = _login_kf()
+    p = render_exploration_prompt(kf, budget_tokens=5000, base_url=_RUN_BASE_URL)
+    assert f"App under test: {_RUN_BASE_URL}" in p
+    assert ('(when the goal or a signal says "the app under test", it means '
+            "THIS deployment; start here)") in p
+    assert p.index("App under test:") < p.index("Risks to probe")
+
+
+def test_exploration_prompt_without_base_url_is_byte_identical() -> None:
+    kf = _login_kf()
+    today = render_exploration_prompt(kf, budget_tokens=5000)
+    assert render_exploration_prompt(
+        kf, budget_tokens=5000, base_url=None) == today
+    assert render_exploration_prompt(
+        kf, budget_tokens=5000, base_url="") == today
+    assert "App under test" not in today
+
+
 # --- runner ----------------------------------------------------------------
 
 
@@ -445,6 +498,32 @@ def test_runner_persist_observations_opt_in_still_writes() -> None:
         events = list(adapter.store.read("login"))
         assert len(events) == 1
         assert events[0].agent_id == "praxis-regress"
+
+
+def test_runner_threads_base_url_into_the_rendered_prompt() -> None:
+    """RegressionRunner forwards its `base_url` (a plain optional string; the
+    core carries no environment semantics, ADR-0035 decision 3) into the
+    rendered prompt, and unset / empty keeps the prompt byte-identical."""
+    kf = _login_kf()
+    with tempfile.TemporaryDirectory() as td:
+        adapter = _seeded_adapter(kf, Path(td))
+        prompts: list[str] = []
+
+        def capturing_executor(prompt: str) -> dict:
+            prompts.append(prompt)
+            return {"observations": [], "actions": 0, "tokens": None}
+
+        RegressionRunner(adapter, base_url=_RUN_BASE_URL).run_one(
+            "login", capturing_executor)
+        RegressionRunner(adapter).run_one("login", capturing_executor)
+        RegressionRunner(adapter, base_url="").run_one(
+            "login", capturing_executor)
+
+        assert f"App under test: {_RUN_BASE_URL}" in prompts[0]
+        assert "App under test" not in prompts[1]
+        # An empty string counts as unset (the ADR-0034 posture): same bytes
+        # as the no-base_url prompt.
+        assert prompts[2] == prompts[1]
 
 
 def test_runner_unknown_goal_raises() -> None:

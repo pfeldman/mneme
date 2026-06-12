@@ -84,10 +84,16 @@ class ExplorationRunner:
     """
 
     def __init__(self, adapter: KnowledgeAdapter, *, agent_id: str = "praxis-explore",
-                 observed_app_version: str | None = None) -> None:
+                 observed_app_version: str | None = None,
+                 base_url: str | None = None) -> None:
         self.adapter = adapter
         self.agent_id = agent_id
         self.observed_app_version = observed_app_version
+        # The run's deployment URL (ADR-0035 decision 3), a plain optional
+        # string the prompt renderer turns into the "App under test:" line.
+        # The runner never interprets it and never writes it to the store;
+        # an empty string counts as unset (the ADR-0034 posture).
+        self.base_url = base_url if base_url else None
 
     def run_one(self, goal_id: str, executor: Executor, *,
                 happy_path_urls: list[str] | None = None,
@@ -102,6 +108,7 @@ class ExplorationRunner:
 
         prompt = render_exploration_prompt(
             kf, budget_actions=budget_actions, budget_tokens=budget_tokens,
+            base_url=self.base_url,
         )
 
         t0 = time.monotonic()

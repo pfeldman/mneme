@@ -10,6 +10,7 @@ two runs with the same observations (helps git-friendly review).
 from __future__ import annotations
 
 import html
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
@@ -25,6 +26,18 @@ from .regression import AggregateVerdict, GoalReport, RegressionVerdict, RunResu
 
 def _attr(value: str) -> str:
     return xml_escape(value, {'"': "&quot;"})
+
+
+def _md_header(title: str, environment: str | None) -> list[str]:
+    """The markdown report header lines: the title, plus ONE
+    `environment: <env>` line when the run selected a declared environment
+    (ADR-0035 decision 8). With no environment the header is the bare title,
+    byte-identical to the pre-ADR-0035 output: an undeclared project's report
+    must not change by a single byte."""
+    lines = [title, ""]
+    if environment is not None:
+        lines += [f"environment: {environment}", ""]
+    return lines
 
 
 def to_junit_xml(results: list[RunResult], *, suite_name: str = "praxis-regress") -> str:
@@ -137,18 +150,24 @@ def format_single_console_summary(
     )
 
 
-def to_markdown(results: list[RunResult]) -> str:
-    """Render a human-readable markdown report."""
+def to_markdown(results: list[RunResult], *, environment: str | None = None) -> str:
+    """Render a human-readable markdown report.
+
+    `environment` is the run's selected declared environment (ADR-0035
+    decision 8): when set, the header carries one `environment: <env>` line so
+    the report names WHICH deployment produced the verdicts; when None
+    (undeclared project) the output is byte-identical to before.
+    """
     if not results:
-        return "# praxis regress\n\n(no goals run)\n"
+        return "\n".join(_md_header("# praxis regress", environment)
+                         + ["(no goals run)"]) + "\n"
     n_pass = sum(1 for r in results if r.verdict == RegressionVerdict.PASS)
     n_fail = sum(1 for r in results if r.verdict == RegressionVerdict.FAIL)
     n_unc = sum(1 for r in results if r.verdict == RegressionVerdict.UNCERTAIN)
     total_actions = sum(r.actions for r in results)
     total_tokens = sum((r.tokens or 0) for r in results)
     lines: list[str] = [
-        "# praxis regress",
-        "",
+        *_md_header("# praxis regress", environment),
         f"**{n_pass} pass / {n_fail} fail / {n_unc} uncertain**"
         f"  ({total_actions} actions, "
         f"{total_tokens if total_tokens else 'n/a'} tokens)",
@@ -180,10 +199,11 @@ def to_markdown(results: list[RunResult]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_markdown_report(results: list[RunResult], path: str | Path) -> Path:
+def write_markdown_report(results: list[RunResult], path: str | Path, *,
+                          environment: str | None = None) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(to_markdown(results), encoding="utf-8")
+    p.write_text(to_markdown(results, environment=environment), encoding="utf-8")
     return p
 
 
@@ -211,8 +231,16 @@ def _verdict_routing(verdict: AggregateVerdict) -> str:
     return "could not reach a verdict: investigate"
 
 
-def to_aggregate_markdown(reports: list[GoalReport]) -> str:
+def to_aggregate_markdown(
+    reports: list[GoalReport], *, environment: str | None = None,
+) -> str:
     """Render ONE aggregate break-vs-drift report over every goal (ADR-0023).
+
+    `environment` is the run's selected declared environment (ADR-0035
+    decision 8): when set, the header carries one `environment: <env>` line
+    naming WHICH deployment produced the verdicts (one run checks one
+    environment); when None (undeclared project) the rendered report is
+    byte-identical to before. The environment never changes a verdict.
 
     A non-engineer reads this without knowing the runner internals: a per-goal
     verdict line carrying its evidence, plus a single roll-up. The roll-up never
@@ -228,7 +256,8 @@ def to_aggregate_markdown(reports: list[GoalReport]) -> str:
     never reported as green / "mostly green"; it leads with RUN FAILED.
     """
     if not reports:
-        return "# praxis regress (aggregate)\n\n(no goals run)\n"
+        return "\n".join(_md_header("# praxis regress (aggregate)", environment)
+                         + ["(no goals run)"]) + "\n"
 
     n_ok = sum(1 for r in reports if r.verdict == AggregateVerdict.OK)
     n_reg = sum(1 for r in reports if r.verdict == AggregateVerdict.REGRESSED)
@@ -237,7 +266,7 @@ def to_aggregate_markdown(reports: list[GoalReport]) -> str:
     n_auth = sum(1 for r in reports if r.verdict == AggregateVerdict.AUTH_EXPIRED)
     n_fail = sum(1 for r in reports if r.fails_run)
 
-    lines: list[str] = ["# praxis regress (aggregate)", ""]
+    lines: list[str] = _md_header("# praxis regress (aggregate)", environment)
     if n_fail:
         # Loud, named, leads the report: a single regression / expired session
         # cannot hide behind a "mostly green" summary (ADR-0023 decision 4,
@@ -301,10 +330,15 @@ def to_aggregate_markdown(reports: list[GoalReport]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_aggregate_markdown(reports: list[GoalReport], path: str | Path) -> Path:
+def write_aggregate_markdown(
+    reports: list[GoalReport], path: str | Path, *,
+    environment: str | None = None,
+) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(to_aggregate_markdown(reports), encoding="utf-8")
+    p.write_text(
+        to_aggregate_markdown(reports, environment=environment), encoding="utf-8"
+    )
     return p
 
 
@@ -334,6 +368,11 @@ def to_aggregate_junit_xml(
     `failures` counts the `fails_run` goals and `skipped` counts STALE, so the
     suite attributes match the per-goal bodies and a CI that gates on
     `failures > 0` agrees with the process exit code.
+
+    `suite_name`: the CLI passes `praxis-regress[<env>]` when the run selected
+    a declared environment (ADR-0035 decision 8), so a CI job matrix over
+    PRAXIS_ENV renders one distinguishable suite per deployment; with no
+    environment the default keeps today's `praxis-regress` byte-identically.
     """
     n = len(reports)
     fails = sum(1 for r in reports if r.fails_run)
@@ -475,6 +514,40 @@ def format_console_summary(reports: list[GoalReport], *, color: bool = False) ->
 # --- the explore candidate report, grouped by trigger (ADR-0023 decision 8) -
 
 
+def format_environment_annotation(
+    environments: Iterable[str | None],
+) -> str | None:
+    """The candidate env annotation (ADR-0035 decision 6), shared by the
+    explore report and `praxis review` so the two surfaces never word it
+    differently.
+
+    `environments` is the distinct `environment` values across one finding's
+    observations (None = a pre-ADR-0035 event with no environment stamped).
+    The annotation is DISPLAY-ONLY provenance: it never feeds promotion,
+    source counting, or any verdict (decision 5).
+
+    Wording:
+      - {"dev2"}                -> "seen on: dev2 only"
+      - {"dev2", "prod"}        -> "seen on: dev2, prod"  (sorted names)
+      - {"dev2", None}          -> "seen on: dev2, pre-migration"
+      - all None (the pure single-env project) -> None: NO annotation, so an
+        undeclared project's rendered output stays byte-identical to before.
+
+    "pre-migration" names a None-env observation ONLY when it sits next to
+    env-stamped ones: with no declared environment anywhere there is nothing
+    to be "pre" relative to, and annotating would change bytes for every
+    project that never adopted environments.
+    """
+    envs = set(environments)
+    named = sorted(e for e in envs if e is not None)
+    if not named:
+        return None
+    labels = named + (["pre-migration"] if None in envs else [])
+    if len(labels) == 1:
+        return f"seen on: {labels[0]} only"
+    return "seen on: " + ", ".join(labels)
+
+
 def _trigger_key(event: CandidateEvent) -> tuple[str, ...]:
     """A stable grouping key for ONE candidate observation's structured trigger.
 
@@ -539,6 +612,13 @@ class CandidateGroup:
     `kind` is "risk" or "uncertainty"; `description` is the underlying finding
     text; `trigger_label` is the structured trigger (or the question) rendered
     for a human.
+
+    `environments` is the distinct `environment` values across THIS group's
+    observations (ADR-0035 decision 6): the same finding observed on dev2 and
+    prod is still ONE group (the trigger is the grouping key, never the env),
+    and the env set is display-only provenance the report renders via
+    `format_environment_annotation`. It feeds no count and no promotion:
+    `believed` and `source_count` are computed exactly as before (decision 5).
     """
 
     kind: str
@@ -549,6 +629,7 @@ class CandidateGroup:
     believed: bool
     goal_id: str
     notes: list[str] = field(default_factory=list)
+    environments: set[str | None] = field(default_factory=set)
 
     @property
     def source_count(self) -> int:
@@ -644,6 +725,7 @@ def group_candidates_by_trigger(
             distinct_source_ids=sources,
             believed=believed,
             goal_id=first.goal_id,
+            environments={ev.environment for ev in evs},
         ))
     out.sort(key=lambda g: (g.kind, g.trigger_label, g.goal_id))
     return out
@@ -654,6 +736,7 @@ def to_candidate_markdown(
     *,
     off_path_fractions: dict[str, float] | None = None,
     errors: dict[str, str] | None = None,
+    environment: str | None = None,
 ) -> str:
     """Render the explore candidate report (ADR-0023 decision 8).
 
@@ -663,8 +746,21 @@ def to_candidate_markdown(
     `off_path_fractions` map carries the ADR-0009 E-mode kill-criterion floor
     per goal so the operator can see whether E-mode stayed off the happy path;
     `errors` names any goal that could not be explored (loud over silent).
+
+    `environment` mirrors the regress reports (ADR-0035 decision 8): when the
+    run selected a declared environment, the header carries one
+    `environment: <env>` line; when None the output is byte-identical to
+    before.
+
+    Each finding row also carries the per-group env annotation (ADR-0035
+    decision 6, `format_environment_annotation`): "(seen on: dev2, prod)" /
+    "(seen on: dev2 only)" appended to the finding text, "pre-migration"
+    naming None-env observations mixed with stamped ones. When EVERY
+    observation in a group is env-less (the pure single-env project) the row
+    carries no annotation, keeping the undeclared project's report
+    byte-identical to before.
     """
-    lines: list[str] = ["# praxis explore (candidates)", ""]
+    lines: list[str] = _md_header("# praxis explore (candidates)", environment)
 
     n_findings = len(groups)
     n_believed = sum(1 for g in groups if g.believed)
@@ -702,6 +798,9 @@ def to_candidate_markdown(
     for g in groups:
         status = "believed" if g.believed else "contested"
         desc = html.escape(g.description).replace("|", "\\|")
+        annotation = format_environment_annotation(g.environments)
+        if annotation is not None:
+            desc = f"{desc} ({annotation})"
         trig = html.escape(g.trigger_label).replace("|", "\\|")
         lines.append(
             f"| {desc} | {g.kind} | {trig} | {g.observation_count} | "
@@ -716,12 +815,14 @@ def write_candidate_markdown(
     *,
     off_path_fractions: dict[str, float] | None = None,
     errors: dict[str, str] | None = None,
+    environment: str | None = None,
 ) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(
         to_candidate_markdown(
             groups, off_path_fractions=off_path_fractions, errors=errors,
+            environment=environment,
         ),
         encoding="utf-8",
     )

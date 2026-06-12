@@ -87,6 +87,118 @@ def test_init_refuses_to_overwrite_without_force(tmp_path: Path) -> None:
     assert rc == 2
 
 
+# --- init --environment / --default-env (ADR-0035 decision 9) ---------------
+
+
+def test_init_environment_excludes_legacy_env_flag(tmp_path: Path) -> None:
+    """The multi-env scaffold flags and the legacy single-env pair are
+    mutually exclusive: mixing them errors loudly, NAMING both styles, and
+    nothing is written to disk."""
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--environment", "prod=https://example.com",
+              "--env", "local"], tmp_path)
+    msg = str(exc.value)
+    assert "--environment" in msg and "--default-env" in msg
+    assert "--env" in msg and "--base-url" in msg
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_environment_excludes_legacy_base_url_flag(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--environment", "prod=https://example.com",
+              "--base-url", "https://example.com"], tmp_path)
+    msg = str(exc.value)
+    assert "--environment" in msg and "--base-url" in msg
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_default_env_excludes_legacy_flags_too(tmp_path: Path) -> None:
+    # `--default-env` alone already selects the multi-env style.
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--default-env", "prod", "--env", "local"], tmp_path)
+    assert "--default-env" in str(exc.value)
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_default_env_must_name_a_declared_environment(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--environment", "prod=https://example.com",
+              "--default-env", "dev2"], tmp_path)
+    msg = str(exc.value)
+    assert "dev2" in msg and "prod" in msg and "--default-env" in msg
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_default_env_requires_an_environment(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--default-env", "prod"], tmp_path)
+    assert "--environment" in str(exc.value)
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_environment_spec_must_be_name_equals_url(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--environment", "prod"], tmp_path)
+    assert "NAME=URL" in str(exc.value)
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_environment_name_must_round_trip(tmp_path: Path) -> None:
+    """A name that cannot round-trip through the per-env file paths and the
+    PRAXIS_AUTH_STATE_<ENV>_<ROLE> env-var channel is rejected at init time,
+    so it never enters a committed config (ADR-0035 decision 9)."""
+    for bad in ("dev-2", "dev.2", "dev 2", "dev/2"):
+        with pytest.raises(SystemExit) as exc:
+            _run(["init", "--environment", f"{bad}=https://x.example.com"],
+                 tmp_path)
+        msg = str(exc.value)
+        assert bad in msg and "A-Za-z0-9_" in msg
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_environment_duplicate_names_are_loud(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--environment", "prod=https://a.example.com",
+              "--environment", "prod=https://b.example.com"], tmp_path)
+    assert "twice" in str(exc.value)
+    # Two names that collide once uppercased into the env-var channel are
+    # rejected too: PRAXIS_AUTH_STATE_PROD_<ROLE> could not tell them apart.
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--environment", "prod=https://a.example.com",
+              "--environment", "PROD=https://b.example.com"], tmp_path)
+    assert "uppercased" in str(exc.value)
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_declared_next_steps_mention_the_env_workflow(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A declared init tells the user how to pick an environment per run; an
+    undeclared init prints exactly the text it printed before (zero
+    ceremony, ADR-0035)."""
+    rc = _run(["init",
+               "--environment", "dev2=https://dev2.example.com",
+               "--environment", "prod=https://example.com",
+               "--default-env", "dev2"], tmp_path)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Environments declared: dev2, prod" in out
+    assert "--env <name>" in out and "PRAXIS_ENV" in out
+    assert ".praxis.secrets.<env>" in out
+
+
+def test_init_undeclared_next_steps_do_not_mention_environments(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = _run(["init"], tmp_path)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Environments declared" not in out
+    assert "PRAXIS_ENV" not in out
+
+
 # --- learn ----------------------------------------------------------------
 
 
@@ -728,3 +840,444 @@ def test_review_surfaces_candidate_risks(
     assert "candidate_risk" in out
     # The promotion hint is rendered (seed event = new yaml seed).
     assert "seed" in out.lower()
+
+
+# --- ADR-0035: environment selection (--env flag > PRAXIS_ENV env > ---------
+# --- config.yaml default_env > single-entry auto-select; loud errors) -------
+
+
+_TWO_ENVS = {
+    "dev2": {"base_url": "https://dev2.example.com",
+             "observed_app_version": "2.6.0"},
+    "prod": {"base_url": "https://example.com"},
+}
+
+_ENVIRONMENTS_YAML = """\
+
+environments:
+  dev2:
+    base_url: https://dev2.example.com
+    observed_app_version: 2.6.0
+  prod:
+    base_url: https://example.com
+default_env: dev2
+"""
+
+
+def _declare_envs(tmp_path: Path, extra: str = "") -> None:
+    """Append the committed two-env map (ADR-0035 decision 1) to an inited
+    project's config.yaml."""
+    cfg = tmp_path / ".praxis" / "config.yaml"
+    cfg.write_text(cfg.read_text() + _ENVIRONMENTS_YAML + extra)
+
+
+def _pass_obs_file(tmp_path: Path) -> Path:
+    """An agent observation file that matches the login seed (PASS)."""
+    obs_file = tmp_path / "agent.json"
+    obs_file.write_text(json.dumps({
+        "observations": [{
+            "kind": "success", "type": "behavioral",
+            "value": "a Sign out control is present after submitting valid credentials",
+            "source_type": "agent", "source_id": "praxis-cli",
+        }],
+        "actions": 5, "tokens": 1000, "visited_urls": [],
+    }))
+    return obs_file
+
+
+def test_resolve_env_precedence_chain() -> None:
+    """The resolution is a pure function in the CLI layer: flag > PRAXIS_ENV >
+    default_env > single-entry auto-select, each level alone pins, and an
+    empty string at any level counts as unset (ADR-0035 decision 2)."""
+    from praxis.cli.main import PRAXIS_ENV_VAR, _resolve_env
+
+    environ = {PRAXIS_ENV_VAR: "prod"}
+    assert _resolve_env("dev2", _TWO_ENVS, "prod", environ=environ) == (
+        "dev2", "--env flag")
+    assert _resolve_env(None, _TWO_ENVS, "dev2", environ=environ) == (
+        "prod", f"{PRAXIS_ENV_VAR} env")
+    assert _resolve_env(None, _TWO_ENVS, "dev2", environ={}) == (
+        "dev2", "config.yaml default_env")
+    single = {"dev2": {"base_url": "https://dev2.example.com"}}
+    assert _resolve_env(None, single, None, environ={}) == (
+        "dev2", "single declared environment")
+    # Empty values are unset at every level: blank flag / env var / default
+    # never mask the level below, so a single-entry map still auto-selects.
+    assert _resolve_env("", single, "", environ={PRAXIS_ENV_VAR: ""}) == (
+        "dev2", "single declared environment")
+    # Undeclared project, nothing set: today's behavior exactly.
+    assert _resolve_env(None, None, None, environ={}) == (None, None)
+
+
+def test_resolve_env_unknown_flag_name_is_loud() -> None:
+    from praxis.cli.main import _resolve_env
+
+    with pytest.raises(SystemExit) as exc:
+        _resolve_env("staging", _TWO_ENVS, None, environ={})
+    msg = str(exc.value)
+    assert "staging" in msg and "dev2" in msg and "prod" in msg
+
+
+def test_resolve_env_unknown_env_var_is_loud() -> None:
+    from praxis.cli.main import PRAXIS_ENV_VAR, _resolve_env
+
+    with pytest.raises(SystemExit) as exc:
+        _resolve_env(None, _TWO_ENVS, None, environ={PRAXIS_ENV_VAR: "staging"})
+    msg = str(exc.value)
+    assert "staging" in msg and "dev2" in msg and "prod" in msg
+    assert PRAXIS_ENV_VAR in msg
+
+
+def test_resolve_env_unknown_default_env_is_loud() -> None:
+    """A committed default_env typo must not silently fall through to the
+    auto-select level: it errors naming the declared environments."""
+    from praxis.cli.main import _resolve_env
+
+    with pytest.raises(SystemExit) as exc:
+        _resolve_env(None, _TWO_ENVS, "staging", environ={})
+    msg = str(exc.value)
+    assert "default_env" in msg and "staging" in msg
+    assert "dev2" in msg and "prod" in msg
+
+
+def test_resolve_env_unresolvable_multi_entry_is_loud() -> None:
+    """A declared multi-entry map with no flag, no env var, and no default is
+    a loud error naming the declared envs and the three ways to pick one."""
+    from praxis.cli.main import PRAXIS_ENV_VAR, _resolve_env
+
+    with pytest.raises(SystemExit) as exc:
+        _resolve_env(None, _TWO_ENVS, None, environ={})
+    msg = str(exc.value)
+    assert "dev2" in msg and "prod" in msg
+    assert "--env" in msg and PRAXIS_ENV_VAR in msg and "default_env" in msg
+
+
+def test_resolve_env_flag_on_undeclared_project_is_loud() -> None:
+    """`--env` on a project with NO environments map is a hard error: the user
+    explicitly asked for something the config cannot honor."""
+    from praxis.cli.main import _resolve_env
+
+    with pytest.raises(SystemExit) as exc:
+        _resolve_env("dev2", None, None, environ={})
+    msg = str(exc.value)
+    assert "dev2" in msg and "environments" in msg
+
+
+def test_resolve_env_praxis_env_on_undeclared_warns_and_ignores(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """PRAXIS_ENV on an undeclared project is ignored with a one-line stderr
+    notice (never an error), so a pipeline-wide export cannot break repos that
+    have not adopted environments (ADR-0035 decision 2)."""
+    from praxis.cli.main import PRAXIS_ENV_VAR, _resolve_env
+
+    got = _resolve_env(None, None, None, environ={PRAXIS_ENV_VAR: "dev2"})
+    assert got == (None, None)
+    err = capsys.readouterr().err
+    assert PRAXIS_ENV_VAR in err and "ignor" in err
+
+
+def test_project_context_env_aware_properties(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With an environment selected, base_url / environment /
+    observed_app_version come from the selected entry of the declared map and
+    the shadowed top-level keys are ignored; before selection (and on
+    undeclared projects) the top-level keys read exactly as today."""
+    from praxis.cli.main import ProjectContext
+
+    monkeypatch.delenv("PRAXIS_ENV", raising=False)
+    _run(["init", "--app", "tests", "--env", "local"], tmp_path)
+    _declare_envs(tmp_path, "legacy_env: prod\nobserved_app_version: 9.9.9\n")
+
+    proj = ProjectContext(tmp_path)
+    # Parsing only: the config map + default + legacy_env are readable.
+    envs = proj.environments
+    assert envs is not None and set(envs) == {"dev2", "prod"}
+    assert proj.default_env == "dev2"
+    assert proj.legacy_env == "prod"
+    # Before selection the legacy top-level reads apply.
+    assert proj.environment == "local"
+    assert proj.observed_app_version == "9.9.9"
+
+    name, source = proj.select_environment("prod")
+    assert (name, source) == ("prod", "--env flag")
+    assert proj.environment == "prod"
+    assert proj.base_url == "https://example.com"
+    # prod declares no observed_app_version; the top-level 9.9.9 is shadowed.
+    assert proj.observed_app_version is None
+
+    proj2 = ProjectContext(tmp_path)
+    assert proj2.select_environment(None) == ("dev2", "config.yaml default_env")
+    assert proj2.base_url == "https://dev2.example.com"
+    assert proj2.observed_app_version == "2.6.0"
+
+
+def test_project_context_rejects_malformed_environments_map(
+    tmp_path: Path,
+) -> None:
+    """A declared entry without a base_url fails loudly at read time instead
+    of silently flipping the project back to single-env behavior."""
+    from praxis.cli.main import ProjectContext
+
+    _run(["init"], tmp_path)
+    cfg = tmp_path / ".praxis" / "config.yaml"
+    cfg.write_text(cfg.read_text() + "\nenvironments:\n  dev2:\n    app: x\n")
+    with pytest.raises(SystemExit) as exc:
+        _ = ProjectContext(tmp_path).environments
+    assert "base_url" in str(exc.value)
+
+
+def test_regress_env_flag_resolves_and_banners(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a declared project, `praxis regress --env prod` resolves the env and
+    prints the one-line stderr banner naming the winning source (the ADR-0034
+    banner posture); the verdict contract is unchanged."""
+    monkeypatch.delenv("PRAXIS_ENV", raising=False)
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+    _declare_envs(tmp_path)
+    obs_file = _pass_obs_file(tmp_path)
+    capsys.readouterr()
+    rc = _run(["regress", "--goal", "login", "--from-file", str(obs_file),
+                "--env", "prod"], tmp_path)
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "environment: prod (from --env flag)" in err
+
+
+def test_regress_praxis_env_var_selects_when_no_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PRAXIS_ENV (the CI channel) wins over the committed default_env."""
+    monkeypatch.setenv("PRAXIS_ENV", "prod")
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+    _declare_envs(tmp_path)
+    obs_file = _pass_obs_file(tmp_path)
+    capsys.readouterr()
+    rc = _run(["regress", "--goal", "login", "--from-file", str(obs_file)],
+              tmp_path)
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "environment: prod (from PRAXIS_ENV env)" in err
+
+
+def test_regress_unknown_env_flag_fails_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PRAXIS_ENV", raising=False)
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+    _declare_envs(tmp_path)
+    obs_file = _pass_obs_file(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        _run(["regress", "--goal", "login", "--from-file", str(obs_file),
+               "--env", "staging"], tmp_path)
+    msg = str(exc.value)
+    assert "staging" in msg and "dev2" in msg and "prod" in msg
+
+
+def test_regress_env_flag_on_undeclared_project_fails_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PRAXIS_ENV", raising=False)
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+    obs_file = _pass_obs_file(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        _run(["regress", "--goal", "login", "--from-file", str(obs_file),
+               "--env", "dev2"], tmp_path)
+    assert "environments" in str(exc.value)
+
+
+def test_explore_accepts_the_env_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`praxis explore` carries the same per-run --env selection as regress."""
+    monkeypatch.delenv("PRAXIS_ENV", raising=False)
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+    _declare_envs(tmp_path)
+    obs_file = tmp_path / "agent.json"
+    obs_file.write_text(json.dumps({
+        "candidate_observations": [], "new_risks": [],
+        "new_uncertainties": [], "actions": 1, "tokens": 100,
+        "visited_urls": [],
+    }))
+    capsys.readouterr()
+    rc = _run(["explore", "--goal", "login", "--from-file", str(obs_file),
+                "--env", "prod"], tmp_path)
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "environment: prod (from --env flag)" in err
+
+
+def test_status_declared_project_shows_map_default_and_banner(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`praxis status` on a declared project lists the whole environments map
+    with the default marked, reports the SELECTED env's base_url on the env
+    line, and prints the resolved-env stderr banner."""
+    monkeypatch.delenv("PRAXIS_ENV", raising=False)
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+    _declare_envs(tmp_path)
+    capsys.readouterr()
+    rc = _run(["status"], tmp_path)
+    captured = capsys.readouterr()
+    assert rc == 0
+    # The default (dev2) resolved; its base_url is on the summary line.
+    assert "env=dev2" in captured.out
+    assert "base_url=https://dev2.example.com" in captured.out
+    # The whole map is listed, default marked.
+    assert "environments:" in captured.out
+    assert "dev2: https://dev2.example.com" in captured.out
+    assert "(default)" in captured.out
+    assert "prod: https://example.com" in captured.out
+    assert "environment: dev2 (from config.yaml default_env)" in captured.err
+    # --env overrides the reported deployment.
+    rc = _run(["status", "--env", "prod"], tmp_path)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "env=prod" in captured.out
+    assert "base_url=https://example.com" in captured.out
+    assert "environment: prod (from --env flag)" in captured.err
+
+
+def test_status_unresolvable_multi_env_lists_map_and_exits_zero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`praxis status` on a declared multi-entry map with NO resolution path
+    (no --env, no PRAXIS_ENV, no default_env) is BEST-EFFORT, unlike
+    regress/explore: status is the read-only discovery command a user runs
+    precisely to SEE what environments exist, so it lists the map with no
+    selected env, no banner, and exits 0."""
+    monkeypatch.delenv("PRAXIS_ENV", raising=False)
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+    cfg = tmp_path / ".praxis" / "config.yaml"
+    cfg.write_text(cfg.read_text() + (
+        "\nenvironments:\n"
+        "  dev2:\n    base_url: https://dev2.example.com\n"
+        "  prod:\n    base_url: https://example.com\n"
+    ))
+    capsys.readouterr()
+    rc = _run(["status"], tmp_path)
+    captured = capsys.readouterr()
+    assert rc == 0
+    # No selected env on the summary line, the whole map listed, no default
+    # marker (none is declared), no resolved-env stderr banner.
+    assert "env=-" in captured.out
+    assert "environments:" in captured.out
+    assert "dev2: https://dev2.example.com" in captured.out
+    assert "prod: https://example.com" in captured.out
+    assert "(default)" not in captured.out
+    assert "environment:" not in captured.err
+
+
+def test_status_unknown_env_flag_still_fails_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Best-effort status does NOT soften the explicit mistakes: an unknown
+    `--env` name errors naming the declared environments, and `--env` on an
+    undeclared project stays the hard error."""
+    monkeypatch.delenv("PRAXIS_ENV", raising=False)
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+    # --env on an undeclared project: hard error, as on regress/explore.
+    with pytest.raises(SystemExit) as exc:
+        _run(["status", "--env", "dev2"], tmp_path)
+    assert "environments" in str(exc.value)
+    # Unknown name against a declared map: loud, naming the declared envs.
+    _declare_envs(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        _run(["status", "--env", "staging"], tmp_path)
+    msg = str(exc.value)
+    assert "staging" in msg and "dev2" in msg and "prod" in msg
+
+
+def test_undeclared_project_regress_is_unchanged_no_banner(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ADR-0035 backward-compat bar, pinned: an undeclared project's
+    `regress --from-file` keeps identical paths (pure-timestamp run dirs, same
+    report locations), prints NO environment banner, and keeps the exit-code
+    contract on both the pass and the fail path."""
+    monkeypatch.delenv("PRAXIS_ENV", raising=False)
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+    obs_file = _pass_obs_file(tmp_path)
+    capsys.readouterr()
+    rc = _run(["regress", "--goal", "login", "--from-file", str(obs_file)],
+              tmp_path)
+    captured = capsys.readouterr()
+    assert rc == 0  # PASS exit code unchanged
+    assert "environment:" not in captured.err  # no banner
+    # Paths unchanged: runs/<timestamp>/ with no env suffix, reports in place.
+    runs = tmp_path / ".praxis" / "runs"
+    run_dirs = [p for p in runs.iterdir() if p.is_dir()]
+    assert run_dirs and all("__" not in p.name for p in run_dirs)
+    assert sorted(runs.glob("*/last-regress.md"))
+    assert sorted(runs.glob("*/last-regress.xml"))
+    # The fail path's exit code is unchanged too.
+    obs_file.write_text(json.dumps({
+        "observations": [{
+            "kind": "failure", "type": "text",
+            "value": "an invalid credentials banner appears",
+            "source_type": "agent", "source_id": "praxis-cli",
+        }],
+        "actions": 5, "tokens": 1000, "visited_urls": [],
+    }))
+    rc = _run(["regress", "--goal", "login", "--from-file", str(obs_file)],
+              tmp_path)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "environment:" not in captured.err
+
+
+def test_undeclared_project_regress_ignores_praxis_env_with_notice(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pipeline-wide `export PRAXIS_ENV=...` does not break an undeclared
+    project: the run proceeds with today's behavior, a one-line stderr notice
+    flags the ignored variable, and no environment banner is printed."""
+    monkeypatch.setenv("PRAXIS_ENV", "dev2")
+    _run(["init"], tmp_path)
+    seed = tmp_path / "login.yaml"
+    seed.write_text(_seed_login_yaml())
+    _run(["learn", "login", "--from-file", str(seed)], tmp_path)
+    obs_file = _pass_obs_file(tmp_path)
+    capsys.readouterr()
+    rc = _run(["regress", "--goal", "login", "--from-file", str(obs_file)],
+              tmp_path)
+    err = capsys.readouterr().err
+    assert rc == 0  # exit code unchanged
+    assert "PRAXIS_ENV" in err and "ignor" in err  # the notice
+    assert "(from" not in err  # no resolved-env banner

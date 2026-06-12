@@ -41,6 +41,7 @@ nav:
       - Conduit (realistic app): examples/conduit.md
       - Gitea (real OSS app): examples/gitea.md
       - Running in CI: examples/ci.md
+      - One app, two deployments: examples/multi-env.md
   - Design docs:
       - Product brief: 00-product-brief.md
       - Vision and thesis: 01-vision-and-thesis.md

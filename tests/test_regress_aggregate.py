@@ -31,6 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from praxis.cli.main import discover_project
 from praxis.cli.main import main as cli_run
 from praxis.model import (
@@ -1489,3 +1491,228 @@ def test_aggregate_junit_failures_count_matches_run_failed() -> None:
     root2 = ET.fromstring(to_aggregate_junit_xml(with_fail))
     assert root2.attrib["failures"] == "1"
     assert aggregate_run_failed(with_fail)
+
+
+# --- ADR-0035 decision 8: runs / reports / JUnit tagged by environment ------
+#
+# A declared run's artifacts carry the environment in three places: the run
+# directory (`runs/<timestamp>__<env>/`), the report markdown header
+# (`environment: <env>`), and the JUnit suite name (`praxis-regress[<env>]`).
+# An undeclared run stays byte-identical: bare timestamp dir, no header line,
+# plain `praxis-regress` suite. Verdicts and exit codes are untouched either
+# way. The explore aggregate report mirrors the same tagging.
+
+
+_ENVIRONMENTS_YAML = """\
+
+environments:
+  dev2:
+    base_url: https://dev2.example.com
+  prod:
+    base_url: https://example.com
+default_env: dev2
+"""
+
+
+def _declare_envs(root: Path) -> None:
+    """Append the committed two-env map (ADR-0035 decision 1) to an inited
+    project's config.yaml."""
+    cfg = root / ".praxis" / "config.yaml"
+    cfg.write_text(cfg.read_text() + _ENVIRONMENTS_YAML)
+
+
+def _run_in(root: Path, argv: list[str]) -> int:
+    old = Path.cwd()
+    os.chdir(root)
+    try:
+        return cli_run(argv)
+    finally:
+        os.chdir(old)
+
+
+def test_aggregate_markdown_environment_header_line() -> None:
+    """With an environment, the aggregate markdown header carries exactly one
+    `environment: <env>` line right after the title; with none, the rendered
+    report is byte-identical to the untagged call (the zero-ceremony bar)."""
+    reports = [GoalReport("a", AggregateVerdict.OK, "ok")]
+    tagged = to_aggregate_markdown(reports, environment="prod")
+    assert tagged.startswith(
+        "# praxis regress (aggregate)\n\nenvironment: prod\n\n"
+    )
+    assert tagged.count("environment:") == 1
+    untagged = to_aggregate_markdown(reports)
+    assert untagged == to_aggregate_markdown(reports, environment=None)
+    assert "environment:" not in untagged
+
+
+def test_aggregate_junit_suite_name_tagged_by_environment() -> None:
+    """The declared-run suite name is `praxis-regress[<env>]`; the default
+    stays exactly `praxis-regress`. Same testcases, same failure/skip counts
+    either way: the tag never changes a verdict."""
+    import xml.etree.ElementTree as ET
+
+    reports = [
+        GoalReport("a", AggregateVerdict.OK, "ok"),
+        GoalReport("b", AggregateVerdict.STALE, "re-seed"),
+        GoalReport("c", AggregateVerdict.REGRESSED, "broke"),
+    ]
+    tagged = ET.fromstring(
+        to_aggregate_junit_xml(reports, suite_name="praxis-regress[prod]")
+    )
+    plain = ET.fromstring(to_aggregate_junit_xml(reports))
+    assert tagged.attrib["name"] == "praxis-regress[prod]"
+    assert plain.attrib["name"] == "praxis-regress"
+    for root in (tagged, plain):
+        assert root.attrib["tests"] == "3"
+        assert root.attrib["failures"] == "1"
+        assert root.attrib["skipped"] == "1"
+        assert [c.attrib["name"] for c in root.findall("testcase")] == [
+            "a", "b", "c",
+        ]
+
+
+def test_env_dirname_sanitizes_filesystem_hostile_characters() -> None:
+    """The run-dir suffix maps anything outside [A-Za-z0-9._-] to "-" so a
+    hostile declared name (slash, colon, space) can never break or escape the
+    runs/ tree; well-behaved names pass through verbatim."""
+    from praxis.cli.main import _env_dirname
+
+    assert _env_dirname("prod") == "prod"
+    assert _env_dirname("dev2.eu-west_1") == "dev2.eu-west_1"
+    assert _env_dirname("dev 2/x:y") == "dev-2-x-y"
+
+
+def test_declared_env_aggregate_artifacts_carry_the_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declared `praxis regress --env prod` (aggregate, the CI path) tags all
+    three artifacts: the run dir is `runs/<timestamp>__prod/`, the markdown
+    header names the environment, and the JUnit suite is
+    `praxis-regress[prod]`. The exit code contract is unchanged (0 on pass)."""
+    import xml.etree.ElementTree as ET
+
+    monkeypatch.delenv("PRAXIS_ENV", raising=False)
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["a", "b"])
+    _declare_envs(root)
+    obs_file = root / "pass.json"
+    obs_file.write_text(json.dumps(_PASS_OBS))
+
+    rc = _run_in(root, ["regress", "--from-file", str(obs_file), "--env", "prod"])
+    assert rc == 0  # exit codes untouched (ADR-0035 decision 8)
+
+    runs = root / ".praxis" / "runs"
+    run_dirs = [p for p in runs.iterdir() if p.is_dir()]
+    assert run_dirs and all(p.name.endswith("__prod") for p in run_dirs)
+
+    md_files = sorted(runs.glob("*__prod/regress-aggregate.md"))
+    assert md_files
+    report_text = md_files[-1].read_text()
+    assert report_text.startswith(
+        "# praxis regress (aggregate)\n\nenvironment: prod\n\n"
+    )
+
+    xml_files = sorted(runs.glob("*__prod/regress-aggregate.xml"))
+    assert xml_files
+    suite = ET.fromstring(xml_files[-1].read_text())
+    assert suite.attrib["name"] == "praxis-regress[prod]"
+    assert suite.attrib["tests"] == "2"
+    assert suite.attrib["failures"] == "0"
+
+
+def test_undeclared_aggregate_artifacts_are_untagged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The zero-ceremony bar (ADR-0035 decision 1): an undeclared aggregate run
+    keeps the bare `runs/<timestamp>/` dir name (no `__` suffix), a markdown
+    header with NO environment line, and the suite name exactly
+    `praxis-regress`."""
+    import xml.etree.ElementTree as ET
+
+    monkeypatch.delenv("PRAXIS_ENV", raising=False)
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["a"])
+    obs_file = root / "pass.json"
+    obs_file.write_text(json.dumps(_PASS_OBS))
+
+    rc = _run_in(root, ["regress", "--from-file", str(obs_file)])
+    assert rc == 0
+
+    runs = root / ".praxis" / "runs"
+    run_dirs = [p for p in runs.iterdir() if p.is_dir()]
+    assert run_dirs and all("__" not in p.name for p in run_dirs)
+
+    md_files = sorted(runs.glob("*/regress-aggregate.md"))
+    assert md_files
+    report_text = md_files[-1].read_text()
+    assert report_text.startswith("# praxis regress (aggregate)\n\n**RUN ")
+    assert "environment:" not in report_text
+
+    xml_files = sorted(runs.glob("*/regress-aggregate.xml"))
+    assert xml_files
+    suite = ET.fromstring(xml_files[-1].read_text())
+    assert suite.attrib["name"] == "praxis-regress"
+
+
+def test_declared_env_single_goal_artifacts_carry_the_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The single-goal path tags the same way: a declared `regress --goal a
+    --env prod` writes its reports under `runs/<timestamp>__prod/`, the
+    markdown header names the environment, and the JUnit suite is
+    `praxis-regress[prod]`."""
+    import xml.etree.ElementTree as ET
+
+    monkeypatch.delenv("PRAXIS_ENV", raising=False)
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["a"])
+    _declare_envs(root)
+    obs_file = root / "pass.json"
+    obs_file.write_text(json.dumps(_PASS_OBS))
+
+    rc = _run_in(root, ["regress", "--goal", "a", "--from-file", str(obs_file),
+                        "--env", "prod"])
+    assert rc == 0
+
+    runs = root / ".praxis" / "runs"
+    md_files = sorted(runs.glob("*__prod/last-regress.md"))
+    assert md_files
+    assert md_files[-1].read_text().startswith(
+        "# praxis regress\n\nenvironment: prod\n\n"
+    )
+    xml_files = sorted(runs.glob("*__prod/last-regress.xml"))
+    assert xml_files
+    suite = ET.fromstring(xml_files[-1].read_text())
+    assert suite.attrib["name"] == "praxis-regress[prod]"
+
+
+def test_declared_env_explore_report_carries_the_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The explore aggregate mirrors the regress tagging (ADR-0035 decision 8):
+    a declared `praxis explore --env prod` writes its candidate report under
+    `runs/<timestamp>__prod/` with an `environment: prod` header line."""
+    monkeypatch.delenv("PRAXIS_ENV", raising=False)
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["a"])
+    _declare_envs(root)
+    obs_file = root / "explore.json"
+    obs_file.write_text(json.dumps({
+        "candidate_observations": [], "new_risks": [],
+        "new_uncertainties": [], "actions": 1, "tokens": 100,
+        "visited_urls": [],
+    }))
+
+    rc = _run_in(root, ["explore", "--from-file", str(obs_file), "--env", "prod"])
+    assert rc == 0
+
+    runs = root / ".praxis" / "runs"
+    md_files = sorted(runs.glob("*__prod/explore-candidates.md"))
+    assert md_files
+    assert md_files[-1].read_text().startswith(
+        "# praxis explore (candidates)\n\nenvironment: prod\n\n"
+    )

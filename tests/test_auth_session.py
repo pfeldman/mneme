@@ -227,3 +227,188 @@ def test_missing_session_message_carries_no_value(tmp_path: Path) -> None:
         auth_session.load_session("absent_role", auth_dir=auth_dir, environ={})
     assert SECRET_COOKIE not in str(ei.value)
     assert "absent_role" in str(ei.value)
+
+
+# --- per-environment scoping (ADR-0035 decision 7) -------------------------
+#
+# With an environment selected, the resolution is the env-scoped env var
+# `PRAXIS_AUTH_STATE_<ENV>_<ROLE>`, then `.praxis.auth/<env>/<role>.json`, and
+# NOTHING else: sessions are domain-bound, so there is deliberately NO fallback
+# to the unscoped sources. With environment=None everything resolves exactly as
+# today (the undeclared-project bar).
+
+ENV = "dev2"
+
+
+def test_env_var_name_scopes_by_environment() -> None:
+    assert (
+        auth_session.env_var_name("admin", "dev2")
+        == "PRAXIS_AUTH_STATE_DEV2_ADMIN"
+    )
+    assert auth_session.env_var_name("user", "prod") == "PRAXIS_AUTH_STATE_PROD_USER"
+    # environment=None and the empty string (unset, ADR-0034 posture) are the
+    # unscoped name, byte-identical to today.
+    assert auth_session.env_var_name("admin", None) == "PRAXIS_AUTH_STATE_ADMIN"
+    assert auth_session.env_var_name("admin", "") == "PRAXIS_AUTH_STATE_ADMIN"
+
+
+def test_session_file_path_scopes_by_environment(tmp_path: Path) -> None:
+    repo_root = tmp_path
+    (repo_root / ".praxis").mkdir()
+    path = auth_session.session_file_path(
+        ROLE, environment=ENV, repo_root=repo_root,
+    )
+    assert path == repo_root / auth_session.AUTH_DIRNAME / ENV / f"{ROLE}.json"
+    # The per-env subdir stays under the same gitignored sibling dir, never
+    # inside the committed `.praxis/` tree.
+    assert (repo_root / ".praxis").resolve() not in path.resolve().parents
+    auth_dir = tmp_path / auth_session.AUTH_DIRNAME
+    assert auth_session.session_file_path(
+        ROLE, environment=ENV, auth_dir=auth_dir,
+    ) == auth_dir / ENV / f"{ROLE}.json"
+    # An empty-string environment counts as unset: today's unscoped path.
+    assert auth_session.session_file_path(
+        ROLE, environment="", auth_dir=auth_dir,
+    ) == auth_dir / f"{ROLE}.json"
+
+
+def test_save_load_round_trip_per_environment(tmp_path: Path) -> None:
+    auth_dir = tmp_path / auth_session.AUTH_DIRNAME
+    dev2 = _session("cookie-dev2")
+    prod = _session("cookie-prod")
+    p_dev2 = auth_session.save_session(
+        ROLE, dev2, environment="dev2", auth_dir=auth_dir,
+    )
+    p_prod = auth_session.save_session(
+        ROLE, prod, environment="prod", auth_dir=auth_dir,
+    )
+    assert p_dev2 == auth_dir / "dev2" / f"{ROLE}.json"
+    assert p_prod == auth_dir / "prod" / f"{ROLE}.json"
+    assert auth_session.load_session(
+        ROLE, environment="dev2", auth_dir=auth_dir, environ={},
+    ) == dev2
+    assert auth_session.load_session(
+        ROLE, environment="prod", auth_dir=auth_dir, environ={},
+    ) == prod
+    # The environment name is part of the PATH only: the saved content is the
+    # session dict verbatim, with no env stamp inside it.
+    assert json.loads(p_dev2.read_text(encoding="utf-8")) == dev2
+
+
+def test_env_scoped_env_var_beats_the_env_scoped_file(tmp_path: Path) -> None:
+    auth_dir = tmp_path / auth_session.AUTH_DIRNAME
+    auth_session.save_session(
+        ROLE, _session("from-file"), environment=ENV, auth_dir=auth_dir,
+    )
+    env_session = _session("from-env")
+    got = auth_session.load_session(
+        ROLE,
+        environment=ENV,
+        auth_dir=auth_dir,
+        environ={
+            auth_session.env_var_name(ROLE, ENV): json.dumps(env_session)
+        },
+    )
+    assert got == env_session
+
+
+def test_no_fallback_to_the_unscoped_session_when_an_env_is_selected(
+    tmp_path: Path,
+) -> None:
+    # The no-fallback rule (ADR-0035 decision 7): BOTH unscoped sources present
+    # (file and env var) while an environment is selected is still a loud
+    # MissingSession, never a silent wrong-domain reuse.
+    auth_dir = tmp_path / auth_session.AUTH_DIRNAME
+    auth_session.save_session(ROLE, _session(), auth_dir=auth_dir)  # unscoped
+    environ = {auth_session.env_var_name(ROLE): json.dumps(_session())}
+    with pytest.raises(auth_session.MissingSession) as ei:
+        auth_session.load_session(
+            ROLE, environment=ENV, auth_dir=auth_dir, environ=environ,
+        )
+    assert ei.value.role == ROLE
+    assert ei.value.environment == ENV
+    assert SECRET_COOKIE not in str(ei.value)
+
+
+def test_no_fallback_to_another_environments_session(tmp_path: Path) -> None:
+    # A prod session never resolves for a dev2 run: sessions are domain-bound.
+    auth_dir = tmp_path / auth_session.AUTH_DIRNAME
+    auth_session.save_session(
+        ROLE, _session(), environment="prod", auth_dir=auth_dir,
+    )
+    with pytest.raises(auth_session.MissingSession) as ei:
+        auth_session.load_session(
+            ROLE, environment="dev2", auth_dir=auth_dir, environ={},
+        )
+    assert ei.value.environment == "dev2"
+
+
+def test_missing_session_with_env_names_role_env_var_name_and_path(
+    tmp_path: Path,
+) -> None:
+    # The operator must know exactly which session to seed: role AND env, the
+    # env-scoped env-var name, the env-scoped path, and that the unscoped
+    # session is deliberately not used.
+    auth_dir = tmp_path / auth_session.AUTH_DIRNAME
+    with pytest.raises(auth_session.MissingSession) as ei:
+        auth_session.load_session(
+            ROLE, environment=ENV, auth_dir=auth_dir, environ={},
+        )
+    msg = str(ei.value)
+    assert f"{ROLE!r}" in msg
+    assert f"{ENV!r}" in msg
+    assert "PRAXIS_AUTH_STATE_DEV2_ADMIN" in msg
+    assert f".praxis.auth/{ENV}/{ROLE}.json" in msg
+    assert "NOT used" in msg  # the no-fallback rule is stated, not implied
+
+
+def test_missing_session_message_without_env_is_byte_identical_to_today() -> None:
+    expected = (
+        "missing auth session for role 'admin': set the environment "
+        "variable PRAXIS_AUTH_STATE_ADMIN to the storageState JSON, or "
+        "save one to .praxis.auth/admin.json "
+        "(seed it with a teach login)."
+    )
+    assert str(auth_session.MissingSession(ROLE)) == expected
+    # An empty-string environment counts as unset: same message.
+    assert str(auth_session.MissingSession(ROLE, "")) == expected
+
+
+def test_environment_none_resolution_is_identical_to_today(tmp_path: Path) -> None:
+    # An explicit environment=None resolves exactly like the no-argument call:
+    # the unscoped file and the unscoped env var, in the same order.
+    auth_dir = tmp_path / auth_session.AUTH_DIRNAME
+    file_session = _session("unscoped-file")
+    auth_session.save_session(ROLE, file_session, environment=None, auth_dir=auth_dir)
+    assert auth_session.load_session(
+        ROLE, environment=None, auth_dir=auth_dir, environ={},
+    ) == file_session
+    env_session = _session("unscoped-env")
+    got = auth_session.load_session(
+        ROLE,
+        environment=None,
+        auth_dir=auth_dir,
+        environ={auth_session.env_var_name(ROLE): json.dumps(env_session)},
+    )
+    assert got == env_session
+    # And the env-scoped subdir was never created by any of it.
+    assert not (auth_dir / ENV).exists()
+
+
+def test_skill_seams_pass_the_environment_through(tmp_path: Path) -> None:
+    # The teach save seam and the regress/explore load seam carry the same env
+    # dimension, so a teach login on a selected environment seeds THAT
+    # deployment's session and the run reads it back env-scoped.
+    auth_dir = tmp_path / auth_session.AUTH_DIRNAME
+    session = _session("seam-cookie")
+    path = auth_session.save_session_for_role(
+        ROLE, session, environment=ENV, auth_dir=auth_dir,
+    )
+    assert path == auth_dir / ENV / f"{ROLE}.json"
+    assert auth_session.load_session_for_role(
+        ROLE, environment=ENV, auth_dir=auth_dir, environ={},
+    ) == session
+    # The unscoped load does NOT see the env-scoped session (no fallback in
+    # either direction).
+    with pytest.raises(auth_session.MissingSession):
+        auth_session.load_session_for_role(ROLE, auth_dir=auth_dir, environ={})

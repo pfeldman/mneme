@@ -11,6 +11,7 @@ import pytest
 from praxis.merge import project
 from praxis.model import Target
 from praxis.store import (
+    DecayEvent,
     FileEventStore,
     ObservationEvent,
     ObservedSignal,
@@ -164,3 +165,100 @@ def test_concurrent_regress_writes_do_not_lose_records(tmp_path) -> None:
     t1.join()
     t2.join()
     assert len(store.read_regress("g")) == 2 * n  # nothing lost
+
+
+# --- environment field (ADR-0035 decision 4): optional operational provenance
+# on every event kind. Data only at this layer - the store never interprets it
+# (partitioning is a later adapter concern). Pre-ADR-0035 event JSON (no
+# `environment` key) must keep parsing forever (ADR-0001: additive fields only).
+
+
+def test_observation_event_environment_round_trips(tmp_path) -> None:
+    store = FileEventStore(tmp_path)
+    store.append(ObservationEvent(agent_id="a", goal_id="g", environment="dev2",
+                                  signals=[_sig("x")]))
+    assert store.read("g")[0].environment == "dev2"
+
+
+def test_observation_event_environment_defaults_none_and_serializes(tmp_path) -> None:
+    """Unset environment is None, and the written JSON carries the key (the
+    acknowledged ADR-0035 pre-1.0 downgrade hazard - pinned, not suppressed)."""
+    store = FileEventStore(tmp_path)
+    store.append(ObservationEvent(agent_id="a", goal_id="g", signals=[_sig("x")]))
+    assert store.read("g")[0].environment is None
+    [path] = (tmp_path / "local" / "events").glob("*.json")
+    assert '"environment"' in path.read_text(encoding="utf-8")
+
+
+def test_regress_event_environment_round_trips(tmp_path) -> None:
+    store = FileEventStore(tmp_path)
+    store.append_regress(RegressObservationEvent(
+        agent_id="a", goal_id="g", verdict="pass", environment="prod",
+        signals=[_sig("x")],
+    ))
+    got = store.read_regress("g")
+    assert got[0].environment == "prod"
+
+
+def test_decay_event_environment_round_trips(tmp_path) -> None:
+    store = FileEventStore(tmp_path)
+    store.append_decay(DecayEvent(
+        goal_id="g", environment="dev2",
+        signal_kind="success", signal_type="behavioral", signal_value="x",
+        from_status="believed", to_status="stale",
+        anchor_now=datetime(2026, 6, 1, tzinfo=timezone.utc), rule="version",
+    ))
+    assert store.read_decay("g")[0].environment == "dev2"
+
+
+def test_pre_environment_event_json_still_parses() -> None:
+    """A literal pre-ADR-0035 event dict - no `environment` key anywhere - must
+    validate on every event kind, with the field defaulting to None."""
+    observation = ObservationEvent.model_validate({
+        "event_id": "e1",
+        "ts": "2026-06-01T00:00:00+00:00",
+        "schema_version": "0",
+        "agent_id": "a",
+        "goal_id": "g",
+        "observed_app_version": "1",
+        "signals": [{
+            "kind": "success", "type": "behavioral", "value": "logout available",
+            "present": True, "source_type": "agent", "source_id": "a",
+            "observed_app_version": "1", "confidence": None, "observed": None,
+            "ref": None, "evidence": None, "flags": None,
+        }],
+    })
+    assert observation.environment is None
+
+    regress = RegressObservationEvent.model_validate({
+        "event_id": "e2",
+        "ts": "2026-06-01T00:00:00+00:00",
+        "schema_version": "0",
+        "kind": "regress",
+        "agent_id": "a",
+        "goal_id": "g",
+        "verdict": "pass",
+        "observed_app_version": "1",
+        "signals": [],
+        "voids": None,
+    })
+    assert regress.environment is None
+
+    decay = DecayEvent.model_validate({
+        "event_id": "e3",
+        "ts": "2026-06-01T00:00:00+00:00",
+        "schema_version": "0",
+        "kind": "decay",
+        "goal_id": "g",
+        "signal_kind": "success",
+        "signal_type": "behavioral",
+        "signal_value": "x",
+        "from_status": "believed",
+        "to_status": "stale",
+        "retired_event_ids": ["e1"],
+        "anchor_current_version": "2",
+        "anchor_now": "2026-06-01T00:00:00+00:00",
+        "rule": "version",
+        "note": None,
+    })
+    assert decay.environment is None

@@ -23,6 +23,7 @@ from ..store import (
     CandidateEvent,
     CandidateRiskPayload,
     CandidateUncertaintyPayload,
+    DecayEvent,
     EventStore,
     ObservationEvent,
     ObservedSignal,
@@ -46,6 +47,13 @@ class BrowserUseAdapter:
 
     A seed knowledge file per goal supplies the cold-start oracle (ADR-0005); agent
     observations are folded on top via the merge projection.
+
+    With an `environment` selected (ADR-0035), every write is stamped with it and
+    every read is filtered to that deployment's partition: evidence is per
+    environment, knowledge (seeds) is product-level and folds into every
+    environment's projection. An environment is NEVER a source dimension -
+    `source_id` stays `agent_identity` and cross-environment observations never
+    meet in one projection, so they can corroborate nothing (decision 5).
     """
 
     def __init__(
@@ -55,18 +63,73 @@ class BrowserUseAdapter:
         target: Target,
         seeds: dict[str, KnowledgeFile] | None = None,
         current_version: str | None = None,
+        environment: str | None = None,
+        legacy_env: str | None = None,
     ) -> None:
         self.store = store
         self.target = target
         self.seeds = seeds or {}
         self.current_version = current_version
+        # ADR-0035: the deployment this adapter's run checks. Stamped on every
+        # write; partitions every read. Empty string counts as unset (the
+        # ADR-0034 posture), so None means "undeclared project": no filter,
+        # byte-identical behavior to pre-ADR-0035.
+        self.environment = environment or None
+        # ADR-0035 decision 4: which declared environment pre-migration events
+        # (environment None) are attributed to. A projection INPUT - no event
+        # file is ever rewritten (the ADR-0013 caller-supplied-anchor posture).
+        self.legacy_env = legacy_env or None
 
     # ---- SPI: read ----------------------------------------------------------
 
+    def _environment_matches(self, event_environment: str | None) -> bool:
+        """The ADR-0035 decision 4 partition rule, in one place.
+
+        With NO environment selected (undeclared project) every event matches:
+        today's behavior exactly. With one selected, an event matches when it
+        carries the same name, PLUS (when config `legacy_env` names this
+        environment) when it carries None - pre-migration history attributed
+        to the named legacy deployment. Otherwise None-events match NO
+        declared environment (honest exclusion: nobody recorded which
+        deployment produced them)."""
+        if self.environment is None:
+            return True
+        if event_environment == self.environment:
+            return True
+        return event_environment is None and self.legacy_env == self.environment
+
+    def read_events(self, goal_id: str) -> list[ObservationEvent]:
+        """The selected environment's promotable event stream for a goal.
+
+        THE partition point (ADR-0035 decisions 4 + 5): the believed
+        projection and the decay derivation both operate on this filtered
+        stream, so evidence from one deployment can never corroborate, mask,
+        or decay belief about another. `merge/` and `oracle/` are untouched -
+        the core learns about environments only as a field on data it never
+        interprets, and within one environment ADR-0005/0008/0012/0013/0029
+        apply verbatim."""
+        return [
+            ev for ev in self.store.read(goal_id)
+            if self._environment_matches(ev.environment)
+        ]
+
+    def read_decay_events(self, goal_id: str) -> list[DecayEvent]:
+        """The selected environment's decay-flip log for a goal, filtered with
+        the same partition rule as `read_events`, so replaying one
+        environment's log reconstructs that environment's flips without
+        touching another's (ADR-0035 decision 4)."""
+        return [
+            de for de in self.store.read_decay(goal_id)
+            if self._environment_matches(de.environment)
+        ]
+
     def read_knowledge(self, goal_id: str) -> KnowledgeFile | None:
         """Believed projection for a goal, or None if there is neither a seed nor
-        any events for it."""
-        events = self.store.read(goal_id)
+        any events for it. Computed PER ENVIRONMENT (ADR-0035 decision 4): the
+        event stream is the selected environment's partition, while the seed
+        folds into EVERY environment's projection (a human/spec seed is product
+        intent, trusted from cold start in each deployment, ADR-0005)."""
+        events = self.read_events(goal_id)
         seed = self.seeds.get(goal_id)
         if seed is not None:
             return project_with_seed(
@@ -100,6 +163,9 @@ class BrowserUseAdapter:
             agent_id=agent_id,
             goal_id=goal_id,
             observed_app_version=observed_app_version or self.current_version,
+            # ADR-0035 decision 4: operational provenance, like agent_id.
+            # None on an undeclared project.
+            environment=self.environment,
             signals=redacted,
         )
         self.store.append(event)
@@ -128,6 +194,8 @@ class BrowserUseAdapter:
             goal_id=goal_id,
             verdict=verdict,
             observed_app_version=observed_app_version or self.current_version,
+            # ADR-0035 decision 4: which deployment this regress run checked.
+            environment=self.environment,
             signals=redacted,
             # ADR-0033 decision 4: void confirmation reasons ride the same
             # record (redacted: they may quote agent-authored text).
@@ -186,6 +254,9 @@ class BrowserUseAdapter:
                 agent_identity=agent_identity,
                 goal_id=goal_id,
                 observed_app_version=version,
+                # ADR-0035 decisions 4 + 6: provenance for the review
+                # annotation ("seen on dev2 only"); never corroboration.
+                environment=self.environment,
                 payload=CandidateRiskPayload(risk=risk_redacted),
             )
             self.store.append_candidate(event)
@@ -197,6 +268,7 @@ class BrowserUseAdapter:
                 agent_identity=agent_identity,
                 goal_id=goal_id,
                 observed_app_version=version,
+                environment=self.environment,
                 payload=CandidateUncertaintyPayload(uncertainty=unc_redacted),
             )
             self.store.append_candidate(event)

@@ -95,6 +95,24 @@ jobs:
           # mis-navigate the app and false-alarm; pin deliberately and validate
           # before trusting it).
           # PRAXIS_BRAIN_MODEL: <model-name>
+          # Optional: select the deployment for a MULTI-ENVIRONMENT project
+          # (ADR-0035). Only meaningful when .praxis/config.yaml declares an
+          # `environments` map; on a project without one the variable is
+          # ignored with a one-line notice. To gate EVERY deployment, turn
+          # this job into a matrix over the declared names and set PRAXIS_ENV
+          # per leg:
+          #   strategy:
+          #     matrix:
+          #       praxis_env: [dev2, prod]
+          #   ...
+          #   env:
+          #     PRAXIS_ENV: ${{ matrix.praxis_env }}
+          # Saved sessions are then PER ENVIRONMENT and the runner-secret name
+          # encodes it (PRAXIS_AUTH_STATE_DEV2_USER for the "user" role on
+          # dev2; no fallback to the unscoped name). Each leg gates
+          # independently on its own exit code, and the JUnit suite name
+          # (praxis-regress[dev2]) keeps the legs apart in your test UI.
+          # PRAXIS_ENV: dev2
         run: praxis regress
 
   # OPTIONAL second job: scheduled exploration. Delete this whole job if you

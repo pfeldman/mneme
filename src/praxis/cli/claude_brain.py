@@ -109,6 +109,15 @@ __all__ = [
 # (ADR-0027 decision 3 + Pablo's constraint: the headless brain can never ask
 # the user anything). The output contract names the exact JSON envelope
 # `runner.regression._parse_executor_result` consumes.
+#
+# The per-run "App under test: <base_url>" line (ADR-0035 decision 3) is
+# DELIBERATELY NOT part of this preamble: the prompt renderers
+# (`runner/prompts.py`) are the single injection point, so the per-goal TASK
+# section below the preamble already carries the line whenever the CLI selected
+# a declared environment. Injecting it here too would duplicate the line on the
+# console path while the skill-driver path got it once, and a second injection
+# point is a second place the undeclared-project byte-identity bar can break.
+# The preamble stays constant across goals AND across environments.
 _HEADLESS_PREAMBLE = (
     "You are running HEADLESS and NON-INTERACTIVE as a QA test runner. There is "
     "NO human watching and NO one to answer you. Do NOT ask any question, do NOT "
@@ -221,6 +230,7 @@ class StorageStateResolution:
 def resolve_storage_state(
     auth_state: "AuthState | None",
     *,
+    environment: str | None = None,
     repo_root: Path | None = None,
     auth_dir: Path | None = None,
     environ: dict[str, str] | None = None,
@@ -245,21 +255,33 @@ def resolve_storage_state(
          so the brain surfaces the loud AUTH-EXPIRED path; never a silent
          logged-out run (ADR-0026 decision 5, AGENTS.md loud-over-silent).
 
+    `environment` is the run's selected environment (ADR-0035 decision 7): with
+    one selected, BOTH sources are env-scoped (`PRAXIS_AUTH_STATE_<ENV>_<ROLE>`,
+    `.praxis.auth/<env>/<role>.json`) and the unscoped sources are deliberately
+    NOT consulted (a storage state is domain-bound; an unscoped session present
+    while an environment is selected is a `missing_role` outcome, never a silent
+    wrong-domain reuse). With `environment=None` resolution is byte-identical to
+    the unscoped channel; an empty string counts as unset.
+
     `repo_root` / `auth_dir` / `environ` are passed through to the EXISTING
     `auth_session` helpers for tests and pinned callers; the env-wins-over-file
-    precedence is theirs, not re-implemented here.
+    precedence and the env scoping are theirs, not re-implemented here.
     """
+    environment = environment if environment else None
     role = role_for_session_reuse(auth_state)
     if role is None:
         return StorageStateResolution()
 
     env = os.environ if environ is None else environ
-    env_present = bool(env.get(env_var_name(role)))
+    env_present = bool(env.get(env_var_name(role, environment)))
     if not env_present:
-        # No env override: a gitignored `.praxis.auth/<role>.json` file, if
-        # present, is what `--storage-state` reads directly (no temp file).
+        # No env override: the gitignored session file for THIS environment
+        # (`.praxis.auth/<env>/<role>.json` when one is selected, the unscoped
+        # `.praxis.auth/<role>.json` otherwise), if present, is what
+        # `--storage-state` reads directly (no temp file). No cross-env or
+        # unscoped fallback (ADR-0035 decision 7).
         file_path = session_file_path(
-            role, repo_root=repo_root, auth_dir=auth_dir,
+            role, environment=environment, repo_root=repo_root, auth_dir=auth_dir,
         )
         if file_path is not None and file_path.is_file():
             return StorageStateResolution(path=str(file_path), is_tempfile=False)
@@ -274,7 +296,8 @@ def resolve_storage_state(
         # reads `os.environ` itself when it is None, so env-wins precedence holds
         # without forcing the `_Environ` type across the boundary.
         session = load_session_for_role(
-            role, repo_root=repo_root, auth_dir=auth_dir, environ=environ,
+            role, environment=environment,
+            repo_root=repo_root, auth_dir=auth_dir, environ=environ,
         )
     except MissingSession:
         return StorageStateResolution(missing_role=role)
@@ -363,7 +386,9 @@ def _synthesize_mcp_config_with_storage_state(
     return name
 
 
-def _auth_expired_observations(role: str) -> dict[str, Any]:
+def _auth_expired_observations(
+    role: str, environment: str | None = None,
+) -> dict[str, Any]:
     """The observation dict for a goal whose saved session is unresolvable.
 
     Returns `authenticated: False` with NO success observations and a note that
@@ -372,18 +397,37 @@ def _auth_expired_observations(role: str) -> dict[str, Any]:
     authenticated scope but the run observed a logged-out browser, ADR-0026
     decision 5) rather than a false REGRESSED or a false green. The brain returns
     this WITHOUT driving the browser: with no session there is nothing to drive.
+
+    With an `environment` selected (ADR-0035 decision 7) the note names the role
+    AND the environment, with the env-scoped env-var name and file path in its
+    hint, so the operator knows exactly which session to seed; with
+    `environment=None` the note is byte-identical to the pre-ADR-0035 text. An
+    empty string counts as unset.
     """
+    environment = environment if environment else None
+    if environment is None:
+        hint = (
+            f"no saved auth session for role {role!r}: set "
+            f"{env_var_name(role)} to the storageState JSON, or save one to "
+            f".praxis.auth/{role}.json (seed it with a teach login)."
+        )
+    else:
+        hint = (
+            f"no saved auth session for role {role!r} on environment "
+            f"{environment!r}: set {env_var_name(role, environment)} to the "
+            f"storageState JSON, or save one to "
+            f".praxis.auth/{environment}/{role}.json (seed it with a teach "
+            f"login against that environment; the unscoped session is "
+            f"deliberately not used, ADR-0035)."
+        )
     return {
         "observations": [],
         "actions": 0,
         "tokens": None,
         "authenticated": False,
         "notes": [
-            f"no saved auth session for role {role!r}: set "
-            f"{env_var_name(role)} to the storageState JSON, or save one to "
-            f".praxis.auth/{role}.json (seed it with a teach login). The run did "
-            f"not drive the app logged out; this is AUTH-EXPIRED, not a "
-            f"regression."
+            f"{hint} The run did not drive the app logged out; this is "
+            f"AUTH-EXPIRED, not a regression."
         ],
     }
 
@@ -516,6 +560,7 @@ def make_claude_brain(
     extra_args: list[str] | None = None,
     progress: Callable[[], tuple[str, str] | None] | None = None,
     session_for_goal: "Callable[[], AuthState | None] | None" = None,
+    environment: str | None = None,
 ) -> Callable[[str], dict[str, Any]]:
     """Build a `Brain` that drives one goal through a headless `claude -p` run.
 
@@ -545,6 +590,14 @@ def make_claude_brain(
     will run it (sequential or the worker thread of a `--jobs > 1` run), so the
     read is thread-correct.
 
+    `environment` is the run's SELECTED environment (ADR-0035 decision 7), the
+    one the CLI resolved per its flag > PRAXIS_ENV > default_env precedence. It
+    scopes the session resolution (`PRAXIS_AUTH_STATE_<ENV>_<ROLE>`, then
+    `.praxis.auth/<env>/<role>.json`, with NO fallback to the unscoped sources:
+    sessions are domain-bound) and the AUTH-EXPIRED note, which then names the
+    role AND the environment. None (the undeclared project) keeps today's
+    unscoped resolution and note byte-identical.
+
     The returned brain takes the engine's per-goal prompt, wraps it with the
     headless / non-interactive preamble and the output contract, runs `claude -p`
     capturing stdout, and returns the parsed observation dict. It RAISES on a
@@ -558,12 +611,15 @@ def make_claude_brain(
         # auth-subject (`being_tested`) or anonymous goal does not; an
         # unresolvable session short-circuits loudly to AUTH-EXPIRED.
         auth_state = session_for_goal() if session_for_goal is not None else None
-        resolution = resolve_storage_state(auth_state)
+        resolution = resolve_storage_state(auth_state, environment=environment)
         if resolution.missing_role is not None:
             # No env var and no file for a goal that needs the session: do NOT
             # drive the browser logged out (a false REGRESSED). Return the
-            # AUTH-EXPIRED-routing observation naming only the role.
-            return _auth_expired_observations(resolution.missing_role)
+            # AUTH-EXPIRED-routing observation naming only the role (and the
+            # selected environment, when there is one, ADR-0035 decision 7).
+            return _auth_expired_observations(
+                resolution.missing_role, environment,
+            )
 
         # When a session resolved, synthesize a per-goal MCP config that adds
         # `--storage-state <path>` to the Playwright server args (the flag is a
