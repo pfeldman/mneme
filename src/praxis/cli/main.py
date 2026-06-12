@@ -762,6 +762,7 @@ def _select_console_brain(
     default_brain_model: str | None = None,
     progress: "Callable[[], tuple[str, str] | None] | None" = None,
     session_for_goal: "Callable[[], Any] | None" = None,
+    environment: str | None = None,
 ) -> Any:
     """Pick the brain that drives a console regress / explore run (ADR-0027
     decision 7).
@@ -784,6 +785,14 @@ def _select_console_brain(
     precondition authenticated goal reuses its saved Playwright storage state via
     `--storage-state` (ADR-0026, ADR-0027 decision 2). The `--from-file` path
     ignores it: a scripted run feeds observations directly and drives no browser.
+
+    `environment` is the run's SELECTED environment (ADR-0035 decision 7, the
+    value `_select_environment_for_run` resolved; None on an undeclared
+    project). It is forwarded to the claude -p brain so session reuse resolves
+    the env-scoped sources (`PRAXIS_AUTH_STATE_<ENV>_<ROLE>`,
+    `.praxis.auth/<env>/<role>.json`, no unscoped fallback) and the AUTH-EXPIRED
+    note names the role AND the environment. The `--from-file` path ignores it:
+    a scripted run loads no session.
 
     The brain model resolves `--model` flag > `PRAXIS_BRAIN_MODEL` env >
     `default_brain_model` (the project's committed `brain_model` pin) > unset
@@ -842,6 +851,7 @@ def _select_console_brain(
         mcp_config_path=getattr(args, "mcp_config", None) or default_mcp_config,
         progress=progress,
         session_for_goal=session_for_goal,
+        environment=environment,
     )
 
 
@@ -861,7 +871,9 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     # Resolve the environment BEFORE building the adapter (ADR-0035): the
     # selected env supplies base_url / environment / observed_app_version to
     # everything downstream. Undeclared projects resolve to None silently.
-    _select_environment_for_run(proj, args)
+    # The SELECTED name (not the legacy single-env `environment` config label)
+    # is what scopes session reuse below (ADR-0035 decision 7).
+    selected_env = _select_environment_for_run(proj, args)
     adapter = proj.adapter()
 
     # Live progress label the claude -p spinner reads so the running line reads
@@ -886,6 +898,7 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         args, default_mcp_config=proj.mcp_config,
         default_brain_model=proj.brain_model, progress=_progress_label,
         session_for_goal=auth_ctx.current,
+        environment=selected_env,
     )
 
     # Default-all aggregate (ADR-0023 decision 2): no `--goal` runs EVERY
@@ -1160,8 +1173,9 @@ def _explore_aggregate(
 def _cmd_explore(args: argparse.Namespace) -> int:
     proj = discover_project()
     # Resolve the environment BEFORE building the adapter (ADR-0035), exactly
-    # as regress does; undeclared projects resolve to None silently.
-    _select_environment_for_run(proj, args)
+    # as regress does; undeclared projects resolve to None silently. The
+    # SELECTED name scopes session reuse below (ADR-0035 decision 7).
+    selected_env = _select_environment_for_run(proj, args)
     adapter = proj.adapter()
 
     # Per-goal auth context so the claude -p brain reuses a saved session per
@@ -1174,6 +1188,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
         args, default_mcp_config=proj.mcp_config,
         default_brain_model=proj.brain_model,
         session_for_goal=auth_ctx.current,
+        environment=selected_env,
     )
 
     # Default-all aggregate (ADR-0023 decision 2): no `--goal` hunts off-happy-

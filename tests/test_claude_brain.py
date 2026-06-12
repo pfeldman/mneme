@@ -19,6 +19,7 @@ from praxis.auth_session import env_var_name, save_session
 from praxis.cli.claude_brain import (
     _HEADLESS_PREAMBLE,
     ClaudeBrainError,
+    _auth_expired_observations,
     _extract_observations,
     _resolve_claude_argv0,
     make_claude_brain,
@@ -383,6 +384,187 @@ def test_brain_surfaces_auth_expired_when_session_missing_instead_of_running(
     assert out["authenticated"] is False
     assert out["observations"] == []
     assert any("admin" in n for n in out["notes"])
+
+
+# --- per-environment session scoping (ADR-0035 decision 7) -----------------
+#
+# With an environment selected, session reuse resolves ONLY the env-scoped
+# sources (`PRAXIS_AUTH_STATE_<ENV>_<ROLE>`, `.praxis.auth/<env>/<role>.json`):
+# sessions are domain-bound, so the unscoped session is deliberately never
+# borrowed. environment=None keeps every resolution above byte-identical.
+
+
+def test_resolve_storage_state_uses_the_env_scoped_file(tmp_path: Path) -> None:
+    auth_dir = tmp_path / ".praxis.auth"
+    path = save_session(
+        "user", {"cookies": [], "origins": []},
+        environment="dev2", auth_dir=auth_dir,
+    )
+    state = AuthState(authenticated=True, scope="user")
+    res = resolve_storage_state(
+        state, environment="dev2", auth_dir=auth_dir, environ={},
+    )
+    assert res.missing_role is None
+    assert res.path == str(path)  # .praxis.auth/dev2/user.json, read in place
+    assert res.is_tempfile is False
+
+
+def test_resolve_storage_state_never_falls_back_to_the_unscoped_session(
+    tmp_path: Path,
+) -> None:
+    """The no-fallback rule (ADR-0035 decision 7): with an environment selected,
+    an unscoped session present in BOTH unscoped sources (file and env var) is
+    still the loud missing-session outcome, never a silent wrong-domain reuse."""
+    auth_dir = tmp_path / ".praxis.auth"
+    save_session("user", {"cookies": [], "origins": []}, auth_dir=auth_dir)
+    environ = {
+        env_var_name("user"): json.dumps({"cookies": [], "origins": []}),
+    }
+    state = AuthState(authenticated=True, scope="user")
+    res = resolve_storage_state(
+        state, environment="dev2", auth_dir=auth_dir, environ=environ,
+    )
+    assert res.path is None
+    assert res.missing_role == "user"
+
+
+def test_resolve_storage_state_never_borrows_another_environments_file(
+    tmp_path: Path,
+) -> None:
+    auth_dir = tmp_path / ".praxis.auth"
+    save_session(
+        "user", {"cookies": [], "origins": []},
+        environment="prod", auth_dir=auth_dir,
+    )
+    state = AuthState(authenticated=True, scope="user")
+    res = resolve_storage_state(
+        state, environment="dev2", auth_dir=auth_dir, environ={},
+    )
+    assert res.path is None
+    assert res.missing_role == "user"
+
+
+def test_resolve_storage_state_env_scoped_var_wins_and_materializes(
+    tmp_path: Path,
+) -> None:
+    # CI scopes the runner secret per matrix leg: PRAXIS_AUTH_STATE_DEV2_USER
+    # beats the env-scoped file, and the raw JSON is materialized to a temp
+    # file exactly like the unscoped channel.
+    auth_dir = tmp_path / ".praxis.auth"
+    save_session(
+        "user", {"cookies": [{"name": "from-file"}]},
+        environment="dev2", auth_dir=auth_dir,
+    )
+    env_session = {"cookies": [{"name": "from-env"}], "origins": []}
+    state = AuthState(authenticated=True, scope="user")
+    res = resolve_storage_state(
+        state, environment="dev2", auth_dir=auth_dir,
+        environ={env_var_name("user", "dev2"): json.dumps(env_session)},
+    )
+    assert res.missing_role is None
+    assert res.is_tempfile is True
+    assert json.loads(Path(res.path).read_text()) == env_session
+    Path(res.path).unlink()
+
+
+def test_resolve_storage_state_empty_environment_counts_as_unset(
+    tmp_path: Path,
+) -> None:
+    # The ADR-0034 posture mirrored: environment="" resolves the unscoped
+    # channel exactly like environment=None.
+    auth_dir = tmp_path / ".praxis.auth"
+    path = save_session("user", {"cookies": [], "origins": []}, auth_dir=auth_dir)
+    state = AuthState(authenticated=True, scope="user")
+    res = resolve_storage_state(
+        state, environment="", auth_dir=auth_dir, environ={},
+    )
+    assert res.path == str(path)
+    assert res.missing_role is None
+
+
+def test_brain_threads_the_environment_into_session_resolution(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """make_claude_brain(environment=...) resolves the ENV-SCOPED session file
+    into the synthesized MCP config's --storage-state, not the unscoped one."""
+    auth_dir = tmp_path / ".praxis.auth"
+    # Both an unscoped and a dev2-scoped session exist; only dev2's may win.
+    save_session("user", {"cookies": [], "origins": []}, auth_dir=auth_dir)
+    scoped_path = save_session(
+        "user", {"cookies": [], "origins": []},
+        environment="dev2", auth_dir=auth_dir,
+    )
+    state = AuthState(authenticated=True, scope="user")
+
+    import praxis.cli.claude_brain as cb
+
+    # Pin the resolution to this temp auth dir while FORWARDING the
+    # environment the brain passes, so the test proves the threading.
+    orig = cb.resolve_storage_state
+    monkeypatch.setattr(
+        cb, "resolve_storage_state",
+        lambda s, **kw: orig(
+            s, auth_dir=auth_dir, environ={},
+            environment=kw.get("environment"),
+        ),
+    )
+    seen = _capture_synth_config(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    brain = make_claude_brain(session_for_goal=lambda: state, environment="dev2")
+    assert brain("p") == _OBS
+    assert _storage_states_in(seen["mcp_config"]) == [str(scoped_path)]
+
+
+def test_auth_expired_note_names_role_and_environment(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """A missing env-scoped session short-circuits to AUTH-EXPIRED naming the
+    role AND the environment, with the env-scoped env-var name and file path in
+    the hint, and the browser is never driven. An unscoped session being present
+    changes nothing: no fallback (ADR-0035 decision 7)."""
+    auth_dir = tmp_path / ".praxis.auth"
+    save_session("admin", {"cookies": [], "origins": []}, auth_dir=auth_dir)
+    state = AuthState(authenticated=True, scope="admin")
+
+    import praxis.cli.claude_brain as cb
+    orig = cb.resolve_storage_state
+    monkeypatch.setattr(
+        cb, "resolve_storage_state",
+        lambda s, **kw: orig(
+            s, auth_dir=auth_dir, environ={},
+            environment=kw.get("environment"),
+        ),
+    )
+
+    called = {"run": False}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> _FakeProc:
+        called["run"] = True
+        return _FakeProc(stdout=json.dumps(_OBS))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    out = make_claude_brain(
+        session_for_goal=lambda: state, environment="dev2",
+    )("p")
+    assert called["run"] is False  # the browser was never driven
+    assert out["authenticated"] is False
+    note = out["notes"][0]
+    assert "'admin'" in note
+    assert "'dev2'" in note
+    assert "PRAXIS_AUTH_STATE_DEV2_ADMIN" in note
+    assert ".praxis.auth/dev2/admin.json" in note
+
+
+def test_auth_expired_note_without_environment_is_byte_identical_to_today() -> None:
+    expected = (
+        "no saved auth session for role 'admin': set "
+        "PRAXIS_AUTH_STATE_ADMIN to the storageState JSON, or save one to "
+        ".praxis.auth/admin.json (seed it with a teach login). The run did "
+        "not drive the app logged out; this is AUTH-EXPIRED, not a "
+        "regression."
+    )
+    assert _auth_expired_observations("admin")["notes"] == [expected]
+    # An empty-string environment counts as unset: same note.
+    assert _auth_expired_observations("admin", "")["notes"] == [expected]
 
 
 def test_preamble_documents_the_secrets_login_path() -> None:
