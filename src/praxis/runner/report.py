@@ -10,6 +10,7 @@ two runs with the same observations (helps git-friendly review).
 from __future__ import annotations
 
 import html
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
@@ -513,6 +514,40 @@ def format_console_summary(reports: list[GoalReport], *, color: bool = False) ->
 # --- the explore candidate report, grouped by trigger (ADR-0023 decision 8) -
 
 
+def format_environment_annotation(
+    environments: Iterable[str | None],
+) -> str | None:
+    """The candidate env annotation (ADR-0035 decision 6), shared by the
+    explore report and `praxis review` so the two surfaces never word it
+    differently.
+
+    `environments` is the distinct `environment` values across one finding's
+    observations (None = a pre-ADR-0035 event with no environment stamped).
+    The annotation is DISPLAY-ONLY provenance: it never feeds promotion,
+    source counting, or any verdict (decision 5).
+
+    Wording:
+      - {"dev2"}                -> "seen on: dev2 only"
+      - {"dev2", "prod"}        -> "seen on: dev2, prod"  (sorted names)
+      - {"dev2", None}          -> "seen on: dev2, pre-migration"
+      - all None (the pure single-env project) -> None: NO annotation, so an
+        undeclared project's rendered output stays byte-identical to before.
+
+    "pre-migration" names a None-env observation ONLY when it sits next to
+    env-stamped ones: with no declared environment anywhere there is nothing
+    to be "pre" relative to, and annotating would change bytes for every
+    project that never adopted environments.
+    """
+    envs = set(environments)
+    named = sorted(e for e in envs if e is not None)
+    if not named:
+        return None
+    labels = named + (["pre-migration"] if None in envs else [])
+    if len(labels) == 1:
+        return f"seen on: {labels[0]} only"
+    return "seen on: " + ", ".join(labels)
+
+
 def _trigger_key(event: CandidateEvent) -> tuple[str, ...]:
     """A stable grouping key for ONE candidate observation's structured trigger.
 
@@ -577,6 +612,13 @@ class CandidateGroup:
     `kind` is "risk" or "uncertainty"; `description` is the underlying finding
     text; `trigger_label` is the structured trigger (or the question) rendered
     for a human.
+
+    `environments` is the distinct `environment` values across THIS group's
+    observations (ADR-0035 decision 6): the same finding observed on dev2 and
+    prod is still ONE group (the trigger is the grouping key, never the env),
+    and the env set is display-only provenance the report renders via
+    `format_environment_annotation`. It feeds no count and no promotion:
+    `believed` and `source_count` are computed exactly as before (decision 5).
     """
 
     kind: str
@@ -587,6 +629,7 @@ class CandidateGroup:
     believed: bool
     goal_id: str
     notes: list[str] = field(default_factory=list)
+    environments: set[str | None] = field(default_factory=set)
 
     @property
     def source_count(self) -> int:
@@ -682,6 +725,7 @@ def group_candidates_by_trigger(
             distinct_source_ids=sources,
             believed=believed,
             goal_id=first.goal_id,
+            environments={ev.environment for ev in evs},
         ))
     out.sort(key=lambda g: (g.kind, g.trigger_label, g.goal_id))
     return out
@@ -707,6 +751,14 @@ def to_candidate_markdown(
     run selected a declared environment, the header carries one
     `environment: <env>` line; when None the output is byte-identical to
     before.
+
+    Each finding row also carries the per-group env annotation (ADR-0035
+    decision 6, `format_environment_annotation`): "(seen on: dev2, prod)" /
+    "(seen on: dev2 only)" appended to the finding text, "pre-migration"
+    naming None-env observations mixed with stamped ones. When EVERY
+    observation in a group is env-less (the pure single-env project) the row
+    carries no annotation, keeping the undeclared project's report
+    byte-identical to before.
     """
     lines: list[str] = _md_header("# praxis explore (candidates)", environment)
 
@@ -746,6 +798,9 @@ def to_candidate_markdown(
     for g in groups:
         status = "believed" if g.believed else "contested"
         desc = html.escape(g.description).replace("|", "\\|")
+        annotation = format_environment_annotation(g.environments)
+        if annotation is not None:
+            desc = f"{desc} ({annotation})"
         trig = html.escape(g.trigger_label).replace("|", "\\|")
         lines.append(
             f"| {desc} | {g.kind} | {trig} | {g.observation_count} | "

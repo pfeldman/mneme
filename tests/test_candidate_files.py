@@ -89,11 +89,13 @@ def _risk_event(
     risk_id: str = "idempotency",
     trigger_kind: str = "sequence",
     ts: datetime | None = None,
+    environment: str | None = None,
 ) -> CandidateEvent:
     return CandidateEvent(
         ts=ts or datetime.now(timezone.utc),
         agent_identity=agent_identity,
         goal_id=goal_id,
+        environment=environment,
         payload=CandidateRiskPayload(
             risk=_risk(id_=risk_id, source_id=agent_identity,
                        trigger_kind=trigger_kind),
@@ -336,6 +338,86 @@ def test_rewriting_same_event_id_raises(tmp_path: Path) -> None:
     store.write(ev)
     with pytest.raises(FileExistsError):
         store.write(ev)
+
+
+# --- ADR-0035 decision 6: env rides as provenance, never as corroboration ---
+
+
+def test_candidate_file_round_trips_the_environment(tmp_path: Path) -> None:
+    """A committed candidate file written with an environment stamp re-hydrates
+    with it intact (ADR-0035 decisions 4 + 6); one written without stays None
+    (a pre-ADR-0035 file is just an unstamped event)."""
+    store = CandidateFileStore(tmp_path / "candidates")
+    store.write(_risk_event(risk_id="idempotency", environment="dev2"))
+    store.write(_risk_event(risk_id="phishy-redirect", trigger_kind="http"))
+    by_id = {e.candidate_id: e for e in store.read("checkout")}
+    assert by_id["idempotency"].environment == "dev2"
+    assert by_id["phishy-redirect"].environment is None
+
+
+def test_projection_exposes_environments_without_changing_source_count(
+    tmp_path: Path,
+) -> None:
+    """One finding observed on dev2 AND prod is ONE projected candidate whose
+    `environments` set names both envs - and the env adds NOTHING to
+    corroboration (ADR-0035 decision 5): the same agent on two environments is
+    still ONE source, so the candidate stays contested exactly as it would on
+    one env. The env set is display-only provenance for review."""
+    store = CandidateFileStore(tmp_path / "candidates")
+    store.write(_risk_event(agent_identity="agent-A", risk_id="idempotency",
+                            environment="dev2"))
+    store.write(_risk_event(agent_identity="agent-A", risk_id="idempotency",
+                            environment="prod"))
+    projected = project_candidates(store.read("checkout"), goal_id="checkout")
+    assert len(projected) == 1
+    pc = projected[0]
+    assert pc.environments == {"dev2", "prod"}
+    # An environment is NOT a source dimension: one agent, two envs, ONE source.
+    assert pc.distinct_source_ids == {"agent-A"}
+    assert pc.status == Status.CONTESTED
+
+
+def test_promotion_inputs_are_identical_with_and_without_envs(
+    tmp_path: Path,
+) -> None:
+    """The corroboration inputs (distinct source_ids, distinct evidence kinds,
+    status) are byte-for-byte the same whether two observations carry two
+    different envs or none at all: the env field changes ONLY the
+    `environments` set (ADR-0035 decision 5 pin)."""
+    spread = [
+        _risk_event(agent_identity="agent-A", risk_id="idempotency",
+                    environment="dev2"),
+        _risk_event(agent_identity="agent-B", risk_id="idempotency",
+                    environment="prod"),
+    ]
+    plain = [
+        _risk_event(agent_identity="agent-A", risk_id="idempotency"),
+        _risk_event(agent_identity="agent-B", risk_id="idempotency"),
+    ]
+    [pc_spread] = project_candidates(spread, goal_id="checkout")
+    [pc_plain] = project_candidates(plain, goal_id="checkout")
+    assert pc_spread.distinct_source_ids == pc_plain.distinct_source_ids == {
+        "agent-A", "agent-B",
+    }
+    assert pc_spread.distinct_evidence_kinds == pc_plain.distinct_evidence_kinds
+    assert pc_spread.status == pc_plain.status == Status.CONTESTED
+    # The ONLY delta is the display-only provenance set.
+    assert pc_spread.environments == {"dev2", "prod"}
+    assert pc_plain.environments == {None}
+
+
+def test_pre_env_candidate_files_project_with_none_environment(
+    tmp_path: Path,
+) -> None:
+    """Candidates with no environment key (pre-ADR-0035 files, or any
+    undeclared single-env project) project with `environments == {None}`: the
+    renderers translate an all-None set into NO annotation at all, so the pure
+    single-env review output never changes."""
+    store = CandidateFileStore(tmp_path / "candidates")
+    store.write(_risk_event(agent_identity="agent-A", risk_id="idempotency"))
+    store.write(_risk_event(agent_identity="agent-B", risk_id="idempotency"))
+    [pc] = project_candidates(store.read("checkout"), goal_id="checkout")
+    assert pc.environments == {None}
 
 
 def test_goal_id_with_path_separator_is_refused(tmp_path: Path) -> None:

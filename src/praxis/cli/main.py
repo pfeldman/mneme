@@ -56,6 +56,7 @@ from ..runner import (
     write_junit_xml,
     write_markdown_report,
 )
+from ..runner.report import format_environment_annotation
 from ..store import (
     RUNS_SUBDIR,
     CandidateFileStore,
@@ -1398,6 +1399,15 @@ def _cmd_review(args: argparse.Namespace) -> int:
             print(f"  [contested failure / {s.type.value}] {s.value}  "
                   f"(confidence={s.confidence:.2f}, by {s.provenance.source_id})")
         for pc in contested_cands:
+            # ADR-0035 decision 6: review is cross-env (the adapter here is
+            # built without selecting an environment); each candidate carries
+            # an annotation naming the env(s) it was observed on - exactly the
+            # datum a human needs to decide product-level vs not-yet-shipped.
+            # Display-only: it never changes status or the source count
+            # (decision 5). None when every observation is env-less (the pure
+            # single-env project), keeping that output byte-identical.
+            env_note = format_environment_annotation(pc.environments)
+            env_line = f"\n     {env_note}" if env_note is not None else ""
             if pc.risk is not None:
                 trig = pc.risk.trigger
                 trig_str = (
@@ -1412,6 +1422,7 @@ def _cmd_review(args: argparse.Namespace) -> int:
                     f"     confidence={pc.risk.confidence:.2f}  "
                     f"sources={{{src_list}}}  "
                     f"events={len(pc.corroborating_events)}"
+                    f"{env_line}"
                 )
             elif pc.uncertainty is not None:
                 src_list = ", ".join(sorted(pc.distinct_source_ids))
@@ -1421,6 +1432,7 @@ def _cmd_review(args: argparse.Namespace) -> int:
                     f"     raised_by={pc.uncertainty.raised_by}  "
                     f"sources={{{src_list}}}  "
                     f"events={len(pc.corroborating_events)}"
+                    f"{env_line}"
                 )
     if not any_contested:
         print("nothing contested. Nothing to review.")

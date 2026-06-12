@@ -31,6 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from praxis.cli.main import discover_project
 from praxis.cli.main import main as cli_run
 from praxis.model import (
@@ -51,6 +53,7 @@ from praxis.runner import (
 from praxis.skill_driver import explore_aggregate_via_skill
 from praxis.store import (
     CandidateEvent,
+    CandidateFileStore,
     CandidateRiskPayload,
     CandidateUncertaintyPayload,
 )
@@ -256,6 +259,7 @@ def _risk_event(
     agent_identity: str = "agent-A",
     risk_id: str = "phishy-redirect",
     trigger_kind: str = "http",
+    environment: str | None = None,
 ) -> CandidateEvent:
     trigger: HttpTrigger | SequenceTrigger
     if trigger_kind == "http":
@@ -272,6 +276,7 @@ def _risk_event(
         ts=datetime.now(timezone.utc),
         agent_identity=agent_identity,
         goal_id=goal_id,
+        environment=environment,
         payload=CandidateRiskPayload(
             risk=Risk(
                 id=risk_id,
@@ -438,6 +443,136 @@ def test_uncertainties_group_by_question(tmp_path: Path) -> None:
     assert g.kind == "uncertainty"
     assert g.observation_count == 2
     assert g.distinct_source_ids == {"agent-A", "agent-B"}
+
+
+# --- ADR-0035 decision 6: the env annotation in the report and in review ----
+
+
+def test_finding_on_two_envs_is_one_group_annotated_with_both(
+    tmp_path: Path,
+) -> None:
+    """A finding observed on BOTH envs renders as ONE trigger group (the
+    trigger, never the env, is the grouping key) annotated with both env names
+    - and the corroboration counts are unchanged by the env (ADR-0035
+    decision 5): the same agent on dev2 and prod is still ONE source."""
+    events = [
+        _risk_event(agent_identity="agent-A", environment="dev2"),
+        _risk_event(agent_identity="agent-A", environment="prod"),
+    ]
+    groups = group_candidates_by_trigger(events)
+    assert len(groups) == 1
+    g = groups[0]
+    assert g.environments == {"dev2", "prod"}
+    assert g.observation_count == 2
+    # Two envs mint NO second source: corroboration is untouched by the env.
+    assert g.source_count == 1
+    assert not g.believed
+
+    md = to_candidate_markdown(groups)
+    assert "(seen on: dev2, prod)" in md
+
+
+def test_single_env_finding_is_annotated_seen_on_only(tmp_path: Path) -> None:
+    """A finding observed on exactly one declared env carries the
+    'seen on: <env> only' annotation - the datum the reviewer needs to decide
+    product-level vs not-yet-shipped (ADR-0035 decision 6)."""
+    groups = group_candidates_by_trigger(
+        [_risk_event(agent_identity="agent-A", environment="dev2")]
+    )
+    md = to_candidate_markdown(groups)
+    assert "(seen on: dev2 only)" in md
+
+
+def test_none_env_mixed_with_stamped_renders_pre_migration(
+    tmp_path: Path,
+) -> None:
+    """A pre-ADR-0035 observation (environment None) mixed with an env-stamped
+    one renders as 'pre-migration' inside the annotation; it is never silently
+    attributed to a declared env."""
+    events = [
+        _risk_event(agent_identity="agent-A", environment="dev2"),
+        _risk_event(agent_identity="agent-B"),  # no env: pre-migration file
+    ]
+    groups = group_candidates_by_trigger(events)
+    assert len(groups) == 1
+    md = to_candidate_markdown(groups)
+    assert "(seen on: dev2, pre-migration)" in md
+
+
+def test_pure_none_env_findings_render_with_no_annotation(
+    tmp_path: Path,
+) -> None:
+    """When EVERY observation is env-less (the pure single-env project that
+    never declared environments) the report carries NO annotation at all: the
+    finding row is byte-identical to the pre-ADR-0035 rendering."""
+    events = [
+        _risk_event(agent_identity="agent-A"),
+        _risk_event(agent_identity="agent-B"),
+    ]
+    md = to_candidate_markdown(group_candidates_by_trigger(events))
+    assert "seen on" not in md
+    assert "pre-migration" not in md
+    # The full data row, byte-for-byte the pre-ADR-0035 shape.
+    assert (
+        "| login redirects to an unexpected host | risk | "
+        "GET /login/callback -&gt; expect: Location header matches the "
+        "configured origin | 2 | 2 | **contested** |"
+    ) in md.splitlines()
+
+
+def test_review_annotates_the_envs_a_candidate_was_seen_on(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`praxis review` is cross-env (it never selects an environment, ADR-0035
+    decision 6): one finding observed on dev2 only shows up ONCE with the
+    'seen on: dev2 only' annotation and an unchanged source/event count."""
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["login"])
+    store = CandidateFileStore(root / ".praxis" / "candidates")
+    store.write(_risk_event(agent_identity="agent-A", environment="dev2"))
+    old = Path.cwd()
+    os.chdir(root)
+    try:
+        rc = cli_run(["review"])
+    finally:
+        os.chdir(old)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "seen on: dev2 only" in out
+    # Annotation only: the source set and event count render exactly as before.
+    assert "sources={agent-A}  events=1" in out
+
+
+def test_review_output_is_byte_identical_when_no_observation_has_an_env(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The undeclared single-env project's review output does not change by a
+    single byte: with every observation env-less there is no annotation line,
+    no 'pre-migration', and the candidate block is exactly the pre-ADR-0035
+    format (the zero-ceremony bar, ADR-0035 decision 1)."""
+    root = tmp_path / "p"
+    root.mkdir()
+    _init_with_goals(root, ["login"])
+    store = CandidateFileStore(root / ".praxis" / "candidates")
+    store.write(_risk_event(agent_identity="agent-A"))
+    old = Path.cwd()
+    os.chdir(root)
+    try:
+        rc = cli_run(["review"])
+    finally:
+        os.chdir(old)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "seen on" not in out
+    assert "pre-migration" not in out
+    assert (
+        "  [contested candidate_risk / http] phishy-redirect: "
+        "login redirects to an unexpected host\n"
+        "     trigger: GET /login/callback  "
+        "expect: Location header matches the configured origin\n"
+        "     confidence=0.60  sources={agent-A}  events=1\n"
+    ) in out
 
 
 # --- off_path_fraction floor logging (ADR-0009 E-mode kill-criterion) -------

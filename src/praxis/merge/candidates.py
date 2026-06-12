@@ -48,7 +48,7 @@ when a seed and an agent ask the same question).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..model import KnowledgeFile, Risk, Status, Uncertainty
 from ..store import CandidateEvent, CandidateRiskPayload, CandidateUncertaintyPayload
@@ -81,6 +81,14 @@ class ProjectedCandidate:
     seed_match: Risk | Uncertainty | None
     distinct_source_ids: set[str]
     distinct_evidence_kinds: set[str]
+    # ADR-0035 decision 6: the distinct `environment` values across this
+    # candidate's corroborating events, exposed so the renderers (`praxis
+    # review`, the explore report) can annotate WHERE the finding was observed
+    # ("seen on: dev2 only"). This is a pure aggregation of a string field the
+    # projection never interprets: it feeds NO status rule, adds NO source and
+    # NO evidence-kind diversity (decision 5), and None (a pre-ADR-0035 event)
+    # is just another value in the set.
+    environments: set[str | None] = field(default_factory=set)
 
 
 def _source_ids_for(
@@ -220,6 +228,7 @@ def project_candidates(
                 seed_match=seed_match,
                 distinct_source_ids=sources,
                 distinct_evidence_kinds=kinds,
+                environments={ev.environment for ev in evs},
             )
         )
     return out
