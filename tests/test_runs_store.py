@@ -131,3 +131,69 @@ def test_concurrent_writes_across_runs_lose_no_knowledge(tmp_path) -> None:
     kf = project(folded, goal_id="g", goal="g", target=Target(app="t"))
     believed = [s for s in kf.success_signals if s.status.value == "believed"]
     assert believed, "diversity over two run subtrees must reach believed"
+
+
+# --- environment field on candidates (ADR-0035 decisions 4 + 6): the env rides
+# as provenance on the event, the shared candidate layout is unchanged, and a
+# pre-ADR-0035 candidate JSON (no `environment` key) keeps parsing.
+
+
+def _risk(rid: str = "r1") -> Risk:
+    prov = Provenance(source_type="agent", source_id="m::p",
+                      last_verified=datetime(2026, 6, 1, tzinfo=timezone.utc),
+                      observation_count=1)
+    return Risk(id=rid, description="login redirects off-origin",
+                trigger=HttpTrigger(method="GET", path="/cb",
+                                    expect="Location matches origin"),
+                status="contested", confidence=0.6, provenance=prov)
+
+
+def test_candidate_event_environment_round_trips(tmp_path) -> None:
+    run = RunsEventStore(tmp_path, new_run_id(datetime(2026, 6, 1, tzinfo=timezone.utc)))
+    run.append_candidate(CandidateEvent(
+        agent_identity="m::p", goal_id="g", environment="dev2",
+        payload=CandidateRiskPayload(risk=_risk()),
+    ))
+    cands = run.read_candidates(goal_id="g")
+    assert len(cands) == 1
+    assert cands[0].environment == "dev2"
+
+
+def test_candidate_event_environment_defaults_none(tmp_path) -> None:
+    run = RunsEventStore(tmp_path, new_run_id(datetime(2026, 6, 1, tzinfo=timezone.utc)))
+    run.append_candidate(CandidateEvent(
+        agent_identity="m::p", goal_id="g",
+        payload=CandidateRiskPayload(risk=_risk()),
+    ))
+    assert run.read_candidates(goal_id="g")[0].environment is None
+
+
+def test_pre_environment_candidate_json_still_parses() -> None:
+    """A literal pre-ADR-0035 candidate dict - no `environment` key - must
+    validate, with the field defaulting to None (ADR-0001: additive only)."""
+    ev = CandidateEvent.model_validate({
+        "event_id": "c1",
+        "ts": "2026-06-01T00:00:00+00:00",
+        "schema_version": "0",
+        "agent_identity": "m::p",
+        "goal_id": "g",
+        "observed_app_version": "1",
+        "payload": {
+            "kind": "candidate_risk",
+            "risk": {
+                "id": "r1",
+                "description": "login redirects off-origin",
+                "trigger": {"kind": "http", "method": "GET", "path": "/cb",
+                            "body_or_params": None,
+                            "expect": "Location matches origin"},
+                "mitigation": None,
+                "provenance": {"source_type": "agent", "source_id": "m::p",
+                               "observed_app_version": None,
+                               "last_verified": "2026-06-01T00:00:00+00:00",
+                               "observation_count": 1},
+                "confidence": 0.6,
+                "status": "contested",
+            },
+        },
+    })
+    assert ev.environment is None

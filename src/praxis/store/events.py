@@ -105,6 +105,13 @@ class ObservationEvent(BaseModel):
     agent_id: str
     goal_id: str
     observed_app_version: str | None = None
+    # ADR-0035 decision 4: the deployment environment this observation was made
+    # on. Operational provenance, like `agent_identity`: a partition key the
+    # adapter filters projections by, NEVER a source dimension (decision 5) -
+    # the model and store layers do not interpret it. Defaults None so every
+    # pre-ADR-0035 event file (no key) stays valid; None also means "undeclared
+    # project" (ADR-0001: additive event fields only).
+    environment: str | None = None
     signals: list[ObservedSignal] = Field(default_factory=list)
 
 
@@ -149,6 +156,10 @@ class RegressObservationEvent(BaseModel):
     # tells you what the run concluded without re-running the matcher.
     verdict: str
     observed_app_version: str | None = None
+    # ADR-0035 decision 4: the deployment environment this regress run checked.
+    # Same posture as on `ObservationEvent`: operational provenance, additive,
+    # defaults None so pre-ADR-0035 records (no key) stay valid.
+    environment: str | None = None
     signals: list[ObservedSignal] = Field(default_factory=list)
     # ADR-0033 decision 4: the void confirmations of this run, named with their
     # reasons ("unknown ref 'S9'", "S1 present:true with empty evidence", ...).
@@ -190,6 +201,11 @@ class DecayEvent(BaseModel):
     schema_version: Literal["0"] = SCHEMA_VERSION
     kind: Literal["decay"] = "decay"
     goal_id: str
+    # ADR-0035 decision 4: the environment whose partitioned projection fired
+    # this flip, so replaying one environment's log reconstructs that
+    # environment's flips without touching another's. Additive, defaults None
+    # so pre-ADR-0035 records (no key) stay valid.
+    environment: str | None = None
     # The grouping key of the projected signal that flipped. Mirrors the
     # `(signal_kind, type, value)` tuple the projection groups observations by.
     signal_kind: Literal["success", "failure"]
@@ -277,6 +293,11 @@ class CandidateEvent(BaseModel):
     agent_identity: str = Field(min_length=1)
     goal_id: str = Field(min_length=1)
     observed_app_version: str | None = None
+    # ADR-0035 decisions 4 + 6: the environment the candidate was observed on.
+    # Provenance only - review and the explore report annotate with it ("seen
+    # on dev2 only"); it adds NO corroboration diversity (decision 5) and never
+    # enters the payload. Defaults None so pre-ADR-0035 files stay valid.
+    environment: str | None = None
     payload: CandidatePayload
 
     @property
