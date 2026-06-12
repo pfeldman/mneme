@@ -110,6 +110,14 @@ GITIGNORE_AUTH_LINE = f"{AUTH_DIRNAME}/"
 # operational input to the brain and never enters knowledge.
 BRAIN_MODEL_ENV = "PRAXIS_BRAIN_MODEL"
 
+# The env-var surface of the per-run environment selection (ADR-0035). For CI:
+# a job matrix exports PRAXIS_ENV per leg and every `praxis regress` /
+# `praxis explore` in that leg runs against that declared environment,
+# mirroring the ADR-0034 flag > env var > committed config precedence. The
+# environment NAME is operational provenance, never knowledge: it is stamped
+# onto run records at run time and never enters an assertion.
+PRAXIS_ENV_VAR = "PRAXIS_ENV"
+
 # `praxis init` scaffolds the `brain_model` key COMMENTED OUT (ADR-0034): the
 # pin is discoverable in the committed config without forcing a model choice,
 # and no model name is ever hardcoded as a default (the default stays whatever
@@ -150,6 +158,11 @@ class ProjectContext:
         self.runs_dir = self.dir / RUNS_SUBDIR
         self.praxisignore_path = self.dir / PRAXISIGNORE_NAME
         self.config = yaml.safe_load(self.config_path.read_text()) or {}
+        # The environment THIS invocation runs against (ADR-0035), pinned by
+        # `select_environment`. None until selected, and always None on an
+        # undeclared project, so every env-aware property below degenerates to
+        # today's single-deployment reads.
+        self._selected_env: str | None = None
         # One run id per CLI invocation: every `store()` call on this context
         # writes into the SAME `runs/<run_id>/` subtree, while reads fold across
         # all run subtrees. Lazily assigned on the first `store()` call.
@@ -158,7 +171,72 @@ class ProjectContext:
         self._candidate_files: CandidateFileStore | None = None
 
     @property
+    def environments(self) -> dict[str, dict[str, Any]] | None:
+        """The committed per-deployment map (ADR-0035 decision 1), or None on
+        an undeclared project. Shape: name -> {base_url: <str>, optionally
+        observed_app_version: <str>}. A malformed map fails loudly at read
+        time instead of mid-run: silently treating it as undeclared would
+        flip the project back to single-env behavior without a trace."""
+        raw = self.config.get("environments")
+        if not raw:
+            return None
+        if not isinstance(raw, dict):
+            raise SystemExit(
+                f"{self.config_path}: `environments` must be a map of "
+                "name -> {base_url: <url>, ...} (ADR-0035)."
+            )
+        out: dict[str, dict[str, Any]] = {}
+        for name, entry in raw.items():
+            if not isinstance(entry, dict) or not entry.get("base_url"):
+                raise SystemExit(
+                    f"{self.config_path}: environments.{name} must be a map "
+                    "with a non-empty base_url (ADR-0035)."
+                )
+            out[str(name)] = entry
+        return out
+
+    @property
+    def default_env(self) -> str | None:
+        """The committed per-project environment default teammates share
+        (ADR-0035 decision 2). Empty string counts as unset."""
+        raw = self.config.get("default_env")
+        return str(raw) if raw else None
+
+    @property
+    def legacy_env(self) -> str | None:
+        """Which declared environment pre-declaration events (those with
+        `environment: None`) are attributed to, as a projection INPUT - no
+        event file is ever rewritten (ADR-0035 decision 4, the ADR-0013
+        caller-supplied-anchor posture). Parsed here; the read-side use lives
+        in the adapter partition. Empty string counts as unset."""
+        raw = self.config.get("legacy_env")
+        return str(raw) if raw else None
+
+    def select_environment(
+        self, flag: str | None = None, *, unresolved_ok: bool = False,
+    ) -> tuple[str | None, str | None]:
+        """Resolve and pin THIS invocation's environment (ADR-0035 decision 2).
+
+        Returns `(name, source)` exactly like `_resolve_brain_model`;
+        `(None, None)` on an undeclared project. Once a name is selected,
+        `base_url`, `environment`, and `observed_app_version` read from the
+        selected entry of the declared map; the now-shadowed top-level keys
+        are ignored in declared mode. Loud-error cases live in `_resolve_env`;
+        `unresolved_ok` is the read-only `status` posture (see there).
+        """
+        name, source = _resolve_env(
+            flag, self.environments, self.default_env,
+            unresolved_ok=unresolved_ok,
+        )
+        self._selected_env = name
+        return name, source
+
+    @property
     def base_url(self) -> str:
+        if self._selected_env is not None:
+            envs = self.environments
+            assert envs is not None
+            return str(envs[self._selected_env]["base_url"])
         return self.config.get("base_url", "http://127.0.0.1:8000")
 
     @property
@@ -167,6 +245,8 @@ class ProjectContext:
 
     @property
     def environment(self) -> str | None:
+        if self._selected_env is not None:
+            return self._selected_env
         return self.config.get("environment")
 
     @property
@@ -175,6 +255,11 @@ class ProjectContext:
 
     @property
     def observed_app_version(self) -> str | None:
+        if self._selected_env is not None:
+            envs = self.environments
+            assert envs is not None
+            raw = envs[self._selected_env].get("observed_app_version")
+            return str(raw) if raw else None
         return self.config.get("observed_app_version")
 
     @property
@@ -555,6 +640,123 @@ def _resolve_brain_model(
     return None, None
 
 
+def _resolve_env(
+    flag: str | None,
+    environments: dict[str, dict[str, Any]] | None,
+    default_env: str | None,
+    *,
+    environ: dict[str, str] | None = None,
+    unresolved_ok: bool = False,
+) -> tuple[str | None, str | None]:
+    """Resolve which declared environment this run checks, and name its source.
+
+    Precedence (ADR-0035 decision 2, mirroring the ADR-0034 model pin):
+
+      1. the `--env` flag: an explicit per-run override;
+      2. the `PRAXIS_ENV` env var: the CI channel (one job matrix variable);
+      3. the committed `.praxis/config.yaml` `default_env` key;
+      4. a single-entry `environments` map auto-selects its only entry
+         (unambiguous, no ceremony for the one-env project that opted in).
+
+    An empty string at any level counts as unset (the ADR-0034 posture).
+    Resolution failures are LOUD, never silent:
+
+      - a name (flag or env var) not in the declared map errors naming the
+        declared environments;
+      - a `default_env` naming an undeclared environment errors the same way
+        (a committed typo must not silently fall through to auto-select);
+      - a declared multi-entry map that resolves to nothing errors naming the
+        declared environments and the three ways to pick one;
+      - `--env` on an UNDECLARED project errors: the user explicitly asked
+        for something the config cannot honor;
+      - `PRAXIS_ENV` on an undeclared project is ignored with a one-line
+        stderr notice (warn-and-ignore), so a pipeline-wide export cannot
+        break repos that have not adopted environments.
+
+    `unresolved_ok=True` softens exactly ONE of those cases: a declared
+    multi-entry map that resolves to nothing returns `(None, None)` instead
+    of raising. That is the read-only `status` posture (a user runs status
+    precisely to SEE what environments exist); every explicit-mistake error
+    above (unknown name, flag on undeclared, default_env typo) stays loud.
+
+    Returns `(name, source)` where source names the winning level for the
+    run banner; `(None, None)` on an undeclared project (today's behavior).
+    """
+    env = os.environ if environ is None else environ
+    flag = flag or None
+    env_value = env.get(PRAXIS_ENV_VAR) or None
+    default_env = default_env or None
+    if not environments:
+        if flag:
+            raise SystemExit(
+                f"--env {flag!r} was given but no environments are declared "
+                "in .praxis/config.yaml. Declare an `environments:` map "
+                "(ADR-0035) to select one."
+            )
+        if env_value:
+            print(
+                f"warning: {PRAXIS_ENV_VAR}={env_value!r} is set but no "
+                "environments are declared in .praxis/config.yaml; ignoring "
+                "it (ADR-0035).",
+                file=sys.stderr,
+            )
+        return None, None
+    declared = ", ".join(sorted(environments))
+    if flag:
+        if flag not in environments:
+            raise SystemExit(
+                f"unknown environment {flag!r} (from --env). Declared "
+                f"environments: {declared}."
+            )
+        return flag, "--env flag"
+    if env_value:
+        if env_value not in environments:
+            raise SystemExit(
+                f"unknown environment {env_value!r} (from {PRAXIS_ENV_VAR}). "
+                f"Declared environments: {declared}."
+            )
+        return env_value, f"{PRAXIS_ENV_VAR} env"
+    if default_env:
+        if default_env not in environments:
+            raise SystemExit(
+                f"config.yaml default_env {default_env!r} is not a declared "
+                f"environment. Declared environments: {declared}."
+            )
+        return default_env, "config.yaml default_env"
+    if len(environments) == 1:
+        only = next(iter(environments))
+        return only, "single declared environment"
+    if unresolved_ok:
+        return None, None
+    raise SystemExit(
+        f"no environment selected: this project declares environments "
+        f"({declared}) and none was picked. Select one with --env <name>, "
+        f"the {PRAXIS_ENV_VAR} env var, or default_env in "
+        ".praxis/config.yaml (ADR-0035)."
+    )
+
+
+def _select_environment_for_run(
+    proj: "ProjectContext", args: argparse.Namespace, *,
+    unresolved_ok: bool = False,
+) -> str | None:
+    """Resolve the run's environment and print the one-line stderr banner.
+
+    Mirrors the ADR-0034 model banner posture: printed only when an
+    environment is resolved, naming the winning source, so a run's output
+    records WHICH deployment produced the verdicts. An undeclared project
+    prints nothing and the run proceeds byte-identically to pre-ADR-0035.
+    `unresolved_ok` (status only) makes an unresolvable declared map proceed
+    unselected, with no banner, instead of erroring (see `_resolve_env`).
+    """
+    name, source = proj.select_environment(
+        getattr(args, "env", None), unresolved_ok=unresolved_ok,
+    )
+    if name is not None:
+        print(f"  environment: {name} (from {source})", file=sys.stderr)
+    return name
+
+
 def _select_console_brain(
     args: argparse.Namespace, *, default_mcp_config: str | None = None,
     default_brain_model: str | None = None,
@@ -656,6 +858,10 @@ def _executor_from_file(path: Path):
 
 def _cmd_regress(args: argparse.Namespace) -> int:
     proj = discover_project()
+    # Resolve the environment BEFORE building the adapter (ADR-0035): the
+    # selected env supplies base_url / environment / observed_app_version to
+    # everything downstream. Undeclared projects resolve to None silently.
+    _select_environment_for_run(proj, args)
     adapter = proj.adapter()
 
     # Live progress label the claude -p spinner reads so the running line reads
@@ -953,6 +1159,9 @@ def _explore_aggregate(
 
 def _cmd_explore(args: argparse.Namespace) -> int:
     proj = discover_project()
+    # Resolve the environment BEFORE building the adapter (ADR-0035), exactly
+    # as regress does; undeclared projects resolve to None silently.
+    _select_environment_for_run(proj, args)
     adapter = proj.adapter()
 
     # Per-goal auth context so the claude -p brain reuses a saved session per
@@ -1126,6 +1335,15 @@ def _cmd_review(args: argparse.Namespace) -> int:
 
 def _cmd_status(args: argparse.Namespace) -> int:
     proj = discover_project()
+    # Resolve the environment first (ADR-0035): status reports the selected
+    # env's base_url / version, and a declared project lists its whole map
+    # below. Undeclared projects resolve to None and print exactly as today.
+    # Resolution is BEST-EFFORT here, unlike regress/explore: status is the
+    # read-only discovery command a user runs precisely to SEE what
+    # environments exist, so an unresolvable multi-entry map prints the map
+    # unselected (no banner) instead of hard-erroring. Explicit mistakes
+    # (unknown --env name, --env on an undeclared project) stay loud.
+    _select_environment_for_run(proj, args, unresolved_ok=True)
     adapter = proj.adapter()
     seeds = proj.seeds()
     if not seeds:
@@ -1134,6 +1352,18 @@ def _cmd_status(args: argparse.Namespace) -> int:
     print(f"project: {proj.root}")
     print(f"app:     {proj.app}  env={proj.environment or '-'}  base_url={proj.base_url}")
     print(f"version: {proj.observed_app_version or '-'}")
+    envs = proj.environments
+    if envs:
+        # A declared project shows its whole committed map plus the default
+        # (ADR-0035 decision 2), so a teammate can see every deployment and
+        # how the bare command picks one without opening config.yaml.
+        print("environments:")
+        for name in sorted(envs):
+            entry = envs[name]
+            ver = entry.get("observed_app_version")
+            ver_str = f"  version={ver}" if ver else ""
+            marker = "  (default)" if name == proj.default_env else ""
+            print(f"  {name}: {entry['base_url']}{ver_str}{marker}")
     print()
     for gid in sorted(seeds.keys()):
         kf = adapter.read_knowledge(gid)
@@ -1201,6 +1431,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     regress.add_argument("--goal", help="Run only this goal (default: aggregate "
                                         "over all seeds).")
+    regress.add_argument("--env", default=None,
+                          help="Environment to run against: a name from the "
+                               "config.yaml `environments` map; overrides "
+                               "PRAXIS_ENV and default_env (ADR-0035).")
     regress.add_argument("--budget-tokens", type=int, default=None,
                           help="Per-goal token slice in aggregate mode "
                                "(ADR-0023 decision 7).")
@@ -1237,6 +1471,10 @@ def _build_parser() -> argparse.ArgumentParser:
     explore.add_argument("--goal", required=False,
                           help="Explore only this goal (default: aggregate over "
                                "all seeds, one report grouped by trigger).")
+    explore.add_argument("--env", default=None,
+                          help="Environment to run against: a name from the "
+                               "config.yaml `environments` map; overrides "
+                               "PRAXIS_ENV and default_env (ADR-0035).")
     explore.add_argument("--budget-tokens", type=int, default=None,
                           help="Per-goal token slice in aggregate mode "
                                "(ADR-0023 decision 7).")
@@ -1280,6 +1518,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "status",
         help="Print a believed-knowledge summary for all goals.",
     )
+    status.add_argument("--env", default=None,
+                         help="Environment to report against: a name from the "
+                              "config.yaml `environments` map; overrides "
+                              "PRAXIS_ENV and default_env (ADR-0035).")
     status.set_defaults(func=_cmd_status)
 
     return p
