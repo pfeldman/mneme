@@ -103,6 +103,7 @@ def regress_engine(
     budget_tokens: int | None = None,
     budget_actions: int | None = None,
     stop_on_fail: bool = False,
+    base_url: str | None = None,
 ) -> list[RunResult]:
     """Run R-mode across `goals` driven by `brain`, surface-independent.
 
@@ -112,9 +113,15 @@ def regress_engine(
     invoked it. The verdict is computed deterministically from the brain's
     observations by `verdict_from_observations`; the brain only supplies what
     it observed, never the verdict, and never a brain identifier in knowledge.
+
+    `base_url` is the run's deployment URL (ADR-0035 decision 3): a plain
+    optional string the prompt renderer turns into the "App under test:" line.
+    The engine carries no environment semantics (runtime-agnostic core); None
+    or empty keeps every rendered prompt byte-identical to today.
     """
     runner = RegressionRunner(
         adapter, agent_id=agent_id, observed_app_version=observed_app_version,
+        base_url=base_url,
     )
     return runner.run_all(
         goals, brain,
@@ -144,6 +151,7 @@ def regress_aggregate_engine(
     jobs: int = 1,
     on_goal_start: "Callable[[str], None] | None" = None,
     on_goal_done: "Callable[[GoalReport], None] | None" = None,
+    base_url: str | None = None,
 ) -> list[GoalReport]:
     """Run the default-all break-vs-drift aggregate (ADR-0023 decisions 2-4, 7).
 
@@ -161,9 +169,14 @@ def regress_aggregate_engine(
     `observed_app_version` is the live app version the STALE classification
     compares the goal's anchored version against (ADR-0013 decay anchor): a goal
     pinned more than N minors behind the live app reads as drift, not a break.
+
+    `base_url` is the run's deployment URL (ADR-0035 decision 3), a plain
+    optional string forwarded to the prompt renderer ("App under test:" line);
+    None or empty keeps every rendered prompt byte-identical to today.
     """
     runner = RegressionRunner(
         adapter, agent_id=agent_id, observed_app_version=observed_app_version,
+        base_url=base_url,
     )
     return run_aggregate(
         runner, goals, brain,
@@ -216,6 +229,7 @@ def explore_engine(
     budget_tokens: int | None = None,
     budget_actions: int | None = None,
     committed_sink: CommittedSink | None = None,
+    base_url: str | None = None,
 ) -> ExploreOutcome:
     """Run E-mode for one goal driven by `brain`, surface-independent.
 
@@ -225,9 +239,14 @@ def explore_engine(
     choice never becomes a stored field. `committed_sink`, when provided,
     mirrors this run's new candidate events into the committed tree and is run
     after the brain returns, so both surfaces produce the same committed count.
+
+    `base_url` is the run's deployment URL (ADR-0035 decision 3), a plain
+    optional string forwarded to the prompt renderer ("App under test:" line);
+    None or empty keeps the rendered prompt byte-identical to today.
     """
     runner = ExplorationRunner(
         adapter, agent_id=agent_id, observed_app_version=observed_app_version,
+        base_url=base_url,
     )
     result = runner.run_one(
         goal, brain,
@@ -269,6 +288,7 @@ def explore_aggregate_engine(
     committed_sink: CommittedSink | None = None,
     jobs: int = 1,
     on_goal_start: "Callable[[str], None] | None" = None,
+    base_url: str | None = None,
 ) -> ExploreAggregateOutcome:
     """Hunt off-happy-path across EVERY believed goal, surface-independent
     (ADR-0023 decisions 1, 2, 7, 8).
@@ -293,9 +313,14 @@ def explore_aggregate_engine(
     that exhausts its slice is a loud per-goal ERROR (`ok=False`), so its
     candidates are NOT mirrored to the committed tree as a clean success (the
     mirror below runs only for `ok` outcomes).
+
+    `base_url` is the run's deployment URL (ADR-0035 decision 3), a plain
+    optional string forwarded to the prompt renderer ("App under test:" line);
+    None or empty keeps every rendered prompt byte-identical to today.
     """
     runner = ExplorationRunner(
         adapter, agent_id=agent_id, observed_app_version=observed_app_version,
+        base_url=base_url,
     )
     outcomes = run_explore_aggregate(
         runner, goals, brain,

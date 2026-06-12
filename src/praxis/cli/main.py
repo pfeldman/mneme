@@ -874,6 +874,11 @@ def _cmd_regress(args: argparse.Namespace) -> int:
     # The SELECTED name (not the legacy single-env `environment` config label)
     # is what scopes session reuse below (ADR-0035 decision 7).
     selected_env = _select_environment_for_run(proj, args)
+    # The "App under test:" prompt line carries the base_url ONLY when an
+    # environment was selected from a declared map (ADR-0035 decision 3): an
+    # undeclared project's scaffolded, possibly-dead top-level base_url is
+    # NEVER injected, so its rendered prompts stay byte-identical to today.
+    run_base_url = proj.base_url if selected_env is not None else None
     adapter = proj.adapter()
 
     # Live progress label the claude -p spinner reads so the running line reads
@@ -956,6 +961,7 @@ def _cmd_regress(args: argparse.Namespace) -> int:
             adapter, brain, goals,
             agent_id=proj.agent_id,
             observed_app_version=proj.observed_app_version,
+            base_url=run_base_url,
             budget_tokens_per_goal=args.budget_tokens,
             budget_actions_per_goal=args.budget_actions,
             budget_wall_seconds_per_goal=args.budget_wall_seconds,
@@ -1010,6 +1016,7 @@ def _cmd_regress(args: argparse.Namespace) -> int:
         adapter, brain, goals,
         agent_id=proj.agent_id,
         observed_app_version=proj.observed_app_version,
+        base_url=run_base_url,
         budget_tokens=args.budget_tokens,
         budget_actions=args.budget_actions,
         stop_on_fail=args.stop_on_fail,
@@ -1064,6 +1071,7 @@ def _explore_aggregate(
     budget_wall_seconds: float | None = None,
     jobs: int = 1,
     auth_ctx: "_GoalAuthContext | None" = None,
+    base_url: str | None = None,
 ) -> int:
     """Default-all explore: hunt off-happy-path across EVERY believed goal,
     write candidate files on the committed tree, and emit ONE trigger-grouped
@@ -1107,6 +1115,7 @@ def _explore_aggregate(
         adapter, brain, goals,
         agent_id=proj.agent_id,
         observed_app_version=proj.observed_app_version,
+        base_url=base_url,
         budget_tokens_per_goal=budget_tokens,
         budget_actions_per_goal=budget_actions,
         budget_wall_seconds_per_goal=budget_wall_seconds,
@@ -1178,6 +1187,11 @@ def _cmd_explore(args: argparse.Namespace) -> int:
     selected_env = _select_environment_for_run(proj, args)
     adapter = proj.adapter()
 
+    # The "App under test:" prompt line carries the base_url ONLY when an
+    # environment was selected from a declared map (ADR-0035 decision 3); an
+    # undeclared project's prompts stay byte-identical to today.
+    run_base_url = proj.base_url if selected_env is not None else None
+
     # Per-goal auth context so the claude -p brain reuses a saved session per
     # goal (ADR-0026, ADR-0027 decision 2). Cover every seed so both the
     # aggregate and the single-goal paths can set the current goal.
@@ -1202,6 +1216,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
             budget_wall_seconds=args.budget_wall_seconds,
             jobs=args.jobs,
             auth_ctx=auth_ctx,
+            base_url=run_base_url,
         )
 
     # Snapshot the candidate event ids already in the per-machine log for this
@@ -1232,6 +1247,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
         adapter, brain, args.goal,
         agent_id=proj.agent_id,
         observed_app_version=proj.observed_app_version,
+        base_url=run_base_url,
         happy_path_urls=happy,
         budget_tokens=args.budget_tokens,
         budget_actions=args.budget_actions,

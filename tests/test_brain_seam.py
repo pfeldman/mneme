@@ -371,6 +371,134 @@ def test_explore_candidate_carries_agent_identity_only(tmp_path: Path) -> None:
             assert tok not in blob
 
 
+# --- ADR-0035: the per-run base_url reaches the brain through the seam ------
+#
+# Decision 3: the selected environment's base_url is threaded CLI -> engine ->
+# runner -> prompt renderer as a PLAIN OPTIONAL STRING (the core never learns
+# about environments) and surfaces as the "App under test:" line in the prompt
+# the brain receives. With no base_url the prompt carries no deployment line,
+# so an undeclared project's runs stay byte-identical to today.
+
+_DEV2_URL = "https://dev2.example.com"
+
+
+def test_regress_engine_threads_base_url_into_the_brain_prompt(
+    tmp_path: Path,
+) -> None:
+    """`regress_engine(..., base_url=...)` lands in the prompt the brain seam
+    delivers; omitting it keeps the prompt free of the deployment line."""
+    _init_project_with_login(tmp_path)
+    adapter = discover_project(tmp_path).adapter()
+    seen: list[str] = []
+
+    def spy_brain(prompt: str) -> dict[str, Any]:
+        seen.append(prompt)
+        return json.loads(json.dumps(_PASS_OBS))
+
+    from praxis.runner import regress_engine
+
+    results = regress_engine(adapter, spy_brain, ["login"], base_url=_DEV2_URL)
+    assert results[0].verdict == RegressionVerdict.PASS
+    assert f"App under test: {_DEV2_URL}" in seen[0]
+
+    regress_engine(adapter, spy_brain, ["login"])
+    assert "App under test" not in seen[1]
+
+
+def test_explore_engine_threads_base_url_into_the_brain_prompt(
+    tmp_path: Path,
+) -> None:
+    """Same threading for E-mode: `explore_engine(..., base_url=...)` reaches
+    the brain's prompt; omitted = no deployment line."""
+    _init_project_with_login(tmp_path)
+    adapter = discover_project(tmp_path).adapter()
+    seen: list[str] = []
+
+    def spy_brain(prompt: str) -> dict[str, Any]:
+        seen.append(prompt)
+        return {"candidate_observations": [], "new_risks": [],
+                "new_uncertainties": [], "actions": 1, "tokens": 10,
+                "visited_urls": []}
+
+    from praxis.runner import explore_engine
+
+    explore_engine(adapter, spy_brain, "login", base_url=_DEV2_URL)
+    assert f"App under test: {_DEV2_URL}" in seen[0]
+
+    explore_engine(adapter, spy_brain, "login")
+    assert "App under test" not in seen[1]
+
+
+def _spy_render(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Record the `base_url` each R-mode prompt render receives, delegating to
+    the real renderer so the run is otherwise unchanged."""
+    import praxis.runner.regression as regression_mod
+
+    real_render = regression_mod.render_regression_prompt
+    seen: list[Any] = []
+
+    def spy(kf: Any, **kwargs: Any) -> str:
+        seen.append(kwargs.get("base_url"))
+        return real_render(kf, **kwargs)
+
+    monkeypatch.setattr(regression_mod, "render_regression_prompt", spy)
+    return seen
+
+
+def test_console_regress_passes_the_selected_envs_base_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The console surface passes the SELECTED declared environment's base_url
+    all the way to the prompt renderer (ADR-0035 decision 3)."""
+    _init_project_with_login(tmp_path)
+    cfg = tmp_path / ".praxis" / "config.yaml"
+    cfg.write_text(
+        cfg.read_text()
+        + f"\nenvironments:\n  dev2:\n    base_url: {_DEV2_URL}\n"
+        + "default_env: dev2\n"
+    )
+    obs_file = tmp_path / "agent.json"
+    obs_file.write_text(json.dumps(_PASS_OBS))
+    seen = _spy_render(monkeypatch)
+
+    old = Path.cwd()
+    os.chdir(tmp_path)
+    try:
+        rc = cli_run(["regress", "--goal", "login",
+                      "--from-file", str(obs_file)])
+    finally:
+        os.chdir(old)
+    assert rc == 0
+    assert seen == [_DEV2_URL]
+
+
+def test_console_regress_undeclared_project_injects_no_base_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An UNDECLARED project passes None even though config.yaml carries a
+    scaffolded top-level base_url (resolved ADR-0035 open decision 4): the
+    possibly-dead default is never injected, preserving prompt byte-identity
+    for every existing single-env project."""
+    _init_project_with_login(tmp_path)
+    cfg = tmp_path / ".praxis" / "config.yaml"
+    assert "base_url" in cfg.read_text(), (
+        "precondition: the init scaffold declares a top-level base_url"
+    )
+    obs_file = tmp_path / "agent.json"
+    obs_file.write_text(json.dumps(_PASS_OBS))
+    seen = _spy_render(monkeypatch)
+
+    old = Path.cwd()
+    os.chdir(tmp_path)
+    try:
+        rc = cli_run(["regress", "--goal", "login",
+                      "--from-file", str(obs_file)])
+    finally:
+        os.chdir(old)
+    assert rc == 0
+    assert seen == [None]
+
+
 # --- the deterministic-vs-agentic classification --------------------------
 
 

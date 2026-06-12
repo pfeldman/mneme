@@ -109,6 +109,15 @@ __all__ = [
 # (ADR-0027 decision 3 + Pablo's constraint: the headless brain can never ask
 # the user anything). The output contract names the exact JSON envelope
 # `runner.regression._parse_executor_result` consumes.
+#
+# The per-run "App under test: <base_url>" line (ADR-0035 decision 3) is
+# DELIBERATELY NOT part of this preamble: the prompt renderers
+# (`runner/prompts.py`) are the single injection point, so the per-goal TASK
+# section below the preamble already carries the line whenever the CLI selected
+# a declared environment. Injecting it here too would duplicate the line on the
+# console path while the skill-driver path got it once, and a second injection
+# point is a second place the undeclared-project byte-identity bar can break.
+# The preamble stays constant across goals AND across environments.
 _HEADLESS_PREAMBLE = (
     "You are running HEADLESS and NON-INTERACTIVE as a QA test runner. There is "
     "NO human watching and NO one to answer you. Do NOT ask any question, do NOT "

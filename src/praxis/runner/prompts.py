@@ -107,14 +107,37 @@ def _format_uncertainty(u: Uncertainty, idx: int) -> str:
     return f"  {idx}. [{u.id}] {u.question}  (raised_by={u.raised_by})"
 
 
+def _format_app_under_test(base_url: str | None) -> str:
+    # The per-run deployment line (ADR-0035 decision 3): the selected
+    # environment's base_url reaches the agent as an explicit "App under test:"
+    # line, so goals can say "the app under test" instead of hardcoding a URL.
+    # The URL is a RUN INPUT threaded in as a plain optional string (the core
+    # never learns about environments); it is never written into a knowledge
+    # file, a candidate, or an assertion. None - and an empty string, the
+    # ADR-0034 empty-is-unset posture - render NOTHING, keeping the prompt
+    # byte-identical to the pre-ADR-0035 output for undeclared projects.
+    if not base_url:
+        return ""
+    return (
+        f"\nApp under test: {base_url}\n"
+        '(when the goal or a signal says "the app under test", it means THIS '
+        "deployment; start here)"
+    )
+
+
 def render_regression_prompt(kf: KnowledgeFile, *, budget_actions: int | None = None,
-                              budget_tokens: int | None = None) -> str:
+                              budget_tokens: int | None = None,
+                              base_url: str | None = None) -> str:
     """Render the R-mode prompt for one goal.
 
     Hands the agent: the goal, the success signals (oracle - what to check),
     the failure signals (anti-goals - if observed, a regression), the budget.
     Auditor scenarios are NOT included: that leak path was removed in
     ADR-0009 sec 6.
+
+    `base_url` is the run's deployment URL (ADR-0035 decision 3): when set it
+    adds the "App under test:" line; when None or empty the rendered prompt is
+    byte-identical to the pre-ADR-0035 output (pinned by test).
     """
     success = "\n".join(
         _format_signal(s, f"S{i + 1}") for i, s in enumerate(kf.success_signals)
@@ -142,7 +165,8 @@ def render_regression_prompt(kf: KnowledgeFile, *, budget_actions: int | None = 
     return (
         f"GOAL ({kf.goal_id}): {kf.goal}\n"
         f"App: {kf.target.app}"
-        f"{(' (env=' + kf.target.environment + ')') if kf.target.environment else ''}\n"
+        f"{(' (env=' + kf.target.environment + ')') if kf.target.environment else ''}"
+        f"{_format_app_under_test(base_url)}\n"
         f"\nSuccess signals (the oracle - confirm EACH one listed, by its ref):\n{success}"
         f"{failure_block}\n"
         f"\nMode: REGRESSION. Regenerate your own steps to achieve the goal. Do NOT replay\n"
@@ -171,7 +195,8 @@ def render_regression_prompt(kf: KnowledgeFile, *, budget_actions: int | None = 
 
 
 def render_exploration_prompt(kf: KnowledgeFile, *, budget_actions: int | None = None,
-                               budget_tokens: int | None = None) -> str:
+                               budget_tokens: int | None = None,
+                               base_url: str | None = None) -> str:
     """Render the E-mode prompt for one goal.
 
     Hands the agent: the goal, the believed/contested risks with structured
@@ -179,6 +204,10 @@ def render_exploration_prompt(kf: KnowledgeFile, *, budget_actions: int | None =
     for. The agent emits candidate observations (status=contested) back through
     the store; promotion to `believed` follows the existing diversity/source-
     independence gate (ADR-0005, ADR-0008).
+
+    `base_url` is the run's deployment URL (ADR-0035 decision 3): when set it
+    adds the "App under test:" line; when None or empty the rendered prompt is
+    byte-identical to the pre-ADR-0035 output (pinned by test).
     """
     risks = [r for r in (kf.risks or [])
              if r.status.value in ("believed", "contested")]
@@ -205,6 +234,7 @@ def render_exploration_prompt(kf: KnowledgeFile, *, budget_actions: int | None =
         f"GOAL ({kf.goal_id}): {kf.goal}\n"
         f"App: {kf.target.app}"
         f"{(' (env=' + kf.target.environment + ')') if kf.target.environment else ''}"
+        f"{_format_app_under_test(base_url)}"
         f"{risks_block}"
         f"{uncert_block}"
         f"{failure_block}\n"
