@@ -87,6 +87,118 @@ def test_init_refuses_to_overwrite_without_force(tmp_path: Path) -> None:
     assert rc == 2
 
 
+# --- init --environment / --default-env (ADR-0035 decision 9) ---------------
+
+
+def test_init_environment_excludes_legacy_env_flag(tmp_path: Path) -> None:
+    """The multi-env scaffold flags and the legacy single-env pair are
+    mutually exclusive: mixing them errors loudly, NAMING both styles, and
+    nothing is written to disk."""
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--environment", "prod=https://example.com",
+              "--env", "local"], tmp_path)
+    msg = str(exc.value)
+    assert "--environment" in msg and "--default-env" in msg
+    assert "--env" in msg and "--base-url" in msg
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_environment_excludes_legacy_base_url_flag(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--environment", "prod=https://example.com",
+              "--base-url", "https://example.com"], tmp_path)
+    msg = str(exc.value)
+    assert "--environment" in msg and "--base-url" in msg
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_default_env_excludes_legacy_flags_too(tmp_path: Path) -> None:
+    # `--default-env` alone already selects the multi-env style.
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--default-env", "prod", "--env", "local"], tmp_path)
+    assert "--default-env" in str(exc.value)
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_default_env_must_name_a_declared_environment(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--environment", "prod=https://example.com",
+              "--default-env", "dev2"], tmp_path)
+    msg = str(exc.value)
+    assert "dev2" in msg and "prod" in msg and "--default-env" in msg
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_default_env_requires_an_environment(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--default-env", "prod"], tmp_path)
+    assert "--environment" in str(exc.value)
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_environment_spec_must_be_name_equals_url(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--environment", "prod"], tmp_path)
+    assert "NAME=URL" in str(exc.value)
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_environment_name_must_round_trip(tmp_path: Path) -> None:
+    """A name that cannot round-trip through the per-env file paths and the
+    PRAXIS_AUTH_STATE_<ENV>_<ROLE> env-var channel is rejected at init time,
+    so it never enters a committed config (ADR-0035 decision 9)."""
+    for bad in ("dev-2", "dev.2", "dev 2", "dev/2"):
+        with pytest.raises(SystemExit) as exc:
+            _run(["init", "--environment", f"{bad}=https://x.example.com"],
+                 tmp_path)
+        msg = str(exc.value)
+        assert bad in msg and "A-Za-z0-9_" in msg
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_environment_duplicate_names_are_loud(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--environment", "prod=https://a.example.com",
+              "--environment", "prod=https://b.example.com"], tmp_path)
+    assert "twice" in str(exc.value)
+    # Two names that collide once uppercased into the env-var channel are
+    # rejected too: PRAXIS_AUTH_STATE_PROD_<ROLE> could not tell them apart.
+    with pytest.raises(SystemExit) as exc:
+        _run(["init", "--environment", "prod=https://a.example.com",
+              "--environment", "PROD=https://b.example.com"], tmp_path)
+    assert "uppercased" in str(exc.value)
+    assert not (tmp_path / ".praxis").exists()
+
+
+def test_init_declared_next_steps_mention_the_env_workflow(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A declared init tells the user how to pick an environment per run; an
+    undeclared init prints exactly the text it printed before (zero
+    ceremony, ADR-0035)."""
+    rc = _run(["init",
+               "--environment", "dev2=https://dev2.example.com",
+               "--environment", "prod=https://example.com",
+               "--default-env", "dev2"], tmp_path)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Environments declared: dev2, prod" in out
+    assert "--env <name>" in out and "PRAXIS_ENV" in out
+    assert ".praxis.secrets.<env>" in out
+
+
+def test_init_undeclared_next_steps_do_not_mention_environments(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = _run(["init"], tmp_path)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Environments declared" not in out
+    assert "PRAXIS_ENV" not in out
+
+
 # --- learn ----------------------------------------------------------------
 
 

@@ -99,10 +99,16 @@ _MCP_CONFIG_TEMPLATE = (
 # gitignored, regenerable per-machine log; `.praxis.secrets` is the credentials
 # channel that must never be committed; `.praxis.auth/` is the authenticated-
 # session secret channel (a sibling of `.praxis.secrets`) that holds the saved
-# Playwright storageState and must never be committed either. All are appended
-# idempotently (never duplicated on re-init).
+# Playwright storageState and must never be committed either (the directory
+# pattern covers the per-env `.praxis.auth/<env>/` subdirs of ADR-0035
+# decision 7 too); `.praxis.secrets.*` covers the per-environment secrets
+# overlay files `.praxis.secrets.<env>` (ADR-0035 decision 7) so a per-env
+# credential can never be committed either. All are appended idempotently
+# (never duplicated on re-init), so re-running init on a pre-ADR-0035 repo
+# adds exactly the missing overlay line.
 GITIGNORE_RUNS_LINE = f"{PROJECT_DIR}/{RUNS_SUBDIR}/"
 GITIGNORE_SECRETS_LINE = SECRETS_FILE
+GITIGNORE_SECRETS_OVERLAYS_LINE = f"{SECRETS_FILE}.*"
 GITIGNORE_AUTH_LINE = f"{AUTH_DIRNAME}/"
 
 # The env-var surface of the brain-model pin (ADR-0034). For CI: the runner
@@ -135,6 +141,17 @@ def _env_dirname(name: str) -> str:
     """The run-dir-safe form of a declared environment name (see above)."""
     return _ENV_DIRNAME_UNSAFE.sub("-", name)
 
+
+# What `praxis init --environment NAME=URL` accepts as a NAME. Stricter than
+# `_env_dirname` on purpose: a declared name enters file paths
+# (`runs/<ts>__<env>/`, `.praxis.auth/<env>/`, `.praxis.secrets.<env>`) AND
+# env-var names (`PRAXIS_AUTH_STATE_<ENV>_<ROLE>`, the name uppercased), and
+# only [A-Za-z0-9_] round-trips through BOTH channels (`-` and `.` survive a
+# path but are not legal in a POSIX env-var name). Rejecting at init time
+# keeps a non-round-tripping name from ever entering a committed config; a
+# hand-edited config is still sanitized per-channel at use time.
+_ENV_NAME_OK = re.compile(r"^[A-Za-z0-9_]+$")
+
 # `praxis init` scaffolds the `brain_model` key COMMENTED OUT (ADR-0034): the
 # pin is discoverable in the committed config without forcing a model choice,
 # and no model name is ever hardcoded as a default (the default stays whatever
@@ -148,6 +165,29 @@ _BRAIN_MODEL_CONFIG_COMMENT = (
     "# PRAXIS_BRAIN_MODEL env var override it per run; unset = the claude CLI\n"
     "# default (ADR-0034). Uncomment and set to enable:\n"
     "# brain_model: <model-name>\n"
+)
+
+# `praxis init` (without `--environment`) scaffolds the `environments` map
+# COMMENTED OUT, the ADR-0034 `brain_model` discoverability pattern: the
+# multi-env mechanism is visible in every committed config without changing
+# any undeclared-project behavior. Pure YAML comments, so a parsed config has
+# NO `environments` key until a human uncomments it (and an undeclared
+# project stays byte-identical in behavior, the ADR-0035 zero-ceremony bar).
+_ENVIRONMENTS_CONFIG_COMMENT = (
+    "# environments: declare the deployments this product runs on, so ONE set\n"
+    "# of goal YAMLs runs against each of them (ADR-0035). Pick one per run\n"
+    "# with --env on regress/explore/status, the PRAXIS_ENV env var, or the\n"
+    "# committed default_env. Declaring a map shadows the top-level base_url /\n"
+    "# environment / observed_app_version keys; per-env credentials go in\n"
+    "# .praxis.secrets.<env>, per-env sessions in .praxis.auth/<env>/.\n"
+    "# Uncomment and edit to enable:\n"
+    "# environments:\n"
+    "#   dev2:\n"
+    "#     base_url: https://dev2.example.com\n"
+    "#     observed_app_version: 2.6.0\n"
+    "#   prod:\n"
+    "#     base_url: https://example.com\n"
+    "# default_env: dev2\n"
 )
 
 
@@ -485,7 +525,87 @@ def _scaffold_skills(repo_root: Path) -> int:
     return written
 
 
+def _parse_init_environments(
+    specs: list[str], default_env: str | None,
+) -> dict[str, dict[str, str]]:
+    """Parse the repeated `--environment NAME=URL` flags into the committed
+    `environments` map (ADR-0035 decisions 1 and 9).
+
+    Every mistake is loud at init time, BEFORE anything touches disk: a spec
+    without `NAME=URL` shape, a name that would not round-trip through the
+    per-env file paths and env-var names (see `_ENV_NAME_OK`), a duplicate
+    name (including two names that collide once uppercased into
+    `PRAXIS_AUTH_STATE_<ENV>_<ROLE>`), and a `--default-env` that does not
+    name a declared `--environment`. A single entry with no `--default-env`
+    is fine: the single-entry map auto-selects at run time (decision 2).
+    """
+    if not specs:
+        raise SystemExit(
+            "praxis init: --default-env requires at least one "
+            "--environment NAME=URL (ADR-0035)."
+        )
+    envs: dict[str, dict[str, str]] = {}
+    seen_upper: dict[str, str] = {}
+    for spec in specs:
+        name, sep, url = spec.partition("=")
+        if not sep or not name or not url:
+            raise SystemExit(
+                f"praxis init: --environment expects NAME=URL "
+                f"(e.g. dev2=https://dev2.example.com), got {spec!r}."
+            )
+        if not _ENV_NAME_OK.match(name):
+            raise SystemExit(
+                f"praxis init: invalid environment name {name!r}: the name "
+                f"enters file paths (runs/<ts>__<env>/, {AUTH_DIRNAME}/<env>/, "
+                f"{SECRETS_FILE}.<env>) and env-var names "
+                f"(PRAXIS_AUTH_STATE_<ENV>_<ROLE>), so only letters, digits, "
+                f"and underscores round-trip ([A-Za-z0-9_])."
+            )
+        prior = seen_upper.get(name.upper())
+        if prior == name:
+            raise SystemExit(
+                f"praxis init: environment {name!r} is declared twice."
+            )
+        if prior is not None:
+            raise SystemExit(
+                f"praxis init: environment names {prior!r} and {name!r} "
+                f"collide once uppercased into the "
+                f"PRAXIS_AUTH_STATE_<ENV>_<ROLE> env-var channel; rename one."
+            )
+        seen_upper[name.upper()] = name
+        envs[name] = {"base_url": url}
+    if default_env and default_env not in envs:
+        raise SystemExit(
+            f"praxis init: --default-env {default_env!r} is not a declared "
+            f"--environment. Declared environments: {', '.join(envs)}."
+        )
+    return envs
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
+    # The two scaffold styles are mutually exclusive (ADR-0035 decision 9):
+    # `--environment NAME=URL` (repeatable) + `--default-env` declare the
+    # multi-env map; the legacy `--env` / `--base-url` pair writes the
+    # single-deployment keys. Mixing them would scaffold a config whose
+    # top-level keys are silently shadowed by the map (decision 1), so the
+    # combination errors loudly before anything touches disk. (`getattr`,
+    # like `mcp_config` below: callers that drive `_cmd_init` with a partial
+    # args object stay on the legacy path.)
+    env_specs: list[str] | None = getattr(args, "environment", None)
+    default_env: str | None = getattr(args, "default_env", None)
+    declared_style = bool(env_specs) or bool(default_env)
+    if declared_style and (args.env is not None or args.base_url is not None):
+        raise SystemExit(
+            "praxis init: --environment/--default-env (the multi-environment "
+            "scaffold, ADR-0035) cannot be combined with the legacy "
+            "single-env --env/--base-url pair. Declare every deployment with "
+            "--environment NAME=URL (repeatable) + --default-env, or keep "
+            "the single-env flags."
+        )
+    environments = (
+        _parse_init_environments(env_specs or [], default_env)
+        if declared_style else None
+    )
     root = Path(args.path or Path.cwd()).resolve()
     pdir = root / PROJECT_DIR
     if pdir.exists() and not args.force:
@@ -513,38 +633,65 @@ def _cmd_init(args: argparse.Namespace) -> int:
             mcp_path.write_text(_MCP_CONFIG_TEMPLATE, encoding="utf-8")
             mcp_scaffolded = True
         mcp_config_value = MCP_CONFIG_NAME
-    config = {
-        "base_url": args.base_url,
-        "app": args.app or root.name,
-        "environment": args.env,
-        "agent_id": args.agent_id,
-        "observed_app_version": None,
-        # Default Playwright MCP config for the claude -p console brain
-        # (ADR-0027): a JSON file path (relative to the project root) so
-        # `praxis regress` / `praxis explore` need no --mcp-config flag; the flag
-        # overrides it. Scaffolded above so a fresh project is browser-ready.
-        "mcp_config": mcp_config_value,
-    }
+    config: dict[str, Any]
+    if environments is not None:
+        # Declared scaffold (ADR-0035 decision 9): the committed map +
+        # default_env, and NO top-level base_url / environment /
+        # observed_app_version keys - those are shadowed in declared mode
+        # (decision 1) and scaffolding dead keys invites drift.
+        config = {
+            "app": args.app or root.name,
+            "agent_id": args.agent_id,
+            "mcp_config": mcp_config_value,
+            "environments": environments,
+        }
+        if default_env:
+            config["default_env"] = default_env
+    else:
+        config = {
+            "base_url": args.base_url or "http://127.0.0.1:8000",
+            "app": args.app or root.name,
+            "environment": args.env,
+            "agent_id": args.agent_id,
+            "observed_app_version": None,
+            # Default Playwright MCP config for the claude -p console brain
+            # (ADR-0027): a JSON file path (relative to the project root) so
+            # `praxis regress` / `praxis explore` need no --mcp-config flag; the
+            # flag overrides it. Scaffolded above so a fresh project is
+            # browser-ready.
+            "mcp_config": mcp_config_value,
+        }
     # The brain-model pin ships COMMENTED OUT below the live keys (ADR-0034):
     # discoverable per project without forcing a choice, and never a hardcoded
     # model-name default. Comments only, so the parsed config has no
-    # `brain_model` key until a human uncomments it.
-    (pdir / CONFIG_NAME).write_text(
-        yaml.safe_dump(config, sort_keys=False, allow_unicode=True)
-        + _BRAIN_MODEL_CONFIG_COMMENT,
-        encoding="utf-8",
-    )
+    # `brain_model` key until a human uncomments it. An UNdeclared scaffold
+    # additionally carries the `environments` map commented out the same way
+    # (ADR-0035 decision 9): discoverable, zero behavior change; a declared
+    # scaffold has the real map instead.
+    config_text = yaml.safe_dump(config, sort_keys=False, allow_unicode=True)
+    config_text += _BRAIN_MODEL_CONFIG_COMMENT
+    if environments is None:
+        config_text += _ENVIRONMENTS_CONFIG_COMMENT
+    (pdir / CONFIG_NAME).write_text(config_text, encoding="utf-8")
     praxisignore = pdir / PRAXISIGNORE_NAME
     if not praxisignore.exists():
         praxisignore.write_text(_PRAXISIGNORE_TEMPLATE, encoding="utf-8")
 
-    # Gitignore the per-machine run logs, the secrets file, and the auth-session
-    # directory. This runs on every init (idempotent), so a re-init never
-    # duplicates the lines and both `.praxis.secrets` and `.praxis.auth/` are
-    # gitignored BEFORE any secret or saved session could be written (ADR-0021
-    # decisions 5 and 6; ADR-0026 decisions 2 and 3).
+    # Gitignore the per-machine run logs, the secrets file (and its per-env
+    # `.praxis.secrets.<env>` overlays), and the auth-session directory (whose
+    # directory pattern already covers the per-env `.praxis.auth/<env>/`
+    # subdirs). This runs on every init (idempotent), so a re-init never
+    # duplicates the lines and every secret channel is gitignored BEFORE any
+    # secret or saved session could be written (ADR-0021 decisions 5 and 6;
+    # ADR-0026 decisions 2 and 3; ADR-0035 decision 7).
     added = _append_gitignore_lines(
-        root, [GITIGNORE_RUNS_LINE, GITIGNORE_SECRETS_LINE, GITIGNORE_AUTH_LINE]
+        root,
+        [
+            GITIGNORE_RUNS_LINE,
+            GITIGNORE_SECRETS_LINE,
+            GITIGNORE_SECRETS_OVERLAYS_LINE,
+            GITIGNORE_AUTH_LINE,
+        ],
     )
 
     # Scaffold the local-brain Claude Code skills from package data.
@@ -573,6 +720,17 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print(f"Saved auth sessions go in a gitignored {AUTH_DIRNAME}/ at the repo "
           "root (one storageState JSON per role), never inside .praxis/ "
           "(ADR-0026 decisions 2 and 3).")
+    if environments is not None:
+        # The env workflow, named only when a map was declared: an undeclared
+        # init prints exactly what it printed before (ADR-0035 zero-ceremony).
+        names = ", ".join(environments)
+        print(f"Environments declared: {names}. Pick one per run with "
+              f"`praxis regress --env <name>` (or `explore` / `status`), the "
+              f"{PRAXIS_ENV_VAR} env var, or the committed default_env "
+              "(ADR-0035).")
+        print(f"Per-environment credentials overlay the base file as "
+              f"{SECRETS_FILE}.<env>; per-environment sessions live in "
+              f"{AUTH_DIRNAME}/<env>/<role>.json (both gitignored).")
     print("Next: drop a *.knowledge.yaml seed file under "
           f"{pdir / 'knowledge'}/ (one per goal, source_type=human or spec), "
           "or import one with `praxis learn <goal-id> --from-file PATH`.")
@@ -1514,9 +1672,27 @@ def _build_parser() -> argparse.ArgumentParser:
 
     init = sub.add_parser("init", help="Bootstrap .praxis/ in the current dir.")
     init.add_argument("--path", help="Project root (default: cwd).")
-    init.add_argument("--base-url", default="http://127.0.0.1:8000")
+    init.add_argument("--base-url", default=None,
+                       help="Single-deployment base URL written to config.yaml "
+                            "(default: http://127.0.0.1:8000). Mutually "
+                            "exclusive with --environment/--default-env.")
     init.add_argument("--app", help="App name (default: cwd directory name).")
-    init.add_argument("--env", default=None, help="Environment label.")
+    init.add_argument("--env", default=None,
+                       help="Environment label written to the top-level "
+                            "config.yaml `environment` key (legacy single-env "
+                            "scaffold). Mutually exclusive with "
+                            "--environment/--default-env.")
+    init.add_argument("--environment", action="append", default=None,
+                       metavar="NAME=URL",
+                       help="Declare a deployment in the committed config.yaml "
+                            "`environments` map (repeatable, ADR-0035). "
+                            "Mutually exclusive with the legacy single-env "
+                            "--env/--base-url pair.")
+    init.add_argument("--default-env", default=None,
+                       help="The committed default_env teammates share; must "
+                            "name a declared --environment (ADR-0035). "
+                            "Optional with a single --environment, which "
+                            "auto-selects.")
     init.add_argument("--agent-id", default="praxis-cli")
     init.add_argument("--mcp-config", default=None,
                        help="Default Playwright MCP config path for the claude -p "
