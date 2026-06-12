@@ -239,6 +239,186 @@ def test_assert_auth_state_observation_safe_inspects_raw_value_pre_redaction() -
         assert_auth_state_observation_safe(redacted, raw_value=raw)
 
 
+# --- ADR-0035: environment stamping + per-environment evidence partition -----
+
+
+def _net_obs(value: str, src_id: str, *, type_: str = "network") -> ObservedSignal:
+    return ObservedSignal(
+        kind="success", type=type_, value=value, present=True,  # type: ignore[arg-type]
+        source_type="agent", source_id=src_id, observed_app_version="1",
+    )
+
+
+def _env_adapter(store, env: str | None, *, seeds=None,
+                 legacy_env: str | None = None) -> BrowserUseAdapter:
+    return BrowserUseAdapter(
+        store, target=Target(app="acme"), seeds=seeds or {},
+        current_version="1", environment=env, legacy_env=legacy_env,
+    )
+
+
+def test_adapter_stamps_environment_on_every_write(tmp_path) -> None:
+    """ADR-0035 decision 4: with an environment selected, observations, regress
+    audit records, and candidates are all stamped with it - operational
+    provenance, like agent_id."""
+    import datetime as dt
+
+    from praxis.model import Provenance, Risk, SequenceTrigger, Status, Uncertainty
+
+    store = FileEventStore(tmp_path)
+    adapter = _env_adapter(store, "dev2", seeds={"authenticate-user": _seed()})
+    adapter.write_observations(
+        "authenticate-user", "agent-1", [_net_obs("POST /session 2xx", "agent-1")],
+    )
+    adapter.write_regress_observation(
+        "authenticate-user", "agent-1", "pass",
+        [_net_obs("POST /session 2xx", "agent-1")],
+    )
+    risk = Risk(
+        id="idempotency",
+        description="double submit creates two orders",
+        trigger=SequenceTrigger(n=2, action="submit checkout",
+                                expect="two distinct order_ids returned"),
+        provenance=Provenance(
+            source_type="agent", source_id="agent-1",
+            last_verified=dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc),
+            observation_count=1),
+        confidence=0.7, status=Status.CONTESTED,
+    )
+    unc = Uncertainty(
+        id="receipt-window", question="how long is the receipt URL valid?",
+        raised_by="agent-1",
+        raised_at=dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc),
+    )
+    adapter.write_candidates(
+        "authenticate-user", "agent-1", new_risks=[risk], new_uncertainties=[unc],
+    )
+    assert store.read("authenticate-user")[0].environment == "dev2"
+    assert store.read_regress("authenticate-user")[0].environment == "dev2"
+    assert {e.environment for e in store.read_candidates("authenticate-user")} \
+        == {"dev2"}
+
+
+def test_adapter_without_environment_stamps_none_and_empty_string_is_unset(
+    tmp_path,
+) -> None:
+    """No environment (undeclared project) stamps None; empty string counts as
+    unset (the ADR-0034 posture), so it behaves identically."""
+    store = FileEventStore(tmp_path)
+    for adapter in (_env_adapter(store, None), _env_adapter(store, "")):
+        assert adapter.environment is None
+    _env_adapter(store, "").write_observations(
+        "authenticate-user", "agent-1", [_net_obs("POST /session 2xx", "agent-1")],
+    )
+    assert store.read("authenticate-user")[0].environment is None
+
+
+def test_dev2_and_prod_projections_are_disjoint(tmp_path) -> None:
+    """THE partition contract (ADR-0035 decision 4): one goal, one store, dev2
+    and prod events - the two believed projections never see each other's
+    evidence, while the seed (product intent) folds into BOTH."""
+    store = FileEventStore(tmp_path)
+    seeds = {"authenticate-user": _seed()}
+    dev2 = _env_adapter(store, "dev2", seeds=seeds)
+    prod = _env_adapter(store, "prod", seeds=seeds)
+    dev2.write_observations(
+        "authenticate-user", "agent-dev",
+        [_net_obs("GET /dev2-only 200", "agent-dev")],
+    )
+    prod.write_observations(
+        "authenticate-user", "agent-prod",
+        [_net_obs("GET /prod-only 200", "agent-prod")],
+    )
+    kf_dev2 = dev2.read_knowledge("authenticate-user")
+    kf_prod = prod.read_knowledge("authenticate-user")
+    assert kf_dev2 is not None and kf_prod is not None
+    dev2_vals = {s.value for s in kf_dev2.success_signals}
+    prod_vals = {s.value for s in kf_prod.success_signals}
+    seed_vals = {s.value for s in _seed().success_signals}
+    # The seed folds into EVERY environment's projection (ADR-0005 per env).
+    assert seed_vals <= dev2_vals and seed_vals <= prod_vals
+    # The agent evidence is disjoint: nothing prod-observed reaches dev2's
+    # projection or vice versa.
+    assert "GET /dev2-only 200" in dev2_vals
+    assert "GET /dev2-only 200" not in prod_vals
+    assert "GET /prod-only 200" in prod_vals
+    assert "GET /prod-only 200" not in dev2_vals
+    assert (dev2_vals - seed_vals).isdisjoint(prod_vals - seed_vals)
+
+
+def test_cross_env_observation_adds_no_corroboration_diversity(tmp_path) -> None:
+    """ADR-0035 decision 5 (the heart): the same agent observing the same
+    signals on dev2 AND prod is ONE perspective, not two. Per-env projections
+    each see one source -> contested; even an unpartitioned fold still counts
+    one source (`source_id` stays agent_identity, never env-decorated). If
+    either projection believed, env would be minting diversity - the ADR-0008
+    self-certification breach with env standing in for type."""
+    store = FileEventStore(tmp_path)
+    dev2 = _env_adapter(store, "dev2")
+    prod = _env_adapter(store, "prod")
+    for adapter in (dev2, prod):
+        adapter.write_observations(
+            "checkout", "praxis-cli",
+            [_net_obs("order confirmation renders", "praxis-cli",
+                      type_="behavioral"),
+             _net_obs("POST /orders 2xx", "praxis-cli")],
+        )
+    for adapter in (dev2, prod, _env_adapter(store, None)):
+        kf = adapter.read_knowledge("checkout")
+        assert kf is not None
+        assert {s.status.value for s in kf.success_signals} == {"contested"}
+        assert all(s.provenance.source_id == "praxis-cli"
+                   for s in kf.success_signals)
+
+
+def test_legacy_env_attributes_none_events_only_to_the_named_environment(
+    tmp_path,
+) -> None:
+    """ADR-0035 decision 4 None-matching: pre-migration events (environment
+    None) match NO declared environment by default; `legacy_env: <name>`
+    attributes them to exactly that one, as a projection input - the event
+    files are never rewritten."""
+    store = FileEventStore(tmp_path)
+    # Pre-migration writer: today's adapter, no environment -> None on disk.
+    _env_adapter(store, None).write_observations(
+        "authenticate-user", "agent-old",
+        [_net_obs("POST /session 2xx", "agent-old")],
+    )
+    legacy_event = store.read("authenticate-user")[0]
+    assert legacy_event.environment is None
+
+    def values_seen_by(adapter: BrowserUseAdapter) -> set[str]:
+        return {s.value for ev in adapter.read_events("authenticate-user")
+                for s in ev.signals}
+
+    # No legacy_env: the None-event is outside every declared partition.
+    assert values_seen_by(_env_adapter(store, "prod")) == set()
+    # legacy_env=prod: attributed to prod, and ONLY to prod.
+    assert "POST /session 2xx" in values_seen_by(
+        _env_adapter(store, "prod", legacy_env="prod"))
+    assert values_seen_by(_env_adapter(store, "dev2", legacy_env="prod")) == set()
+    # The event file itself is untouched (no rewrite).
+    assert store.read("authenticate-user")[0].environment is None
+
+
+def test_undeclared_adapter_reads_every_environment(tmp_path) -> None:
+    """No environment selected = no filter: an undeclared project folds every
+    event exactly as today (the ADR-0035 zero-ceremony bar), including events
+    a declared sibling already stamped."""
+    store = FileEventStore(tmp_path)
+    _env_adapter(store, "dev2").write_observations(
+        "authenticate-user", "a1", [_net_obs("GET /dev2-only 200", "a1")])
+    _env_adapter(store, "prod").write_observations(
+        "authenticate-user", "a2", [_net_obs("GET /prod-only 200", "a2")])
+    _env_adapter(store, None).write_observations(
+        "authenticate-user", "a3", [_net_obs("GET /unstamped 200", "a3")])
+    unpartitioned = _env_adapter(store, None)
+    values = {s.value for ev in unpartitioned.read_events("authenticate-user")
+              for s in ev.signals}
+    assert values == {"GET /dev2-only 200", "GET /prod-only 200",
+                      "GET /unstamped 200"}
+
+
 def test_redaction_pipeline_strips_token_before_event_lands_in_store(tmp_path) -> None:
     """End-to-end: an adapter writing an observation carrying a raw bearer
     token never lets that token reach the append-only store. ADR-0017 sec 3:

@@ -21,9 +21,10 @@ NOW = datetime(2026, 6, 1, tzinfo=timezone.utc)
 
 
 def ev(value, type_, present=True, ts=NOW, src_type="agent", src_id="a1",
-       kind="success", ver="1") -> ObservationEvent:
+       kind="success", ver="1", env=None) -> ObservationEvent:
     return ObservationEvent(
         agent_id=src_id, goal_id="g", ts=ts, observed_app_version=ver,
+        environment=env,
         signals=[ObservedSignal(kind=kind, type=type_, value=value, present=present,
                                 source_type=src_type, source_id=src_id,
                                 observed_app_version=ver)],
@@ -183,6 +184,20 @@ def test_seed_plus_same_type_paraphrase_stream_believes_only_the_seed() -> None:
     # so they are loud and traceable, never silently promoted.
     contested = {s.value for s in kf.success_signals if s.status.value == "contested"}
     assert len(contested) == 26
+
+
+def test_projection_is_environment_blind_env_never_mints_source_diversity() -> None:
+    """ADR-0035 decision 5: `environment` is a field the core never interprets.
+    Two different-type observations from ONE agent, stamped dev2 and prod and
+    folded into ONE projection, still count as ONE source -> contested, never
+    believed - and the projected provenance carries the bare agent identity,
+    never an env-decorated source_id (`agent@dev2` is the forbidden ADR-0008
+    breach). The partition itself lives at the adapter boundary; this pins
+    that even an unpartitioned fold mints no diversity from the env field."""
+    kf = proj([ev("logout", "behavioral", src_id="a1", env="dev2"),
+               ev("POST /session 2xx", "network", src_id="a1", env="prod")])
+    assert {s.status.value for s in kf.success_signals} == {"contested"}
+    assert {s.provenance.source_id for s in kf.success_signals} == {"a1"}
 
 
 def test_seed_plus_single_different_type_agent_promotes_the_agent() -> None:

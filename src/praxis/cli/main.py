@@ -345,6 +345,14 @@ class ProjectContext:
             target=self.target(),
             seeds=self.seeds(),
             current_version=self.observed_app_version,
+            # ADR-0035 decisions 4 + 5: evidence partitions by the SELECTED
+            # environment (the `select_environment` pin; None on an undeclared
+            # project = no filter, today's reads exactly), NOT the legacy
+            # single-env `environment` config label, which is a prompt label
+            # and never a partition key - mirroring how session reuse scopes
+            # by the selected name (decision 7).
+            environment=self._selected_env,
+            legacy_env=self.legacy_env,
         )
 
 
