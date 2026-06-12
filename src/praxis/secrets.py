@@ -13,6 +13,15 @@ An environment variable takes precedence over the file, so CI supplies
 credentials as runner secrets with no file and local use supplies them through
 the file (ADR-0021 decision 6).
 
+Multi-environment projects (ADR-0035 decision 7) add ONE optional level: with
+an environment selected, a gitignored per-env OVERLAY file
+`.praxis.secrets.<env>` (a sibling of the base file, same format, same walk-up)
+wins over the base `.praxis.secrets` for the keys it defines. A key absent from
+the overlay falls through to the base, so shared keys live once in the base
+file. The `KEY` environment variable still beats both. With no environment
+selected (`environment=None`), the overlay is never consulted and resolution is
+exactly the two-level ADR-0021 channel above.
+
 The behavior on a missing credential splits by surface (ADR-0019):
 
     - the console / CI surface fails LOUDLY: it raises / exits non-zero, names
@@ -42,6 +51,7 @@ __all__ = [
     "SECRETS_FILENAME",
     "MissingCredential",
     "load_secrets_file",
+    "overlay_filename",
     "get_credential",
     "require_credential",
     "fail_loud_missing",
@@ -54,6 +64,16 @@ __all__ = [
 # could be written, so it can never be committed by accident.
 SECRETS_FILENAME = ".praxis.secrets"
 
+
+def overlay_filename(environment: str) -> str:
+    """Return the per-environment overlay file name (ADR-0035 decision 7).
+
+    The overlay is a sibling of the base `.praxis.secrets`, named
+    `.praxis.secrets.<env>`, gitignored by the `praxis init` `.praxis.secrets.*`
+    ignore line so it can never be committed by accident.
+    """
+    return f"{SECRETS_FILENAME}.{environment}"
+
 # The literal placeholder offered in append commands and prompts. A real value
 # is NEVER substituted into this string by this module; the user fills it in.
 _VALUE_PLACEHOLDER = "<value>"
@@ -65,16 +85,26 @@ class MissingCredential(KeyError):
     Carries the offending key NAME (never a value). Subclasses `KeyError` so
     callers that already guard `KeyError` keep working, but the string form
     names the key plainly rather than the `KeyError` repr.
+
+    `environment` (ADR-0035 decision 7) names the selected environment whose
+    overlay file was also consulted, or None when no environment was selected.
+    With `environment=None` the string form is byte-identical to the pre-ADR-0035
+    message; with an environment it additionally names the consulted overlay
+    file in the searched-locations part.
     """
 
-    def __init__(self, key: str) -> None:
+    def __init__(self, key: str, environment: str | None = None) -> None:
         self.key = key
+        self.environment = environment
         super().__init__(key)
 
     def __str__(self) -> str:  # plain, no KeyError quoting of the key
+        searched = SECRETS_FILENAME
+        if self.environment is not None:
+            searched = f"{overlay_filename(self.environment)} or {SECRETS_FILENAME}"
         return (
             f"missing credential {self.key!r}: set it as an environment "
-            f"variable or add it to {SECRETS_FILENAME} "
+            f"variable or add it to {searched} "
             f"(KEY=value, one per line)."
         )
 
@@ -127,26 +157,41 @@ def load_secrets_file(path: Path) -> dict[str, str]:
 def get_credential(
     key: str,
     *,
+    environment: str | None = None,
     repo_root: Path | None = None,
     secrets_path: Path | None = None,
     environ: dict[str, str] | None = None,
 ) -> str:
-    """Return the credential for `key`, environment winning over the file.
+    """Return the credential for `key`, environment winning over the files.
 
-    Resolution order (ADR-0021 decision 6):
+    Resolution order (ADR-0021 decision 6, extended by ADR-0035 decision 7):
 
         1. an environment variable named `key` (a CI runner secret), then
-        2. the `KEY=value` line in `.praxis.secrets`.
+        2. with an `environment` selected, the `KEY=value` line in the per-env
+           OVERLAY `.praxis.secrets.<env>` (a sibling of the base file), then
+        3. the `KEY=value` line in the base `.praxis.secrets`.
 
-    The environment always wins, so CI can supply a secret with no file present
-    and local use supplies it through the file. `secrets_path` (or `repo_root`)
-    pins the file location for tests and for callers that already resolved the
-    project; absent both, the file is found by walking up from cwd to the
-    directory holding `.praxis/`.
+    The environment variable always wins, so CI can supply a secret with no
+    file present and local use supplies it through the files. The overlay is an
+    OVERLAY, not a replacement: a key it defines shadows the base, a key it
+    omits falls through to the base, so shared keys live once in the base file.
+    With `environment=None` (an undeclared project) the overlay is never
+    consulted and resolution is byte-identical to the two-level channel. An
+    empty-string `environment` counts as unset (the ADR-0034 posture).
 
-    Raises `MissingCredential(key)` when neither source provides the key. The
-    raised value names only the absent KEY, never any present value.
+    `secrets_path` (or `repo_root`) pins the file location for tests and for
+    callers that already resolved the project; absent both, the files are found
+    by walking up from cwd to the directory holding `.praxis/`. The overlay is
+    always resolved as a sibling of the base file (`<base name>.<env>`), so a
+    pinned base pins the overlay too.
+
+    Raises `MissingCredential(key, environment)` when no source provides the
+    key. The raised value names only the absent KEY (and, with an environment
+    selected, the consulted overlay file), never any present value.
     """
+    if environment == "":
+        environment = None
+
     env = os.environ if environ is None else environ
     if key in env and env[key] != "":
         return env[key]
@@ -157,11 +202,16 @@ def get_credential(
         if root is not None:
             path = root / SECRETS_FILENAME
     if path is not None:
+        if environment is not None:
+            overlay = path.with_name(f"{path.name}.{environment}")
+            overlay_secrets = load_secrets_file(overlay)
+            if key in overlay_secrets:
+                return overlay_secrets[key]
         file_secrets = load_secrets_file(path)
         if key in file_secrets:
             return file_secrets[key]
 
-    raise MissingCredential(key)
+    raise MissingCredential(key, environment)
 
 
 def append_command(key: str) -> str:
@@ -198,16 +248,27 @@ def fail_loud_missing(exc: MissingCredential, *, stream: object | None = None) -
     ADR-0019 / ADR-0021 decision 6: on the console surface (and in CI) there is
     no human to answer, so the operation must fail LOUDLY. This writes a message
     that NAMES the absent key and how to set it (environment variable or the
-    secrets file) to `stream` (default stderr). It echoes no value: only the key
-    name and the placeholder append command appear. The caller exits non-zero
-    (see `require_credential`); this helper only formats the message.
+    secrets file) to `stream` (default stderr). With an environment on the
+    exception (ADR-0035 decision 7) it also names the per-env overlay file that
+    was consulted; with `environment=None` the message is byte-identical to the
+    pre-ADR-0035 one. It echoes no value: only the key name and the placeholder
+    append command appear. The caller exits non-zero (see `require_credential`);
+    this helper only formats the message.
     """
     out = sys.stderr if stream is None else stream
+    overlay_line = ""
+    if exc.environment is not None:
+        overlay = overlay_filename(exc.environment)
+        overlay_line = (
+            f"  or add it to the {exc.environment!r} overlay:  "
+            f'echo "{exc.key}={_VALUE_PLACEHOLDER}" >> {overlay}\n'
+        )
     print(
         f"ERROR: missing credential {exc.key!r}.\n"
         f"  set it as an environment variable:  export {exc.key}=...\n"
         f"  or add it to {SECRETS_FILENAME}:        "
         f'echo "{exc.key}={_VALUE_PLACEHOLDER}" >> {SECRETS_FILENAME}\n'
+        f"{overlay_line}"
         f"  ({SECRETS_FILENAME} is gitignored; the value is never committed or "
         f"logged.)",
         file=out,  # type: ignore[arg-type]
@@ -217,6 +278,7 @@ def fail_loud_missing(exc: MissingCredential, *, stream: object | None = None) -
 def require_credential(
     key: str,
     *,
+    environment: str | None = None,
     repo_root: Path | None = None,
     secrets_path: Path | None = None,
     environ: dict[str, str] | None = None,
@@ -225,14 +287,17 @@ def require_credential(
     """Console / CI accessor: return the credential or fail LOUDLY, non-zero.
 
     Wraps `get_credential` for the deterministic console surface (ADR-0019).
-    On success it returns the value. On a missing key it writes the loud,
-    key-naming, no-prompt message (`fail_loud_missing`) and raises `SystemExit`
-    with a non-zero code, so a CI run exits red with the key named and no
-    interactive prompt. The secret value is never printed on either path.
+    `environment` selects the ADR-0035 per-env overlay (None: today's two-level
+    resolution, unchanged). On success it returns the value. On a missing key
+    it writes the loud, key-naming, no-prompt message (`fail_loud_missing`) and
+    raises `SystemExit` with a non-zero code, so a CI run exits red with the
+    key named and no interactive prompt. The secret value is never printed on
+    either path.
     """
     try:
         return get_credential(
             key,
+            environment=environment,
             repo_root=repo_root,
             secrets_path=secrets_path,
             environ=environ,
