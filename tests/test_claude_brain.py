@@ -508,6 +508,44 @@ def test_brain_self_login_names_the_environment_for_auth_expired_routing(
     assert "APP_USERNAME" in prompt  # user role -> unsuffixed key
 
 
+def test_brain_self_login_2fa_wall_stays_authenticated_false(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """A self-login that hits a 2FA / OTP wall: the agent emits
+    authenticated=false per the directive, and the brain passes that through
+    UNCHANGED (never fabricates a green). The run drove the browser, so this is a
+    real observation the classifier routes to AUTH-EXPIRED (ADR-0036 decision 5),
+    not the no-drive short-circuit and not a false PASS."""
+    auth_dir = tmp_path / ".praxis.auth"  # empty: no session
+    state = AuthState(authenticated=True, scope="user")
+    blocked = {
+        "observations": [],
+        "actions": 2,
+        "tokens": None,
+        "authenticated": False,
+    }
+
+    import praxis.cli.claude_brain as cb
+    orig = cb.resolve_storage_state
+    monkeypatch.setattr(
+        cb, "resolve_storage_state",
+        lambda s, **kw: orig(
+            s, auth_dir=auth_dir, environ={},
+            credentials_present=lambda role: True,
+        ),
+    )
+    called = {"run": False}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> _FakeProc:
+        called["run"] = True
+        return _FakeProc(stdout=json.dumps(blocked))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    out = make_claude_brain(session_for_goal=lambda: state, mcp_config_path=None)("p")
+    assert called["run"] is True  # the browser WAS driven (a real login attempt)
+    assert out["authenticated"] is False  # passthrough, no fabricated green
+
+
 def test_brain_generic_prompt_is_byte_identical_without_self_login(
     monkeypatch: Any,
 ) -> None:
