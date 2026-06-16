@@ -56,12 +56,14 @@ To get past a login, log in the way a QA tester does: take the username and
 password and type them into the form. Nothing clever.
 
 - Read them from the secrets file. The gitignored `.praxis.secrets` at the
-  project root holds `APP_USERNAME` and `APP_PASSWORD` (an environment variable
-  of the same name wins over the file; on a multi-environment project a per-env
-  overlay `.praxis.secrets.<env>` wins over the shared file for the keys it
-  defines). If they are present, USE them: type them
-  straight into the email and password fields with `browser_fill_form` or
-  `browser_type`.
+  project root holds `APP_USERNAME` and `APP_PASSWORD` for the default `user`
+  role; any other role `<role>` reads `APP_USERNAME_<ROLE>` /
+  `APP_PASSWORD_<ROLE>` uppercased (ADR-0036 decision 3), so a multi-role project
+  keeps one pair per role (an environment variable of the same name wins over the
+  file; on a multi-environment project a per-env overlay `.praxis.secrets.<env>`
+  wins over the shared file for the keys it defines). If they are present, USE
+  them: type them straight into the email and password fields with
+  `browser_fill_form` or `browser_type`.
 - If a needed credential is missing, ASK the human for it (a credential typed
   prompt) and offer the exact append command, replacing the placeholder with
   their value: `! echo "KEY=<value>" >> .praxis.secrets`.

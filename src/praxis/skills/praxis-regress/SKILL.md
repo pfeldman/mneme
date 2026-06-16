@@ -204,7 +204,18 @@ not load, read, or reference any auditor scenario while regressing.
      environment). Cost note: an email-delivered 2FA code
      cannot be refreshed in CI (no inbox), so the refresh is a periodic MANUAL
      human action; a TOTP authenticator-app second factor has a storable seed, so
-     CI can self-refresh (ADR-0026 decision 6).
+     CI can self-refresh (ADR-0026 decision 6). Console self-login (ADR-0036):
+     on the bare console / CI path, when a precondition role has NO usable
+     session but its credentials ARE set in the secret chain, the runner does NOT
+     stop at AUTH-EXPIRED. It self-logs-in, driving a fresh username + password
+     login from `APP_USERNAME` / `APP_PASSWORD` (the `user` role) or
+     `APP_USERNAME_<ROLE>` / `APP_PASSWORD_<ROLE>` (any other role) against the
+     selected environment's base_url, then runs the goal. This is for MFA-free
+     accounts only: if a 2FA / one-time-code prompt appears, the run STOPS and
+     reports AUTH-EXPIRED naming the role and environment (it never reads an
+     inbox). With NEITHER a session NOR credentials it stays AUTH-EXPIRED,
+     unchanged. The console-minted session is NOT saved (CI logs in fresh each
+     run); seeding a reusable session stays the human teach login above.
 
    - **ERROR** (no verdict: app would not load, adapter threw, budget slice
      exhausted): surface it loudly with the goal name and the reason. It fails
