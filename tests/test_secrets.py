@@ -350,3 +350,104 @@ def test_no_overlay_path_prints_a_secret_value(
     assert "ABSENT_KEY" in err
     assert OVERLAY_VALUE not in err
     assert SECRET_VALUE not in err
+
+
+# --- per-role credential keys + presence (ADR-0036 decision 3) -------------
+
+
+def test_credential_keys_for_user_role_are_unsuffixed() -> None:
+    # The default `user` role keeps the only keys that existed before ADR-0036,
+    # so an existing `.praxis.secrets` with APP_USERNAME / APP_PASSWORD is
+    # unchanged. Case-insensitive on the role name.
+    assert secrets.credential_keys_for_role("user") == (
+        "APP_USERNAME",
+        "APP_PASSWORD",
+    )
+    assert secrets.credential_keys_for_role("USER") == (
+        "APP_USERNAME",
+        "APP_PASSWORD",
+    )
+
+
+def test_credential_keys_for_other_role_are_suffixed_uppercase() -> None:
+    assert secrets.credential_keys_for_role("mcp_readonly") == (
+        "APP_USERNAME_MCP_READONLY",
+        "APP_PASSWORD_MCP_READONLY",
+    )
+    assert secrets.credential_keys_for_role("admin") == (
+        "APP_USERNAME_ADMIN",
+        "APP_PASSWORD_ADMIN",
+    )
+
+
+def test_credentials_present_only_when_both_keys_resolve(tmp_path: Path) -> None:
+    secrets_path = _write_secrets(
+        tmp_path / secrets.SECRETS_FILENAME,
+        APP_USERNAME_MCP_READONLY="ro@example.com",
+        APP_PASSWORD_MCP_READONLY=SECRET_VALUE,
+    )
+    assert (
+        secrets.credentials_present_for_role(
+            "mcp_readonly", secrets_path=secrets_path, environ={}
+        )
+        is True
+    )
+
+
+def test_credentials_absent_for_role_is_false(tmp_path: Path) -> None:
+    secrets_path = _write_secrets(
+        tmp_path / secrets.SECRETS_FILENAME, APP_USERNAME="u@example.com"
+    )
+    # `admin` has neither key set -> not present.
+    assert (
+        secrets.credentials_present_for_role(
+            "admin", secrets_path=secrets_path, environ={}
+        )
+        is False
+    )
+
+
+def test_partial_credentials_count_as_not_present(tmp_path: Path) -> None:
+    # Only the username for the role is set; the password is missing. A
+    # half-login must not be attempted, so presence is False (ADR-0036 d4).
+    secrets_path = _write_secrets(
+        tmp_path / secrets.SECRETS_FILENAME,
+        APP_USERNAME_ADMIN="admin@example.com",
+    )
+    assert (
+        secrets.credentials_present_for_role(
+            "admin", secrets_path=secrets_path, environ={}
+        )
+        is False
+    )
+
+
+def test_credentials_present_honors_env_and_overlay(tmp_path: Path) -> None:
+    # The presence check rides the existing resolution chain: an env var and the
+    # per-env overlay both satisfy a key, with no value leaking out.
+    secrets_path = _write_secrets(
+        tmp_path / secrets.SECRETS_FILENAME, APP_USERNAME="u@example.com"
+    )
+    _write_overlay(tmp_path, ENV, APP_PASSWORD=OVERLAY_VALUE)
+    assert (
+        secrets.credentials_present_for_role(
+            "user", environment=ENV, secrets_path=secrets_path, environ={}
+        )
+        is True
+    )
+
+
+def test_credentials_present_does_not_leak_a_value(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    secrets_path = _write_secrets(
+        tmp_path / secrets.SECRETS_FILENAME,
+        APP_USERNAME="u@example.com",
+        APP_PASSWORD=SECRET_VALUE,
+    )
+    secrets.credentials_present_for_role(
+        "user", secrets_path=secrets_path, environ={}
+    )
+    captured = capsys.readouterr()
+    assert SECRET_VALUE not in captured.out
+    assert SECRET_VALUE not in captured.err

@@ -73,6 +73,7 @@ from ..auth_session import (
     role_for_session_reuse,
     session_file_path,
 )
+from ..secrets import credential_keys_for_role, credentials_present_for_role
 
 if TYPE_CHECKING:
     from ..model import AuthState
@@ -118,6 +119,12 @@ __all__ = [
 # console path while the skill-driver path got it once, and a second injection
 # point is a second place the undeclared-project byte-identity bar can break.
 # The preamble stays constant across goals AND across environments.
+#
+# `_TASK_MARKER` is the seam between the constant preamble and the per-goal task.
+# It is its own constant so the self-login directive (ADR-0036) can be spliced in
+# JUST before it without re-encoding the marker, and so the splice point is named
+# once rather than matched as a magic string.
+_TASK_MARKER = "--- TASK ---\n"
 _HEADLESS_PREAMBLE = (
     "You are running HEADLESS and NON-INTERACTIVE as a QA test runner. There is "
     "NO human watching and NO one to answer you. Do NOT ask any question, do NOT "
@@ -164,7 +171,7 @@ _HEADLESS_PREAMBLE = (
     "`.praxis/`. If a needed credential is absent you cannot ask anyone (you are "
     "headless): emit what you observed with \"authenticated\": false and stop, do "
     "NOT guess a credential.\n\n"
-    "--- TASK ---\n"
+    + _TASK_MARKER
 )
 
 
@@ -194,26 +201,33 @@ class ClaudeBrainError(RuntimeError):
 class StorageStateResolution:
     """The per-goal outcome of resolving a `--storage-state` for the brain.
 
-    Exactly one of three shapes (mutually exclusive):
+    Exactly one of four shapes (mutually exclusive):
 
-      - `path` set, `missing_role` None: a storage-state file the brain points
+      - `path` set, the rest None: a storage-state file the brain points
         `@playwright/mcp --storage-state` at. `is_tempfile` marks an env-var
         session materialized to a temp file (the CI runner-secret case, ADR-0026
         decision 3) that the brain deletes after the run; a False `is_tempfile`
         is the gitignored `.praxis.auth/<role>.json` file, left in place.
-      - `path` None, `missing_role` set: the goal needs an authenticated session
-        for that role but none is resolvable (no env var, no file). The brain
-        must NOT run logged out; it surfaces the loud AUTH-EXPIRED path naming
-        the role (ADR-0026 decision 5, ADR-0027 decision 8).
-      - both None: the goal needs no saved session (anonymous, non-authenticated,
+      - `self_login_role` set, the rest None: the goal needs an authenticated
+        session for that role and none is resolvable, BUT credentials for the
+        role ARE resolvable (ADR-0036 decision 1). The brain drives a fresh
+        username + password login (no `--storage-state`) instead of failing, so
+        an MFA-free account self-logs-in unattended.
+      - `missing_role` set, the rest None: the goal needs an authenticated
+        session for that role but NEITHER a session NOR credentials are
+        resolvable. The brain must NOT run logged out; it surfaces the loud
+        AUTH-EXPIRED path naming the role (ADR-0026 decision 5, ADR-0027
+        decision 8, ADR-0036 decision 4).
+      - all None: the goal needs no saved session (anonymous, non-authenticated,
         or `being_tested`); the brain drives a normal run (a fresh login if the
         goal itself requires one).
 
-    Only role NAMES and a file PATH ever live here; a session VALUE never does
-    (ADR-0026: the session is a secret named only by role).
+    Only role NAMES and a file PATH ever live here; a session VALUE and a
+    credential value never do (ADR-0026 / ADR-0036: the session and the
+    credentials are secrets named only by role).
     """
 
-    __slots__ = ("path", "is_tempfile", "missing_role")
+    __slots__ = ("path", "is_tempfile", "missing_role", "self_login_role")
 
     def __init__(
         self,
@@ -221,10 +235,12 @@ class StorageStateResolution:
         path: str | None = None,
         is_tempfile: bool = False,
         missing_role: str | None = None,
+        self_login_role: str | None = None,
     ) -> None:
         self.path = path
         self.is_tempfile = is_tempfile
         self.missing_role = missing_role
+        self.self_login_role = self_login_role
 
 
 def resolve_storage_state(
@@ -234,15 +250,16 @@ def resolve_storage_state(
     repo_root: Path | None = None,
     auth_dir: Path | None = None,
     environ: dict[str, str] | None = None,
+    credentials_present: "Callable[[str], bool] | None" = None,
 ) -> StorageStateResolution:
     """Resolve the `--storage-state` a goal's run should use, or its absence.
 
-    Decides per goal (ADR-0026, ADR-0027 decision 2):
+    Decides per goal (ADR-0026, ADR-0027 decision 2, ADR-0036):
 
       1. `role_for_session_reuse(auth_state)` is the role a run MAY reuse a saved
          session for; it is None for a `being_tested` auth-subject goal (a real
          login every run) and for an anonymous / non-authenticated goal. No role
-         -> no session needed (`StorageStateResolution()` with both fields None).
+         -> no session needed (`StorageStateResolution()` with all fields None).
       2. With a role, prefer a session FILE on disk so `--storage-state` reads it
          directly. The env var WINS over the file (ADR-0026 decision 3), so when
          the env var is set the file path is NOT used even if it exists: the env
@@ -251,17 +268,29 @@ def resolve_storage_state(
       3. When only the env var carries the session (the CI runner-secret case, no
          file), materialize the resolved storage state to a 0600 temp file and
          return it with `is_tempfile=True` so the brain deletes it after the run.
-      4. `auth_session.MissingSession` (no env var, no file) -> `missing_role` set
-         so the brain surfaces the loud AUTH-EXPIRED path; never a silent
-         logged-out run (ADR-0026 decision 5, AGENTS.md loud-over-silent).
+      4. When NO session is resolvable (no env var, no file, or an empty /
+         malformed env session), the outcome splits on credentials (ADR-0036
+         decision 1): if credentials for the role ARE resolvable from the secret
+         chain, `self_login_role` is set so the brain drives a fresh login; else
+         `missing_role` is set so the brain surfaces the loud AUTH-EXPIRED path
+         (ADR-0026 decision 5, ADR-0036 decision 4). Never a silent logged-out
+         run (AGENTS.md loud-over-silent).
 
     `environment` is the run's selected environment (ADR-0035 decision 7): with
     one selected, BOTH sources are env-scoped (`PRAXIS_AUTH_STATE_<ENV>_<ROLE>`,
     `.praxis.auth/<env>/<role>.json`) and the unscoped sources are deliberately
     NOT consulted (a storage state is domain-bound; an unscoped session present
-    while an environment is selected is a `missing_role` outcome, never a silent
-    wrong-domain reuse). With `environment=None` resolution is byte-identical to
-    the unscoped channel; an empty string counts as unset.
+    while an environment is selected is a `missing_role` / `self_login_role`
+    outcome, never a silent wrong-domain reuse). With `environment=None`
+    resolution is byte-identical to the unscoped channel; an empty string counts
+    as unset.
+
+    `credentials_present`, when given, is the role-keyed presence predicate the
+    self-login fork uses (a test injects a deterministic stub); when None it
+    defaults to `secrets.credentials_present_for_role` over the same
+    `environment` / `repo_root` / `environ`, so the credential chain (env >
+    overlay > base) is shared, not re-implemented. It returns a BOOL only; no
+    credential value crosses this boundary.
 
     `repo_root` / `auth_dir` / `environ` are passed through to the EXISTING
     `auth_session` helpers for tests and pinned callers; the env-wins-over-file
@@ -285,7 +314,10 @@ def resolve_storage_state(
         )
         if file_path is not None and file_path.is_file():
             return StorageStateResolution(path=str(file_path), is_tempfile=False)
-        return StorageStateResolution(missing_role=role)
+        return _self_login_or_missing(
+            role, environment=environment, repo_root=repo_root,
+            environ=environ, credentials_present=credentials_present,
+        )
 
     # The env var WINS over the file (ADR-0026 decision 3). `--storage-state`
     # needs a PATH, so materialize the env session to a temp file. `load_session_
@@ -300,9 +332,44 @@ def resolve_storage_state(
             repo_root=repo_root, auth_dir=auth_dir, environ=environ,
         )
     except MissingSession:
-        return StorageStateResolution(missing_role=role)
+        return _self_login_or_missing(
+            role, environment=environment, repo_root=repo_root,
+            environ=environ, credentials_present=credentials_present,
+        )
     tmp_path = _materialize_session_tempfile(session)
     return StorageStateResolution(path=tmp_path, is_tempfile=True)
+
+
+def _self_login_or_missing(
+    role: str,
+    *,
+    environment: str | None,
+    repo_root: Path | None,
+    environ: dict[str, str] | None,
+    credentials_present: "Callable[[str], bool] | None",
+) -> StorageStateResolution:
+    """Route an unresolvable session to self-login or AUTH-EXPIRED (ADR-0036).
+
+    When no saved session is usable for `role`, the run self-logs-in ONLY if
+    credentials for the role resolve from the secret chain (env >
+    `.praxis.secrets.<env>` overlay > `.praxis.secrets`): then
+    `self_login_role` is set and the brain drives a fresh username + password
+    login. Otherwise `missing_role` is set and the brain surfaces the loud
+    AUTH-EXPIRED path unchanged (ADR-0036 decision 4). The presence check returns
+    a BOOL only; no credential value crosses here. `credentials_present` is an
+    injected stub in tests; absent, it defaults to
+    `secrets.credentials_present_for_role` over the same environment / repo_root /
+    environ so the credential chain is shared, not re-implemented.
+    """
+    if credentials_present is not None:
+        present = credentials_present(role)
+    else:
+        present = credentials_present_for_role(
+            role, environment=environment, repo_root=repo_root, environ=environ,
+        )
+    if present:
+        return StorageStateResolution(self_login_role=role)
+    return StorageStateResolution(missing_role=role)
 
 
 def _materialize_session_tempfile(session: dict[str, Any]) -> str:
@@ -430,6 +497,40 @@ def _auth_expired_observations(
             f"AUTH-EXPIRED, not a regression."
         ],
     }
+
+
+def _self_login_directive(role: str, environment: str | None = None) -> str:
+    """The per-run directive injected when a goal self-logs-in (ADR-0036).
+
+    Names the EXACT credential keys for the role (`credential_keys_for_role`,
+    ADR-0036 decision 3) so the agent reads the right pair, points it at the
+    app's login (the "App under test" URL in the TASK section, ADR-0035 decision
+    3), and restates the MFA-free contract: a 2FA / one-time-code prompt is a loud
+    STOP that emits `authenticated: false` (routing to AUTH-EXPIRED for the role,
+    decision 5), never an inbox read. It names KEY names only, never a credential
+    value (decision 6). With an `environment` selected the directive names it so
+    the AUTH-EXPIRED routing carries role AND env; an empty string counts as
+    unset. Injected ONLY on the self-login path, so the generic preamble stays
+    byte-identical for every other run (the ADR-0035 byte-identity bar).
+    """
+    environment = environment if environment else None
+    username_key, password_key = credential_keys_for_role(role)
+    env_clause = f" on environment {environment!r}" if environment else ""
+    return (
+        f"SELF-LOGIN: this run has no saved session for role {role!r}"
+        f"{env_clause}, so log in fresh before the task. Open the app's login "
+        f'page (the "App under test" URL given in the task below), and sign in '
+        f"by typing the username from the credential key `{username_key}` and the "
+        f"password from `{password_key}` (read them from the gitignored "
+        f"`.praxis.secrets` at the repo root; an environment variable of the same "
+        f"name wins over the file). This is an MFA-free account: if a 2FA / "
+        f"one-time-code prompt appears anyway, the account is misconfigured. "
+        f"STOP, do NOT read any inbox and do NOT guess a code, and emit your "
+        f'observations with "authenticated": false so the run reports '
+        f"AUTH-EXPIRED for role {role!r}{env_clause}. Never write a credential, "
+        f"cookie, token, session id, or 2FA code into any file under "
+        f"`.praxis/`.\n\n"
+    )
 
 
 def _resolve_claude_argv0(claude_bin: str) -> list[str]:
@@ -623,7 +724,9 @@ def make_claude_brain(
 
         # When a session resolved, synthesize a per-goal MCP config that adds
         # `--storage-state <path>` to the Playwright server args (the flag is a
-        # SERVER arg, not a `claude -p` flag); else use the base config as-is.
+        # SERVER arg, not a `claude -p` flag); else use the base config as-is. A
+        # self-login run has no session to inject (resolution.path is None), so it
+        # drives the base config and logs in fresh from credentials instead.
         run_mcp_config = mcp_config_path
         synthesized_mcp_config: str | None = None
         if resolution.path is not None:
@@ -632,7 +735,20 @@ def make_claude_brain(
             )
             run_mcp_config = synthesized_mcp_config
 
-        full_prompt = _HEADLESS_PREAMBLE + prompt
+        # On the self-login path (no usable session, but credentials resolve,
+        # ADR-0036 decision 1) inject the per-run directive naming the role's
+        # exact credential keys just before the TASK section. The generic
+        # preamble is otherwise left BYTE-IDENTICAL (the ADR-0035 byte-identity
+        # bar): the replace only runs when self_login_role is set.
+        preamble = _HEADLESS_PREAMBLE
+        if resolution.self_login_role is not None:
+            directive = _self_login_directive(
+                resolution.self_login_role, environment,
+            )
+            preamble = preamble.replace(
+                _TASK_MARKER, directive + _TASK_MARKER, 1,
+            )
+        full_prompt = preamble + prompt
         # Resolve the launch prefix so a Windows npm `.cmd` shim actually starts
         # (a bare `["claude", ...]` cannot launch a batch file); POSIX is a no-op.
         argv = [*_resolve_claude_argv0(claude_bin), "-p", full_prompt]

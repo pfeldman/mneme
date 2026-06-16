@@ -292,9 +292,67 @@ def test_resolve_storage_state_missing_session_names_the_role(tmp_path: Path) ->
     # routes this to AUTH-EXPIRED, never a silent logged-out run).
     auth_dir = tmp_path / ".praxis.auth"  # empty
     state = AuthState(authenticated=True, scope="admin")
-    res = resolve_storage_state(state, auth_dir=auth_dir, environ={})
+    # No session AND no credentials for the role -> AUTH-EXPIRED, unchanged
+    # (ADR-0036 decision 4): the self-login fork only fires when creds resolve.
+    res = resolve_storage_state(
+        state, auth_dir=auth_dir, environ={},
+        credentials_present=lambda role: False,
+    )
     assert res.path is None
+    assert res.self_login_role is None
     assert res.missing_role == "admin"
+
+
+def test_resolve_storage_state_self_logs_in_when_credentials_resolve(
+    tmp_path: Path,
+) -> None:
+    # No session for the role, but credentials ARE resolvable: the run self-logs
+    # in (ADR-0036 decision 1), so self_login_role is set and missing_role / path
+    # are None. The brain drives a fresh login with no --storage-state.
+    auth_dir = tmp_path / ".praxis.auth"  # empty
+    state = AuthState(authenticated=True, scope="admin")
+    res = resolve_storage_state(
+        state, auth_dir=auth_dir, environ={},
+        credentials_present=lambda role: role == "admin",
+    )
+    assert res.path is None
+    assert res.missing_role is None
+    assert res.self_login_role == "admin"
+
+
+def test_resolve_storage_state_self_login_loses_to_a_usable_session(
+    tmp_path: Path,
+) -> None:
+    # Session reuse stays the fast path: when a session file exists, it wins even
+    # if credentials would also resolve. The self-login fork is the fallback for
+    # the no-session case only.
+    auth_dir = tmp_path / ".praxis.auth"
+    path = save_session("user", {"cookies": [], "origins": []}, auth_dir=auth_dir)
+    state = AuthState(authenticated=True, scope="user")
+    res = resolve_storage_state(
+        state, auth_dir=auth_dir, environ={},
+        credentials_present=lambda role: True,
+    )
+    assert res.path == str(path)
+    assert res.self_login_role is None
+    assert res.missing_role is None
+
+
+def test_resolve_storage_state_being_tested_never_self_logs_in(
+    tmp_path: Path,
+) -> None:
+    # An auth-SUBJECT goal (being_tested) performs its OWN real login as the test
+    # (ADR-0027 decision 2); the self-login fallback must not pre-empt it, even
+    # with credentials present. No role -> empty resolution, never self_login.
+    auth_dir = tmp_path / ".praxis.auth"  # empty
+    state = AuthState(authenticated=True, scope="user", being_tested=True)
+    res = resolve_storage_state(
+        state, auth_dir=auth_dir, environ={},
+        credentials_present=lambda role: True,
+    )
+    assert res.path is None
+    assert res.missing_role is None
+    assert res.self_login_role is None
 
 
 def test_brain_injects_storage_state_for_an_authenticated_non_subject_goal(
@@ -367,9 +425,14 @@ def test_brain_surfaces_auth_expired_when_session_missing_instead_of_running(
 
     import praxis.cli.claude_brain as cb
     orig = cb.resolve_storage_state
+    # No session AND no credentials -> AUTH-EXPIRED, never a self-login (the
+    # self-login fork is creds-gated, ADR-0036 decision 4).
     monkeypatch.setattr(
         cb, "resolve_storage_state",
-        lambda s, **kw: orig(s, auth_dir=auth_dir, environ={}),
+        lambda s, **kw: orig(
+            s, auth_dir=auth_dir, environ={},
+            credentials_present=lambda role: False,
+        ),
     )
 
     called = {"run": False}
@@ -384,6 +447,117 @@ def test_brain_surfaces_auth_expired_when_session_missing_instead_of_running(
     assert out["authenticated"] is False
     assert out["observations"] == []
     assert any("admin" in n for n in out["notes"])
+
+
+def test_brain_self_logs_in_with_no_storage_state_and_names_the_keys(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """No usable session but credentials resolve: the brain DRIVES the browser
+    (no short-circuit), injects NO --storage-state, and the prompt carries the
+    self-login directive naming the role's exact credential keys (ADR-0036
+    decisions 1, 3)."""
+    auth_dir = tmp_path / ".praxis.auth"  # empty: no session
+    state = AuthState(authenticated=True, scope="mcp_readonly")
+
+    import praxis.cli.claude_brain as cb
+    orig = cb.resolve_storage_state
+    monkeypatch.setattr(
+        cb, "resolve_storage_state",
+        lambda s, **kw: orig(
+            s, auth_dir=auth_dir, environ={},
+            credentials_present=lambda role: True,
+        ),
+    )
+    seen = _patch_run(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    out = make_claude_brain(session_for_goal=lambda: state, mcp_config_path=None)("p")
+    assert out == _OBS  # the run proceeded, no AUTH-EXPIRED short-circuit
+    argv_str = json.dumps(seen["argv"])
+    assert "--storage-state" not in argv_str  # nothing to inject; fresh login
+    prompt = seen["argv"][seen["argv"].index("-p") + 1]
+    assert "SELF-LOGIN" in prompt
+    assert "APP_USERNAME_MCP_READONLY" in prompt
+    assert "APP_PASSWORD_MCP_READONLY" in prompt
+    assert "mcp_readonly" in prompt
+    # The directive sits BEFORE the per-goal task, and never echoes a value.
+    assert prompt.index("SELF-LOGIN") < prompt.index("--- TASK ---")
+
+
+def test_brain_self_login_names_the_environment_for_auth_expired_routing(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """With an environment selected, the self-login directive names it so a 2FA
+    stop routes AUTH-EXPIRED for role AND env (ADR-0036 decision 5)."""
+    auth_dir = tmp_path / ".praxis.auth"
+    state = AuthState(authenticated=True, scope="user")
+
+    import praxis.cli.claude_brain as cb
+    orig = cb.resolve_storage_state
+    monkeypatch.setattr(
+        cb, "resolve_storage_state",
+        lambda s, **kw: orig(
+            s, environment="dev2", auth_dir=auth_dir, environ={},
+            credentials_present=lambda role: True,
+        ),
+    )
+    seen = _patch_run(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    make_claude_brain(
+        session_for_goal=lambda: state, environment="dev2", mcp_config_path=None,
+    )("p")
+    prompt = seen["argv"][seen["argv"].index("-p") + 1]
+    assert "dev2" in prompt
+    assert "APP_USERNAME" in prompt  # user role -> unsuffixed key
+
+
+def test_brain_self_login_2fa_wall_stays_authenticated_false(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """A self-login that hits a 2FA / OTP wall: the agent emits
+    authenticated=false per the directive, and the brain passes that through
+    UNCHANGED (never fabricates a green). The run drove the browser, so this is a
+    real observation the classifier routes to AUTH-EXPIRED (ADR-0036 decision 5),
+    not the no-drive short-circuit and not a false PASS."""
+    auth_dir = tmp_path / ".praxis.auth"  # empty: no session
+    state = AuthState(authenticated=True, scope="user")
+    blocked = {
+        "observations": [],
+        "actions": 2,
+        "tokens": None,
+        "authenticated": False,
+    }
+
+    import praxis.cli.claude_brain as cb
+    orig = cb.resolve_storage_state
+    monkeypatch.setattr(
+        cb, "resolve_storage_state",
+        lambda s, **kw: orig(
+            s, auth_dir=auth_dir, environ={},
+            credentials_present=lambda role: True,
+        ),
+    )
+    called = {"run": False}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> _FakeProc:
+        called["run"] = True
+        return _FakeProc(stdout=json.dumps(blocked))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    out = make_claude_brain(session_for_goal=lambda: state, mcp_config_path=None)("p")
+    assert called["run"] is True  # the browser WAS driven (a real login attempt)
+    assert out["authenticated"] is False  # passthrough, no fabricated green
+
+
+def test_brain_generic_prompt_is_byte_identical_without_self_login(
+    monkeypatch: Any,
+) -> None:
+    """A non-self-login run's prompt is EXACTLY the preamble + the goal prompt:
+    the directive splice runs ONLY on the self-login path (ADR-0035 byte-identity
+    bar)."""
+    state = AuthState(authenticated=False, scope=None)  # anonymous: no session
+    seen = _patch_run(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    make_claude_brain(session_for_goal=lambda: state, mcp_config_path=None)("the-task")
+    prompt = seen["argv"][seen["argv"].index("-p") + 1]
+    assert prompt == _HEADLESS_PREAMBLE + "the-task"
+    assert "SELF-LOGIN" not in prompt
 
 
 # --- per-environment session scoping (ADR-0035 decision 7) -----------------
@@ -423,6 +597,7 @@ def test_resolve_storage_state_never_falls_back_to_the_unscoped_session(
     state = AuthState(authenticated=True, scope="user")
     res = resolve_storage_state(
         state, environment="dev2", auth_dir=auth_dir, environ=environ,
+        credentials_present=lambda role: False,
     )
     assert res.path is None
     assert res.missing_role == "user"
@@ -439,6 +614,7 @@ def test_resolve_storage_state_never_borrows_another_environments_file(
     state = AuthState(authenticated=True, scope="user")
     res = resolve_storage_state(
         state, environment="dev2", auth_dir=auth_dir, environ={},
+        credentials_present=lambda role: False,
     )
     assert res.path is None
     assert res.missing_role == "user"
