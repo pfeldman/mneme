@@ -425,9 +425,14 @@ def test_brain_surfaces_auth_expired_when_session_missing_instead_of_running(
 
     import praxis.cli.claude_brain as cb
     orig = cb.resolve_storage_state
+    # No session AND no credentials -> AUTH-EXPIRED, never a self-login (the
+    # self-login fork is creds-gated, ADR-0036 decision 4).
     monkeypatch.setattr(
         cb, "resolve_storage_state",
-        lambda s, **kw: orig(s, auth_dir=auth_dir, environ={}),
+        lambda s, **kw: orig(
+            s, auth_dir=auth_dir, environ={},
+            credentials_present=lambda role: False,
+        ),
     )
 
     called = {"run": False}
@@ -442,6 +447,79 @@ def test_brain_surfaces_auth_expired_when_session_missing_instead_of_running(
     assert out["authenticated"] is False
     assert out["observations"] == []
     assert any("admin" in n for n in out["notes"])
+
+
+def test_brain_self_logs_in_with_no_storage_state_and_names_the_keys(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """No usable session but credentials resolve: the brain DRIVES the browser
+    (no short-circuit), injects NO --storage-state, and the prompt carries the
+    self-login directive naming the role's exact credential keys (ADR-0036
+    decisions 1, 3)."""
+    auth_dir = tmp_path / ".praxis.auth"  # empty: no session
+    state = AuthState(authenticated=True, scope="mcp_readonly")
+
+    import praxis.cli.claude_brain as cb
+    orig = cb.resolve_storage_state
+    monkeypatch.setattr(
+        cb, "resolve_storage_state",
+        lambda s, **kw: orig(
+            s, auth_dir=auth_dir, environ={},
+            credentials_present=lambda role: True,
+        ),
+    )
+    seen = _patch_run(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    out = make_claude_brain(session_for_goal=lambda: state, mcp_config_path=None)("p")
+    assert out == _OBS  # the run proceeded, no AUTH-EXPIRED short-circuit
+    argv_str = json.dumps(seen["argv"])
+    assert "--storage-state" not in argv_str  # nothing to inject; fresh login
+    prompt = seen["argv"][seen["argv"].index("-p") + 1]
+    assert "SELF-LOGIN" in prompt
+    assert "APP_USERNAME_MCP_READONLY" in prompt
+    assert "APP_PASSWORD_MCP_READONLY" in prompt
+    assert "mcp_readonly" in prompt
+    # The directive sits BEFORE the per-goal task, and never echoes a value.
+    assert prompt.index("SELF-LOGIN") < prompt.index("--- TASK ---")
+
+
+def test_brain_self_login_names_the_environment_for_auth_expired_routing(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """With an environment selected, the self-login directive names it so a 2FA
+    stop routes AUTH-EXPIRED for role AND env (ADR-0036 decision 5)."""
+    auth_dir = tmp_path / ".praxis.auth"
+    state = AuthState(authenticated=True, scope="user")
+
+    import praxis.cli.claude_brain as cb
+    orig = cb.resolve_storage_state
+    monkeypatch.setattr(
+        cb, "resolve_storage_state",
+        lambda s, **kw: orig(
+            s, environment="dev2", auth_dir=auth_dir, environ={},
+            credentials_present=lambda role: True,
+        ),
+    )
+    seen = _patch_run(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    make_claude_brain(
+        session_for_goal=lambda: state, environment="dev2", mcp_config_path=None,
+    )("p")
+    prompt = seen["argv"][seen["argv"].index("-p") + 1]
+    assert "dev2" in prompt
+    assert "APP_USERNAME" in prompt  # user role -> unsuffixed key
+
+
+def test_brain_generic_prompt_is_byte_identical_without_self_login(
+    monkeypatch: Any,
+) -> None:
+    """A non-self-login run's prompt is EXACTLY the preamble + the goal prompt:
+    the directive splice runs ONLY on the self-login path (ADR-0035 byte-identity
+    bar)."""
+    state = AuthState(authenticated=False, scope=None)  # anonymous: no session
+    seen = _patch_run(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    make_claude_brain(session_for_goal=lambda: state, mcp_config_path=None)("the-task")
+    prompt = seen["argv"][seen["argv"].index("-p") + 1]
+    assert prompt == _HEADLESS_PREAMBLE + "the-task"
+    assert "SELF-LOGIN" not in prompt
 
 
 # --- per-environment session scoping (ADR-0035 decision 7) -----------------
