@@ -292,9 +292,67 @@ def test_resolve_storage_state_missing_session_names_the_role(tmp_path: Path) ->
     # routes this to AUTH-EXPIRED, never a silent logged-out run).
     auth_dir = tmp_path / ".praxis.auth"  # empty
     state = AuthState(authenticated=True, scope="admin")
-    res = resolve_storage_state(state, auth_dir=auth_dir, environ={})
+    # No session AND no credentials for the role -> AUTH-EXPIRED, unchanged
+    # (ADR-0036 decision 4): the self-login fork only fires when creds resolve.
+    res = resolve_storage_state(
+        state, auth_dir=auth_dir, environ={},
+        credentials_present=lambda role: False,
+    )
     assert res.path is None
+    assert res.self_login_role is None
     assert res.missing_role == "admin"
+
+
+def test_resolve_storage_state_self_logs_in_when_credentials_resolve(
+    tmp_path: Path,
+) -> None:
+    # No session for the role, but credentials ARE resolvable: the run self-logs
+    # in (ADR-0036 decision 1), so self_login_role is set and missing_role / path
+    # are None. The brain drives a fresh login with no --storage-state.
+    auth_dir = tmp_path / ".praxis.auth"  # empty
+    state = AuthState(authenticated=True, scope="admin")
+    res = resolve_storage_state(
+        state, auth_dir=auth_dir, environ={},
+        credentials_present=lambda role: role == "admin",
+    )
+    assert res.path is None
+    assert res.missing_role is None
+    assert res.self_login_role == "admin"
+
+
+def test_resolve_storage_state_self_login_loses_to_a_usable_session(
+    tmp_path: Path,
+) -> None:
+    # Session reuse stays the fast path: when a session file exists, it wins even
+    # if credentials would also resolve. The self-login fork is the fallback for
+    # the no-session case only.
+    auth_dir = tmp_path / ".praxis.auth"
+    path = save_session("user", {"cookies": [], "origins": []}, auth_dir=auth_dir)
+    state = AuthState(authenticated=True, scope="user")
+    res = resolve_storage_state(
+        state, auth_dir=auth_dir, environ={},
+        credentials_present=lambda role: True,
+    )
+    assert res.path == str(path)
+    assert res.self_login_role is None
+    assert res.missing_role is None
+
+
+def test_resolve_storage_state_being_tested_never_self_logs_in(
+    tmp_path: Path,
+) -> None:
+    # An auth-SUBJECT goal (being_tested) performs its OWN real login as the test
+    # (ADR-0027 decision 2); the self-login fallback must not pre-empt it, even
+    # with credentials present. No role -> empty resolution, never self_login.
+    auth_dir = tmp_path / ".praxis.auth"  # empty
+    state = AuthState(authenticated=True, scope="user", being_tested=True)
+    res = resolve_storage_state(
+        state, auth_dir=auth_dir, environ={},
+        credentials_present=lambda role: True,
+    )
+    assert res.path is None
+    assert res.missing_role is None
+    assert res.self_login_role is None
 
 
 def test_brain_injects_storage_state_for_an_authenticated_non_subject_goal(
@@ -423,6 +481,7 @@ def test_resolve_storage_state_never_falls_back_to_the_unscoped_session(
     state = AuthState(authenticated=True, scope="user")
     res = resolve_storage_state(
         state, environment="dev2", auth_dir=auth_dir, environ=environ,
+        credentials_present=lambda role: False,
     )
     assert res.path is None
     assert res.missing_role == "user"
@@ -439,6 +498,7 @@ def test_resolve_storage_state_never_borrows_another_environments_file(
     state = AuthState(authenticated=True, scope="user")
     res = resolve_storage_state(
         state, environment="dev2", auth_dir=auth_dir, environ={},
+        credentials_present=lambda role: False,
     )
     assert res.path is None
     assert res.missing_role == "user"
