@@ -49,6 +49,8 @@ from pathlib import Path
 
 __all__ = [
     "SECRETS_FILENAME",
+    "USERNAME_KEY_BASE",
+    "PASSWORD_KEY_BASE",
     "MissingCredential",
     "load_secrets_file",
     "overlay_filename",
@@ -57,12 +59,21 @@ __all__ = [
     "fail_loud_missing",
     "ask_prompt",
     "append_command",
+    "credential_keys_for_role",
+    "credentials_present_for_role",
 ]
 
 # The credentials file name. It is a sibling of `.praxis/` at the repo root and
 # is gitignored by `praxis init` (ADR-0021 decisions 5 and 6) BEFORE any secret
 # could be written, so it can never be committed by accident.
 SECRETS_FILENAME = ".praxis.secrets"
+
+# The login credential key bases (ADR-0036 decision 3). The `user` role reads the
+# unsuffixed pair; any other role `<role>` reads `<BASE>_<ROLE_UPPER>`. These are
+# the keys a teach / regress / explore login types into the app's login form; the
+# VALUES live only in the gitignored channel and are never echoed by this module.
+USERNAME_KEY_BASE = "APP_USERNAME"
+PASSWORD_KEY_BASE = "APP_PASSWORD"
 
 
 def overlay_filename(environment: str) -> str:
@@ -212,6 +223,66 @@ def get_credential(
             return file_secrets[key]
 
     raise MissingCredential(key, environment)
+
+
+def credential_keys_for_role(role: str) -> tuple[str, str]:
+    """Return the `(username_key, password_key)` pair a role logs in with.
+
+    Generalizes the login-credential key convention per role (ADR-0036 decision
+    3): the `user` role reads the unsuffixed `APP_USERNAME` / `APP_PASSWORD`
+    (back-compatible with the only keys that existed before ADR-0036), and any
+    other role `<role>` reads `APP_USERNAME_<ROLE_UPPER>` /
+    `APP_PASSWORD_<ROLE_UPPER>` (the role uppercased with the same rule
+    `auth_session.env_var_name` uses, so `mcp_readonly` ->
+    `APP_USERNAME_MCP_READONLY`). The name is constructed, never parsed, so the
+    `_` join is unambiguous. This is a pure name mapping; it never reads or
+    reveals a credential value.
+    """
+    if role.strip().lower() == "user":
+        return USERNAME_KEY_BASE, PASSWORD_KEY_BASE
+    suffix = role.upper()
+    return f"{USERNAME_KEY_BASE}_{suffix}", f"{PASSWORD_KEY_BASE}_{suffix}"
+
+
+def credentials_present_for_role(
+    role: str,
+    *,
+    environment: str | None = None,
+    repo_root: Path | None = None,
+    secrets_path: Path | None = None,
+    environ: dict[str, str] | None = None,
+) -> bool:
+    """Return whether BOTH login credentials for `role` resolve, value-free.
+
+    Used by the console self-login path (ADR-0036 decision 1) to decide, when no
+    saved session is usable, whether to drive a fresh credential login or stay on
+    the AUTH-EXPIRED path: a self-login is attempted ONLY when both the username
+    and the password key for the role resolve. Resolution is the EXISTING
+    `get_credential` chain (env var > `.praxis.secrets.<env>` overlay >
+    `.praxis.secrets`, ADR-0021 / ADR-0035), so the env scoping and precedence
+    are not re-implemented. Partial credentials (only one of the two keys
+    present) count as NOT present, so the run stays AUTH-EXPIRED rather than half
+    logging in (ADR-0036 decision 4).
+
+    This reads each value internally only to confirm it resolves and returns a
+    BOOL; no credential value crosses out of this function into a return value, a
+    log, or an exception. A `MissingCredential` from `get_credential` is swallowed
+    into a False, never surfaced (the caller routes AUTH-EXPIRED with its own
+    key-naming hint).
+    """
+    username_key, password_key = credential_keys_for_role(role)
+    for key in (username_key, password_key):
+        try:
+            get_credential(
+                key,
+                environment=environment,
+                repo_root=repo_root,
+                secrets_path=secrets_path,
+                environ=environ,
+            )
+        except MissingCredential:
+            return False
+    return True
 
 
 def append_command(key: str) -> str:
