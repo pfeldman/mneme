@@ -820,3 +820,31 @@ def test_windows_shim_not_found_falls_back_to_bare_name(monkeypatch: Any) -> Non
     monkeypatch.setattr(claude_brain_mod.os, "name", "nt")
     monkeypatch.setattr(claude_brain_mod.shutil, "which", lambda _name: None)
     assert _resolve_claude_argv0("claude") == ["claude"]
+
+
+def test_extract_observations_repairs_an_escaped_apostrophe() -> None:
+    # Seen in a real run: the agent quoted page text with an invalid escape.
+    text = r"""done
+{"observations": [{"value": "the campaign\'s pages"}], "actions": 1}"""
+    out = claude_brain_mod._extract_observations(text)
+    assert out["observations"][0]["value"] == "the campaign's pages"
+
+
+def test_extract_observations_keeps_an_escaped_backslash_before_an_apostrophe() -> None:
+    text = r"""{"observations": [{"value": "C:\\'s"}]}"""
+    out = claude_brain_mod._extract_observations(text)
+    assert out["observations"][0]["value"] == "C:\\'s"
+
+
+def test_extract_observations_still_raises_on_other_malformed_output() -> None:
+    with pytest.raises(claude_brain_mod.ClaudeBrainError):
+        claude_brain_mod._extract_observations(r"""{"observations": [{"value": "bad \q"}]}""")
+
+
+def test_headless_brain_keeps_user_settings_out_of_the_run(monkeypatch: Any) -> None:
+    """A global Stop hook can force another final message, which replaces the
+    observation JSON on stdout, so only project and local settings may load."""
+    seen = _patch_run(monkeypatch, _FakeProc(stdout=json.dumps(_OBS)))
+    make_claude_brain()("p")
+    argv = seen["argv"]
+    assert argv[argv.index("--setting-sources") + 1] == "project,local"

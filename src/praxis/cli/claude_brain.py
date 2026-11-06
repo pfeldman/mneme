@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -608,6 +609,18 @@ def _iter_balanced_objects(text: str) -> list[str]:
     return out
 
 
+def _repair_apostrophe_escapes(candidate: str) -> str:
+    """Drop the backslash from a backslash-apostrophe, an invalid JSON escape.
+
+    An agent quoting page text can write the English possessive with that escape
+    inside a JSON string, and the whole answer is lost over one character. Only
+    this escape is repaired, and an escaped backslash before the apostrophe is
+    left alone. Any other malformed output still raises (ADR-0027: a malformed
+    output is a loud ERROR).
+    """
+    return re.sub(r"(?<!\\)((?:\\\\)*)\\'", r"\1'", candidate)
+
+
 def _extract_observations(stdout: str) -> dict[str, Any]:
     """Recover the observation dict from `claude -p` stdout, or raise.
 
@@ -642,7 +655,10 @@ def _extract_observations(stdout: str) -> dict[str, Any]:
         try:
             obj = json.loads(candidate)
         except json.JSONDecodeError:
-            continue
+            try:
+                obj = json.loads(_repair_apostrophe_escapes(candidate))
+            except json.JSONDecodeError:
+                continue
         if isinstance(obj, dict) and "observations" in obj:
             return obj
 
@@ -765,6 +781,10 @@ def make_claude_brain(
         # permission checks for this subprocess; the blast radius is bounded by
         # the low-privilege test account the run drives (ADR-0026 consequences).
         argv += ["--permission-mode", "bypassPermissions"]
+        # Same reason as `--strict-mcp-config`: the user's global settings and
+        # hooks must not reach the run. A global Stop hook can force another final
+        # message, which replaces the observation JSON on stdout.
+        argv += ["--setting-sources", "project,local"]
         if extra_args:
             argv += list(extra_args)
         # `headed` is plumbed to the browser the MCP launches; until the MCP
