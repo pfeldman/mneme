@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-06: 0.0.8 (console brain output robustness)
+
+A real `praxis regress` run lost the agent's whole answer twice, once to a global hook and once to a single character, and each loss surfaced as a per-goal ERROR with no verdict.
+
+- **The console brain no longer loads the user's global settings.** `claude -p` now runs with `--setting-sources project,local`, for the same reason it already uses `--strict-mcp-config`. A global Stop hook could force another final message, which replaced the observation JSON on stdout.
+- **An invalid apostrophe escape no longer loses the answer.** An agent quoting page text can write a backslash before an apostrophe inside a JSON string. `_extract_observations` now repairs that one escape, leaving an escaped backslash alone. Any other malformed output still raises (ADR-0027).
+
 ## 2026-06-16: 0.0.7 (console self-login from credentials, ADR-0036)
 
 Saved sessions expire, so a scheduled `praxis regress` in CI hit AUTH-EXPIRED the moment its session aged out, with no human present to re-seed it. For a dedicated low-privilege QA account with MFA disabled, a username + password login needs no interactive code and can be fully automated. This is the unblocker for wiring praxis into a team's CI on a schedule.
