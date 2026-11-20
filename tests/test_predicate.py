@@ -169,3 +169,49 @@ def test_slot_does_not_swallow_following_invariant() -> None:
     p = parse("campaign {campaign_id} was created")
     assert p.evaluate("campaign 329419 was created")
     assert not p.evaluate("campaign 329419 was deleted")
+
+
+# --- trailing punctuation after a slot filler --------------------------------
+
+_TRAILING = [".", ",", ";", ":", ")", "!", "?"]
+
+
+@pytest.mark.parametrize("punct", _TRAILING)
+def test_numeric_slot_ignores_trailing_punctuation(punct: str) -> None:
+    # An agent writes sentence punctuation right after the value; the filler
+    # must be cut before it, so the shape check sees `330344`, not `330344.`.
+    p = parse("/Quiz/Outcomes/Index/{campaign_id:numeric}")
+    assert p.evaluate(f"/Quiz/Outcomes/Index/330344{punct} I navigated there")
+    assert p.evaluate(f"/Quiz/Outcomes/Index/330344{punct}")
+
+
+@pytest.mark.parametrize("punct", _TRAILING)
+def test_uuid_slot_ignores_trailing_punctuation(punct: str) -> None:
+    p = parse("the record id is {rec:uuid}")
+    uid = "550e8400-e29b-41d4-a716-446655440000"
+    assert p.evaluate(f"the record id is {uid}{punct} then I left")
+    assert p.evaluate(f"the record id is {uid}{punct}")
+
+
+@pytest.mark.parametrize("punct", _TRAILING)
+def test_slot_before_literal_ignores_trailing_punctuation(punct: str) -> None:
+    p = parse("campaign {campaign_id:numeric} was created")
+    assert p.evaluate(f"campaign 329419{punct} was created")
+
+
+def test_trailing_punctuation_does_not_loosen_the_shape() -> None:
+    p = parse("/Quiz/Outcomes/Index/{campaign_id:numeric}")
+    assert not p.evaluate("/Quiz/Outcomes/Index/330344abc")
+    assert not p.evaluate("/Quiz/Outcomes/Index/330344abc.")
+    assert not p.evaluate("/Quiz/Outcomes/Index/abc")
+    assert not p.evaluate("/Quiz/Outcomes/Index/abc. then more")
+    # Punctuation INSIDE the token is not trailing: it stays in the filler.
+    assert not p.evaluate("/Quiz/Outcomes/Index/330.344 ok")
+    assert p.evaluate("(see /Quiz/Outcomes/Index/330344) ok")
+
+
+def test_slot_glued_to_literal_keeps_inner_dots() -> None:
+    # A slot bounded by literal text (a dotted host) still captures its dots.
+    p = parse("host {h}.example.com is up")
+    assert p.evaluate("host a.b.example.com is up")
+    assert not p.evaluate("host .example.com is up")

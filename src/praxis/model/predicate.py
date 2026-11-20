@@ -61,6 +61,12 @@ _UUID_RE = re.compile(
 )
 
 
+# Sentence punctuation an agent may glue right after a slot's value
+# (`.../330344.`, `id 42,`, `(see /Index/7)`). Stripped from a filler only at
+# the end of a token (see `parse`), never from inside one.
+_TRAILING_PUNCT = r"[.,;:!?)\]}'\"]"
+
+
 class PredicateError(ValueError):
     """A `value_predicate` that is malformed or carries no invariant.
 
@@ -123,8 +129,9 @@ class Predicate:
             return False
         # Every slot must be filled by a non-empty token; a declared shape
         # tightens that to a shape check on the OBSERVED filler. The regex
-        # group is `\S+` so it is already non-empty, but check explicitly so
-        # the invariant is documented and survives any future loosening.
+        # group needs at least one character so it is already non-empty, but
+        # check explicitly so the invariant is documented and survives any
+        # future loosening.
         for slot in self.slots:
             filler = m.group(slot.name)
             if not filler:
@@ -187,7 +194,8 @@ def parse(template: str) -> Predicate:
 
     On success returns a `Predicate` whose `_match_re` matches the NORMALIZED
     observed value: literal (invariant) segments are matched exactly and each
-    slot is a non-empty `\\S+` capture group keyed by the slot name.
+    slot is a non-empty capture group (one whitespace-free token, minus any
+    trailing sentence punctuation) keyed by the slot name.
     """
     if not template or not template.strip():
         raise PredicateError("value_predicate is empty or whitespace only")
@@ -216,6 +224,7 @@ def parse(template: str) -> Predicate:
     # relaxed.
     regex_parts: list[str] = []
     literal_segments: list[str] = []
+    slot_parts: list[tuple[int, str]] = []
     pos = 0
     for m in _SLOT_RE.finditer(template):
         literal = template[pos:m.start()]
@@ -235,11 +244,32 @@ def parse(template: str) -> Predicate:
         # uuid) is checked on the captured filler in `evaluate`, not here, so a
         # malformed filler is a non-match rather than a regex miss that is hard
         # to attribute.
-        regex_parts.append(rf"(?P<{name}>\S+)")
+        # The slot regex depends on the literal that FOLLOWS it, so leave a
+        # placeholder and fill it once that literal is known (below).
+        slot_parts.append((len(regex_parts), name))
+        regex_parts.append("")
         pos = m.end()
     trailing = template[pos:]
     literal_segments.append(trailing)
     regex_parts.append(_literal_to_regex(trailing))
+
+    # Cut each slot's filler. A slot followed by literal text glued to it
+    # (`{id}/edit`, `{host}.example.com`) is bounded by that literal, so a
+    # greedy `\S+` backtracks onto it. A slot followed by whitespace or by the
+    # end of the template has no such edge: a greedy `\S+` would keep the
+    # sentence punctuation an agent writes right after the value
+    # (`/Index/330344. I navigated`), and the shape check would then fail on
+    # `330344.`. There the filler stops before a trailing run of sentence
+    # punctuation that is itself followed by whitespace or the end, so the
+    # punctuation is consumed OUTSIDE the capture. Punctuation INSIDE the token
+    # (`330.344`, a dotted host) is not followed by whitespace, so it stays in
+    # the filler and the shape check sees it as before.
+    for k, (idx, name) in enumerate(slot_parts):
+        next_literal = literal_segments[k + 1]
+        if next_literal == "" or next_literal[0].isspace():
+            regex_parts[idx] = rf"(?P<{name}>\S+?){_TRAILING_PUNCT}*(?=\s|$)"
+        else:
+            regex_parts[idx] = rf"(?P<{name}>\S+)"
 
     # No-invariant guard (decision 3 + 6): the literal text must carry at least
     # one durable (non-stopword) token. A predicate that is only a slot, or

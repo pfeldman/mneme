@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-20: 0.0.9 (slot fillers ignore trailing punctuation)
+
+- **A slot no longer swallows the punctuation right after its value.** An agent that wrote `/Quiz/Outcomes/Index/330344. I navigated there` had its url signal voided as `void:predicate-failed`: the slot captured `330344.` and failed the numeric shape. When a slot is followed by a space or the end of the predicate, its value now stops before trailing `. , ; : ! ? ) ] } ' "`. Punctuation inside a value (`330.344`, a dotted host) still counts, and the shapes are unchanged (`330344abc` is still not numeric).
+
 ## 2026-11-06: 0.0.8 (console brain output robustness)
 
 A real `praxis regress` run lost the agent's whole answer twice, once to a global hook and once to a single character, and each loss surfaced as a per-goal ERROR with no verdict.
